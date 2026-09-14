@@ -277,7 +277,7 @@ async function joinRoom(name) {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
-      audio: true
+      audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }
     });
   } catch (err) {
     entryError.textContent = "カメラ・マイクの取得に失敗しました: " + err.message;
@@ -805,23 +805,37 @@ function disconnectAudioSource(id) {
 }
 
 // ---------- 録画: 合成キャンバス ----------
+// 画面に見えている映像タイルの配置・サイズをそのままキャンバスに描画する
+// （ドラッグで並べた配置＝録画される絵、になるようにする）
 function drawRecordFrame() {
   const ctx = recordCanvas.getContext("2d");
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
-  const slots = computeSlots();
-  const cellW = recordCanvas.width / COLS, cellH = recordCanvas.height / 2;
-  slots.forEach((s, i) => {
-    if (!s) return;
-    const col = i % COLS, row = Math.floor(i / COLS);
-    const video = document.getElementById(`video-${s.id}`);
-    if (video && video.readyState >= 2) {
-      ctx.drawImage(video, col * cellW, row * cellH, cellW, cellH);
+
+  const gridRect = videoGrid.getBoundingClientRect();
+  const scaleX = recordCanvas.width / gridRect.width;
+  const scaleY = recordCanvas.height / gridRect.height;
+
+  videoGrid.querySelectorAll(".tile").forEach((tile) => {
+    const video = tile.querySelector("video");
+    if (!video || video.readyState < 2) return;
+    const vRect = video.getBoundingClientRect();
+    const vx = (vRect.left - gridRect.left) * scaleX;
+    const vy = (vRect.top - gridRect.top) * scaleY;
+    const vw = vRect.width * scaleX;
+    const vh = vRect.height * scaleY;
+
+    ctx.save();
+    if (tile.classList.contains("mirror")) {
+      ctx.translate(vx + vw, vy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, vw, vh);
+    } else {
+      ctx.drawImage(video, vx, vy, vw, vh);
     }
-    ctx.fillStyle = "#fff";
-    ctx.font = "18px sans-serif";
-    ctx.fillText(s.name, col * cellW + 8, row * cellH + cellH - 10);
+    ctx.restore();
   });
+
   recordLoopId = requestAnimationFrame(drawRecordFrame);
 }
 
@@ -839,9 +853,10 @@ async function startRecording() {
   } else {
     ensureAudioGraph();
     if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
+    const gridRect = videoGrid.getBoundingClientRect();
     recordCanvas = document.createElement("canvas");
-    recordCanvas.width = 1280;
-    recordCanvas.height = 480;
+    recordCanvas.width = Math.max(2, Math.round(gridRect.width));
+    recordCanvas.height = Math.max(2, Math.round(gridRect.height));
     drawRecordFrame();
     const canvasStream = recordCanvas.captureStream(30);
     stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioDest.stream.getAudioTracks()]);
