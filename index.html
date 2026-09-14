@@ -70,36 +70,28 @@
     pointer-events: none;
   }
   .tile.mirror video { transform: scaleX(-1); }
+  .tile video.videoHidden { visibility: hidden; }
   .tile .statsLine {
     padding: 2px 8px 6px; font-size: 11px; color: #9ad0ff; background: #1a1a1a;
   }
-  .tile .fsBtn {
-    position: absolute; top: 4px; right: 4px; z-index: 5;
-    background: rgba(0,0,0,0.55); border: none; color: #fff;
-    width: 26px; height: 26px; border-radius: 4px; cursor: pointer; font-size: 14px;
-    display: flex; align-items: center; justify-content: center; padding: 0;
+  .tile .resizeHandle {
+    position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
+    cursor: nwse-resize; background: rgba(255,255,255,0.18);
+    border-top-left-radius: 4px;
   }
-  .tile .fsBtn:hover { background: rgba(0,0,0,0.8); }
-  .tile:fullscreen {
-    width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important;
-    background: #000; display: flex; flex-direction: column; justify-content: center;
-  }
-  .tile:fullscreen video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
-  .tile:fullscreen .statsLine { position: absolute; bottom: 0; left: 0; right: 0; }
+  .tile .resizeHandle:hover { background: rgba(255,255,255,0.4); }
+  #videoGrid:fullscreen { width: 100vw; height: 100vh; background: #000; border: none; }
   section.panel {
     background: #232323; border: 1px solid #3a3a3a; border-radius: 8px;
     padding: 16px; margin-bottom: 16px;
   }
   section.panel h2 { margin-top: 0; font-size: 16px; }
-  table#matrix { border-collapse: collapse; width: 100%; font-size: 13px; }
-  table#matrix th, table#matrix td {
-    border: 1px solid #444; padding: 6px 8px; text-align: center; white-space: nowrap;
+  table#controlsTable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table#controlsTable th, table#controlsTable td {
+    border: 1px solid #444; padding: 6px 8px; text-align: left;
   }
-  table#matrix th { background: #2c2c2c; }
-  table#matrix td.state-connected { background: #1f6b2c; }
-  table#matrix td.state-connecting { background: #8a7a1f; }
-  table#matrix td.state-failed { background: #7a2323; }
-  table#matrix td.state-na { background: #333; color: #777; }
+  table#controlsTable th { background: #2c2c2c; }
+  table#controlsTable td.ctrlCell { text-align: center; white-space: nowrap; }
   #copyBtn { margin-top: 8px; }
   #copyToast {
     display: inline-block; margin-left: 10px; color: #8dff8d; font-size: 13px;
@@ -133,14 +125,17 @@
   <div id="joinError"></div>
   <main>
     <div id="videoGridBar">
-      <span>映像タイルはドラッグで自由に配置できます（この端末のみに保存）</span>
-      <button class="small" id="resetLayoutBtn">配置をリセット</button>
+      <span>映像タイルはドラッグで移動・右下の■でサイズ変更できます（この端末のみに保存）</span>
+      <span>
+        <button class="small" id="resetLayoutBtn">配置をリセット</button>
+        <button class="small" id="fullscreenGridBtn">⛶ 配置エリアをフルスクリーン</button>
+      </span>
     </div>
     <div id="videoGrid"></div>
 
     <section class="panel">
-      <h2>接続マトリクス <button class="small" id="toggleMatrixBtn">非表示</button></h2>
-      <table id="matrix"></table>
+      <h2>操作</h2>
+      <table id="controlsTable"></table>
     </section>
 
     <section class="panel">
@@ -212,9 +207,15 @@ const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
 let recordCanvas = null;
 let recordLoopId = null;
 
-// 自由レイアウト（この端末のみ・ドラッグで配置を保存）
+// 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 const TILE_W = 300, ROW_H = 230, GAP = 14, COLS = 3;
+const MIN_TILE_W = 120, MAX_TILE_W = 900;
 let tilePositions = loadPositions();
+
+// ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
+const locallyMutedPeers = new Set();      // 個別に音声を消している相手
+const locallyHiddenVideoPeers = new Set(); // 個別に映像を隠している相手
+const hiddenTiles = new Set();             // グリッドから非表示にしたタイル（接続は維持）
 
 // ---------- DOM ----------
 const entryScreen = document.getElementById("entryScreen");
@@ -224,16 +225,16 @@ const joinBtn = document.getElementById("joinBtn");
 const entryError = document.getElementById("entryError");
 const joinError = document.getElementById("joinError");
 const videoGrid = document.getElementById("videoGrid");
-const matrixTable = document.getElementById("matrix");
+const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
+const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
-const toggleMatrixBtn = document.getElementById("toggleMatrixBtn");
 
 joinBtn.addEventListener("click", () => {
   const name = nameInput.value.trim();
@@ -244,21 +245,26 @@ muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
-toggleMatrixBtn.addEventListener("click", toggleMatrixVisibility);
+fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
 recBtn.addEventListener("click", () => {
   if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
   else stopRecording();
 });
+controlsTable.addEventListener("click", (e) => {
+  const btn = e.target.closest(".ctrlBtn");
+  if (!btn) return;
+  const { action, id } = btn.dataset;
+  if (action === "mic") toggleMicFor(id);
+  else if (action === "cam") toggleCamFor(id);
+  else if (action === "hide") toggleHideFor(id);
+});
 
-// ---------- 接続マトリクス 表示/非表示 ----------
-let matrixVisible = localStorage.getItem("aiJinroMatrixVisible") !== "0";
-matrixTable.style.display = matrixVisible ? "" : "none";
-toggleMatrixBtn.textContent = matrixVisible ? "非表示" : "表示";
-function toggleMatrixVisibility() {
-  matrixVisible = !matrixVisible;
-  matrixTable.style.display = matrixVisible ? "" : "none";
-  toggleMatrixBtn.textContent = matrixVisible ? "非表示" : "表示";
-  localStorage.setItem("aiJinroMatrixVisible", matrixVisible ? "1" : "0");
+function toggleGridFullscreen() {
+  if (document.fullscreenElement === videoGrid) {
+    document.exitFullscreen().catch(() => {});
+  } else {
+    videoGrid.requestFullscreen().catch(() => {});
+  }
 }
 
 // ---------- 入室 ----------
@@ -337,15 +343,14 @@ function listenMembers() {
     }
 
     const slots = computeSlots();
-    renderMatrix(slots);
     syncVideoTiles(slots);
+    renderControls(slots);
   });
 }
 
 function listenStatus() {
   onValue(ref(db, `rooms/${ROOM_ID}/status`), (snap) => {
     fullStatus = snap.val() || {};
-    renderMatrix(computeSlots());
   });
 }
 
@@ -618,7 +623,7 @@ function savePositions() {
 }
 function defaultPos(index) {
   const col = index % COLS, row = Math.floor(index / COLS);
-  return { left: col * (TILE_W + GAP), top: row * (ROW_H + GAP) };
+  return { left: col * (TILE_W + GAP), top: row * (ROW_H + GAP), width: TILE_W };
 }
 function resetLayout() {
   tilePositions = {};
@@ -648,15 +653,26 @@ function positionTile(tile, idx) {
   const pos = tilePositions[idx] || defaultPos(idx);
   tile.style.left = pos.left + "px";
   tile.style.top = pos.top + "px";
+  tile.style.width = (pos.width || TILE_W) + "px";
   tile.dataset.slot = String(idx);
+}
+
+function saveTileRect(tile) {
+  const idx = tile.dataset.slot;
+  if (idx == null) return;
+  tilePositions[idx] = {
+    left: parseFloat(tile.style.left) || 0,
+    top: parseFloat(tile.style.top) || 0,
+    width: parseFloat(tile.style.width) || TILE_W
+  };
+  savePositions();
 }
 
 function makeDraggable(tile) {
   let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
 
   tile.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".fsBtn")) return;
-    if (document.fullscreenElement === tile) return;
+    if (e.target.closest(".resizeHandle")) return;
     dragging = true;
     tile.classList.add("dragging");
     startX = e.clientX; startY = e.clientY;
@@ -681,14 +697,39 @@ function makeDraggable(tile) {
     if (!dragging) return;
     dragging = false;
     tile.classList.remove("dragging");
-    const idx = tile.dataset.slot;
-    if (idx != null) {
-      tilePositions[idx] = { left: parseFloat(tile.style.left) || 0, top: parseFloat(tile.style.top) || 0 };
-      savePositions();
-    }
+    saveTileRect(tile);
   };
   tile.addEventListener("pointerup", endDrag);
   tile.addEventListener("pointercancel", endDrag);
+}
+
+function makeResizable(tile) {
+  const handle = tile.querySelector(".resizeHandle");
+  let resizing = false, startX = 0, startW = 0;
+
+  handle.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    resizing = true;
+    startX = e.clientX;
+    startW = tile.offsetWidth;
+    handle.setPointerCapture(e.pointerId);
+  });
+
+  handle.addEventListener("pointermove", (e) => {
+    if (!resizing) return;
+    const dx = e.clientX - startX;
+    const maxW = Math.max(MIN_TILE_W, videoGrid.clientWidth - (parseFloat(tile.style.left) || 0));
+    const newW = Math.max(MIN_TILE_W, Math.min(MAX_TILE_W, maxW, startW + dx));
+    tile.style.width = newW + "px";
+  });
+
+  const endResize = (e) => {
+    if (!resizing) return;
+    resizing = false;
+    saveTileRect(tile);
+  };
+  handle.addEventListener("pointerup", endResize);
+  handle.addEventListener("pointercancel", endResize);
 }
 
 function createVideoTile(peerId, name, isSelf) {
@@ -698,38 +739,28 @@ function createVideoTile(peerId, name, isSelf) {
   tile.id = `tile-${peerId}`;
   tile.innerHTML = `
     <video id="video-${peerId}" autoplay playsinline ${isSelf ? "muted" : ""}></video>
-    <button class="fsBtn" type="button" title="フルスクリーン">⛶</button>
     <div class="statsLine" id="stats-${peerId}"></div>
+    <div class="resizeHandle" title="ドラッグでサイズ変更"></div>
   `;
-  const idx = document.querySelectorAll(".tile").length;
-  tile.style.left = defaultPos(idx).left + "px";
-  tile.style.top = defaultPos(idx).top + "px";
   videoGrid.appendChild(tile);
   makeDraggable(tile);
-  const fsBtn = tile.querySelector(".fsBtn");
-  fsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleTileFullscreen(tile); });
-  tile.querySelector("video").addEventListener("dblclick", () => toggleTileFullscreen(tile));
+  makeResizable(tile);
   syncVideoTiles(computeSlots());
-}
-
-function toggleTileFullscreen(tile) {
-  if (document.fullscreenElement === tile) {
-    document.exitFullscreen().catch(() => {});
-  } else {
-    tile.requestFullscreen().catch(() => {});
-  }
 }
 
 function removeVideoTile(peerId) {
   const tile = document.getElementById(`tile-${peerId}`);
   if (tile) tile.remove();
+  locallyMutedPeers.delete(peerId);
+  locallyHiddenVideoPeers.delete(peerId);
+  hiddenTiles.delete(peerId);
 }
 
 function attachStreamToTile(peerId, stream) {
   const video = document.getElementById(`video-${peerId}`);
   if (video) {
     video.srcObject = stream;
-    if (peerId !== myId) video.muted = globalMuted;
+    if (peerId !== myId) video.muted = globalMuted || locallyMutedPeers.has(peerId);
   }
 }
 
@@ -744,29 +775,62 @@ function toggleGlobalMute() {
   muteBtn.textContent = globalMuted ? "🔇 ミュート解除" : "🔊 全体ミュート";
   for (const id of Object.keys(peers)) {
     const video = document.getElementById(`video-${id}`);
-    if (video) video.muted = globalMuted;
+    if (video) video.muted = globalMuted || locallyMutedPeers.has(id);
   }
 }
 
-// ---------- UI: 接続マトリクス ----------
-function renderMatrix(slots) {
-  let html = "<tr><th></th>";
-  for (const s of slots) html += `<th>${s ? escapeHtml(s.name) : "―"}</th>`;
-  html += "</tr>";
-
-  for (const row of slots) {
-    html += `<tr><th>${row ? escapeHtml(row.name) : "―"}</th>`;
-    for (const col of slots) {
-      if (!row || !col || row.id === col.id) {
-        html += `<td class="${stateClass()}">${stateIcon()}</td>`;
-      } else {
-        const state = fullStatus[row.id]?.[col.id]?.state;
-        html += `<td class="${stateClass(state)}">${stateIcon(state)}</td>`;
-      }
-    }
-    html += "</tr>";
+// ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
+function renderControls(slots) {
+  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>表示</th></tr>";
+  for (const s of slots) {
+    if (!s) continue;
+    const isSelf = s.id === myId;
+    const micOn = isSelf
+      ? (localStream?.getAudioTracks()[0]?.enabled ?? true)
+      : !locallyMutedPeers.has(s.id);
+    const camOn = isSelf
+      ? (localStream?.getVideoTracks()[0]?.enabled ?? true)
+      : !locallyHiddenVideoPeers.has(s.id);
+    const hidden = hiddenTiles.has(s.id);
+    html += `<tr>
+      <td>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
+      <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
+      <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button></td>
+      <td class="ctrlCell">${isSelf ? "" : `<button class="small ctrlBtn" data-action="hide" data-id="${s.id}">${hidden ? "表示に戻す" : "非表示"}</button>`}</td>
+    </tr>`;
   }
-  matrixTable.innerHTML = html;
+  controlsTable.innerHTML = html;
+}
+
+function toggleMicFor(id) {
+  if (id === myId) {
+    const track = localStream?.getAudioTracks()[0];
+    if (track) track.enabled = !track.enabled;
+  } else {
+    if (locallyMutedPeers.has(id)) locallyMutedPeers.delete(id); else locallyMutedPeers.add(id);
+    const video = document.getElementById(`video-${id}`);
+    if (video) video.muted = globalMuted || locallyMutedPeers.has(id);
+  }
+  renderControls(computeSlots());
+}
+
+function toggleCamFor(id) {
+  if (id === myId) {
+    const track = localStream?.getVideoTracks()[0];
+    if (track) track.enabled = !track.enabled;
+  } else {
+    if (locallyHiddenVideoPeers.has(id)) locallyHiddenVideoPeers.delete(id); else locallyHiddenVideoPeers.add(id);
+    const video = document.getElementById(`video-${id}`);
+    if (video) video.classList.toggle("videoHidden", locallyHiddenVideoPeers.has(id));
+  }
+  renderControls(computeSlots());
+}
+
+function toggleHideFor(id) {
+  if (hiddenTiles.has(id)) hiddenTiles.delete(id); else hiddenTiles.add(id);
+  const tile = document.getElementById(`tile-${id}`);
+  if (tile) tile.style.display = hiddenTiles.has(id) ? "none" : "";
+  renderControls(computeSlots());
 }
 
 function stateIcon(state) {
@@ -774,13 +838,6 @@ function stateIcon(state) {
   if (state === "connecting" || state === "new") return "🟡 connecting";
   if (state === "failed" || state === "disconnected" || state === "closed") return "🔴 " + state;
   return "⬜";
-}
-
-function stateClass(state) {
-  if (state === "connected") return "state-connected";
-  if (state === "connecting" || state === "new") return "state-connecting";
-  if (state === "failed" || state === "disconnected" || state === "closed") return "state-failed";
-  return "state-na";
 }
 
 // ---------- 録画: 音声ミキシング ----------
@@ -817,8 +874,9 @@ function drawRecordFrame() {
   const scaleY = recordCanvas.height / gridRect.height;
 
   videoGrid.querySelectorAll(".tile").forEach((tile) => {
+    if (tile.offsetParent === null) return; // 非表示にしたタイルは描画しない
     const video = tile.querySelector("video");
-    if (!video || video.readyState < 2) return;
+    if (!video || video.readyState < 2 || video.classList.contains("videoHidden")) return;
     const vRect = video.getBoundingClientRect();
     const vx = (vRect.left - gridRect.left) * scaleX;
     const vy = (vRect.top - gridRect.top) * scaleY;
