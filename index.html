@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI人狼 通話テスト</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #1c1c1c;
+    color: #f0f0f0;
+    font-family: system-ui, "Hiragino Kaku Gothic ProN", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: #262626;
+    border-bottom: 1px solid #3a3a3a;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; margin-right: 8px; }
+  header input[type="text"] {
+    background: #111; color: #fff; border: 1px solid #555;
+    padding: 6px 10px; border-radius: 4px;
+  }
+  button {
+    background: #3a6ea5; color: #fff; border: none;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #4a80bb; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  button.active { background: #b0492f; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  #entryError, #joinError {
+    color: #ff6b6b; padding: 8px 16px; font-size: 14px; white-space: pre-wrap;
+  }
+  #entryScreen {
+    max-width: 420px; margin: 60px auto; padding: 24px;
+    background: #262626; border-radius: 8px; text-align: center;
+  }
+  #entryScreen h2 { margin-top: 0; }
+  #entryScreen input[type="text"] {
+    width: 100%; padding: 10px; margin: 12px 0; background: #111;
+    color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 15px;
+  }
+  main { padding: 16px; }
+  #videoGridBar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; font-size: 12px; color: #999;
+  }
+  #videoGrid {
+    position: relative;
+    width: 100%;
+    min-height: 480px;
+    margin-bottom: 20px;
+    background: #151515;
+    border: 1px dashed #333;
+    border-radius: 6px;
+  }
+  .tile {
+    background: #000; border-radius: 6px; overflow: hidden; position: absolute;
+    border: 1px solid #333; width: 300px; cursor: grab; user-select: none; touch-action: none;
+  }
+  .tile.dragging { cursor: grabbing; z-index: 20; box-shadow: 0 0 0 2px #3a6ea5; }
+  .tile video {
+    width: 100%; aspect-ratio: 16/9; background: #000; display: block; object-fit: cover;
+    pointer-events: none;
+  }
+  .tile.mirror video { transform: scaleX(-1); }
+  .tile .label {
+    padding: 4px 8px; font-size: 13px; background: #1a1a1a; display: flex;
+    justify-content: space-between; align-items: center;
+  }
+  .tile .statsLine {
+    padding: 2px 8px 6px; font-size: 11px; color: #9ad0ff; background: #1a1a1a;
+  }
+  section.panel {
+    background: #232323; border: 1px solid #3a3a3a; border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  section.panel h2 { margin-top: 0; font-size: 16px; }
+  table#matrix { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table#matrix th, table#matrix td {
+    border: 1px solid #444; padding: 6px 8px; text-align: center; white-space: nowrap;
+  }
+  table#matrix th { background: #2c2c2c; }
+  table#matrix td.state-connected { background: #1f6b2c; }
+  table#matrix td.state-connecting { background: #8a7a1f; }
+  table#matrix td.state-failed { background: #7a2323; }
+  table#matrix td.state-na { background: #333; color: #777; }
+  #copyBtn { margin-top: 8px; }
+  #copyToast {
+    display: inline-block; margin-left: 10px; color: #8dff8d; font-size: 13px;
+  }
+  #recControls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  #recControls label { font-size: 13px; margin-right: 12px; cursor: pointer; }
+  #recIndicator { color: #ff6b6b; font-size: 13px; display: none; }
+  #recDownloads { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  #recDownloads a {
+    color: #8dc4ff; font-size: 13px; text-decoration: none; background: #1a1a1a;
+    padding: 6px 10px; border-radius: 4px; display: inline-block; width: fit-content;
+  }
+  #recDownloads a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div id="entryScreen">
+  <h2>AI人狼 通話テスト</h2>
+  <input type="text" id="nameInput" placeholder="表示名を入力">
+  <div><button id="joinBtn">入室</button></div>
+  <div id="entryError"></div>
+</div>
+
+<div id="callScreen" style="display:none;">
+  <header>
+    <h1>AI人狼 通話テスト</h1>
+    <button id="muteBtn">🔊 全体ミュート</button>
+    <button id="shareBtn">🖥 画面共有</button>
+  </header>
+  <div id="joinError"></div>
+  <main>
+    <div id="videoGridBar">
+      <span>映像タイルはドラッグで自由に配置できます（この端末のみに保存）</span>
+      <button class="small" id="resetLayoutBtn">配置をリセット</button>
+    </div>
+    <div id="videoGrid"></div>
+
+    <section class="panel">
+      <h2>接続マトリクス</h2>
+      <table id="matrix"></table>
+    </section>
+
+    <section class="panel">
+      <h2>録画</h2>
+      <div id="recControls">
+        <span>
+          <label><input type="radio" name="recMode" value="grid" checked> レイアウト全体（合成映像＋全員の音声）</label>
+          <label><input type="radio" name="recMode" value="self"> 自分のカメラのみ</label>
+        </span>
+        <button id="recBtn">● 録画開始</button>
+        <span id="recIndicator">● 録画中</span>
+      </div>
+      <div id="recDownloads"></div>
+    </section>
+
+    <section class="panel">
+      <button id="copyBtn">結果をコピー</button>
+      <span id="copyToast" style="display:none;">コピーしました</span>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getDatabase, ref, set, get, update, remove, push, onValue, onDisconnect, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// ai-jinro-call プロジェクト。ROOM_ID は RTDB セキュリティルール(rooms/test1)と一致させる必要がある
+const ROOM_ID = "test1";
+const MAX_PEERS = 6;
+const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const VIDEO_MAX_BITRATE = 400000;  // bps（通常のカメラ映像）
+const SCREEN_MAX_BITRATE = 2000000; // bps（画面共有中）
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAGBKE64LcAcZpdfeqcRNka60qeQ7EjmSM",
+  authDomain: "ai-jinro-call.firebaseapp.com",
+  databaseURL: "https://ai-jinro-call-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "ai-jinro-call",
+  storageBucket: "ai-jinro-call.firebasestorage.app",
+  messagingSenderId: "169472173140",
+  appId: "1:169472173140:web:6e8f0255edcd914c65f9c1"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// ---------- 状態 ----------
+const myId = crypto.randomUUID();
+let myName = "";
+let localStream = null;
+let members = {};       // peerId -> {name, joinedAt, sharing}
+let fullStatus = {};    // fromId -> { toId: {state, updatedAt} }
+const peers = {};       // peerId -> { pc, videoSender, pendingCandidates, statsInterval, prevStats, lastStats, remoteStream }
+const processedSignals = new Set();
+let globalMuted = false;
+
+// 画面共有
+let isSharing = false;
+let screenStream = null;
+
+// 録画
+let mediaRecorder = null;
+let recordedChunks = [];
+let audioCtx = null;
+let audioDest = null;
+const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
+let recordCanvas = null;
+let recordLoopId = null;
+
+// 自由レイアウト（この端末のみ・ドラッグで配置を保存）
+const TILE_W = 300, ROW_H = 230, GAP = 14, COLS = 3;
+let tilePositions = loadPositions();
+
+// ---------- DOM ----------
+const entryScreen = document.getElementById("entryScreen");
+const callScreen = document.getElementById("callScreen");
+const nameInput = document.getElementById("nameInput");
+const joinBtn = document.getElementById("joinBtn");
+const entryError = document.getElementById("entryError");
+const joinError = document.getElementById("joinError");
+const videoGrid = document.getElementById("videoGrid");
+const matrixTable = document.getElementById("matrix");
+const muteBtn = document.getElementById("muteBtn");
+const shareBtn = document.getElementById("shareBtn");
+const copyBtn = document.getElementById("copyBtn");
+const copyToast = document.getElementById("copyToast");
+const resetLayoutBtn = document.getElementById("resetLayoutBtn");
+const recBtn = document.getElementById("recBtn");
+const recIndicator = document.getElementById("recIndicator");
+const recDownloads = document.getElementById("recDownloads");
+
+joinBtn.addEventListener("click", () => {
+  const name = nameInput.value.trim();
+  if (!name) { entryError.textContent = "表示名を入力してください"; return; }
+  joinRoom(name);
+});
+muteBtn.addEventListener("click", toggleGlobalMute);
+shareBtn.addEventListener("click", toggleScreenShare);
+copyBtn.addEventListener("click", copyResults);
+resetLayoutBtn.addEventListener("click", resetLayout);
+recBtn.addEventListener("click", () => {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
+  else stopRecording();
+});
+
+// ---------- 入室 ----------
+async function joinRoom(name) {
+  entryError.textContent = "";
+  joinBtn.disabled = true;
+
+  const membersSnap = await get(ref(db, `rooms/${ROOM_ID}/members`));
+  const existing = membersSnap.val() || {};
+  if (Object.keys(existing).length >= MAX_PEERS) {
+    entryError.textContent = "満員のため入室できません（最大6人）";
+    joinBtn.disabled = false;
+    return;
+  }
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
+      audio: true
+    });
+  } catch (err) {
+    entryError.textContent = "カメラ・マイクの取得に失敗しました: " + err.message;
+    joinBtn.disabled = false;
+    return;
+  }
+
+  myName = name;
+  entryScreen.style.display = "none";
+  callScreen.style.display = "block";
+
+  createVideoTile(myId, myName, true);
+  attachStreamToTile(myId, localStream);
+  ensureAudioGraph();
+  connectAudioSource(myId, localStream);
+
+  const myMemberRef = ref(db, `rooms/${ROOM_ID}/members/${myId}`);
+  await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false });
+  onDisconnect(myMemberRef).remove();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
+
+  listenMembers();
+  listenSignals();
+  listenStatus();
+}
+
+window.addEventListener("beforeunload", () => {
+  try {
+    remove(ref(db, `rooms/${ROOM_ID}/members/${myId}`));
+    remove(ref(db, `rooms/${ROOM_ID}/status/${myId}`));
+  } catch (e) { /* best effort */ }
+});
+
+// ---------- メンバー購読・メッシュ管理 ----------
+function listenMembers() {
+  onValue(ref(db, `rooms/${ROOM_ID}/members`), (snap) => {
+    const data = snap.val() || {};
+    const prevIds = new Set(Object.keys(members));
+    members = data;
+    const currentIds = new Set(Object.keys(members));
+
+    for (const id of prevIds) {
+      if (!currentIds.has(id) && id !== myId) {
+        closePeerConnection(id);
+        removeVideoTile(id);
+      }
+    }
+
+    for (const otherId of currentIds) {
+      if (otherId === myId || peers[otherId]) continue;
+      const mine = members[myId]?.joinedAt;
+      const theirs = members[otherId]?.joinedAt;
+      if (mine == null || theirs == null) continue;
+      if (mine > theirs) {
+        createPeerConnection(otherId, true);
+      }
+    }
+
+    const slots = computeSlots();
+    renderMatrix(slots);
+    updateTileLabels();
+    syncVideoTiles(slots);
+  });
+}
+
+function listenStatus() {
+  onValue(ref(db, `rooms/${ROOM_ID}/status`), (snap) => {
+    fullStatus = snap.val() || {};
+    renderMatrix(computeSlots());
+  });
+}
+
+// ---------- シグナリング ----------
+async function sendSignal(toPeerId, type, payload) {
+  const pushRef = push(ref(db, `rooms/${ROOM_ID}/signals/${toPeerId}/${myId}`));
+  await set(pushRef, { type, payload: JSON.stringify(payload) });
+}
+
+function listenSignals() {
+  onValue(ref(db, `rooms/${ROOM_ID}/signals/${myId}`), (snap) => {
+    const data = snap.val();
+    if (!data) return;
+    for (const fromId of Object.keys(data)) {
+      const pushes = data[fromId];
+      for (const pushId of Object.keys(pushes)) {
+        const key = `${fromId}/${pushId}`;
+        if (processedSignals.has(key)) continue;
+        processedSignals.add(key);
+        const { type, payload } = pushes[pushId];
+        handleSignal(fromId, type, JSON.parse(payload));
+        remove(ref(db, `rooms/${ROOM_ID}/signals/${myId}/${fromId}/${pushId}`));
+      }
+    }
+  });
+}
+
+async function handleSignal(fromId, type, payload) {
+  if (type === "offer") await handleOffer(fromId, payload);
+  else if (type === "answer") await handleAnswer(fromId, payload);
+  else if (type === "candidate") await handleCandidate(fromId, payload);
+}
+
+async function handleOffer(fromId, desc) {
+  if (peers[fromId]) {
+    // 相手のリロード等による再オファー: 古い接続を破棄
+    closePeerConnection(fromId);
+  }
+  const entry = createPeerConnection(fromId, false);
+  await entry.pc.setRemoteDescription(new RTCSessionDescription(desc));
+  await flushPendingCandidates(fromId);
+  const answer = await entry.pc.createAnswer();
+  await entry.pc.setLocalDescription(answer);
+  await sendSignal(fromId, "answer", { type: answer.type, sdp: answer.sdp });
+}
+
+async function handleAnswer(fromId, desc) {
+  const entry = peers[fromId];
+  if (!entry) return;
+  await entry.pc.setRemoteDescription(new RTCSessionDescription(desc));
+  await flushPendingCandidates(fromId);
+}
+
+async function handleCandidate(fromId, candidateInit) {
+  const entry = peers[fromId];
+  if (!entry) return;
+  if (entry.pc.remoteDescription && entry.pc.remoteDescription.type) {
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(candidateInit)); }
+    catch (e) { console.warn("addIceCandidate failed", e); }
+  } else {
+    entry.pendingCandidates.push(candidateInit);
+  }
+}
+
+async function flushPendingCandidates(peerId) {
+  const entry = peers[peerId];
+  if (!entry) return;
+  const list = entry.pendingCandidates;
+  entry.pendingCandidates = [];
+  for (const c of list) {
+    try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)); }
+    catch (e) { console.warn("addIceCandidate(queued) failed", e); }
+  }
+}
+
+// ---------- RTCPeerConnection 管理 ----------
+function createPeerConnection(peerId, isInitiator) {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const entry = {
+    pc,
+    videoSender: null,
+    pendingCandidates: [],
+    statsInterval: null,
+    prevStats: { bytesReceived: 0, packetsLost: 0, packetsReceived: 0, timestamp: 0 },
+    lastStats: null,
+    remoteStream: null
+  };
+  peers[peerId] = entry;
+
+  localStream.getTracks().forEach((track) => {
+    const sender = pc.addTrack(track, localStream);
+    if (track.kind === "video") {
+      entry.videoSender = sender;
+      applyBitrate(sender, isSharing ? SCREEN_MAX_BITRATE : VIDEO_MAX_BITRATE);
+      if (isSharing && screenStream) sender.replaceTrack(screenStream.getVideoTracks()[0]);
+    }
+  });
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) sendSignal(peerId, "candidate", e.candidate.toJSON());
+  };
+
+  pc.ontrack = (e) => {
+    entry.remoteStream = e.streams[0];
+    attachStreamToTile(peerId, e.streams[0]);
+    connectAudioSource(peerId, e.streams[0]);
+  };
+
+  pc.onconnectionstatechange = () => {
+    writeMyStatus(peerId, pc.connectionState);
+    if (pc.connectionState === "connected" && !entry.statsInterval) {
+      entry.statsInterval = setInterval(() => updateStats(peerId), 2000);
+    }
+    if (["failed", "disconnected", "closed"].includes(pc.connectionState) && entry.statsInterval) {
+      clearInterval(entry.statsInterval);
+      entry.statsInterval = null;
+    }
+  };
+
+  createVideoTile(peerId, members[peerId]?.name || "接続中...", false);
+
+  if (isInitiator) {
+    pc.createOffer()
+      .then((offer) => pc.setLocalDescription(offer).then(() => offer))
+      .then((offer) => sendSignal(peerId, "offer", { type: offer.type, sdp: offer.sdp }));
+  }
+
+  writeMyStatus(peerId, pc.connectionState || "new");
+  return entry;
+}
+
+function applyBitrate(sender, bitrate) {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    params.encodings[0].maxBitrate = bitrate;
+    sender.setParameters(params).catch(() => {});
+  } catch (e) { /* ブラウザによっては初期状態で失敗することがある */ }
+}
+
+function writeMyStatus(peerId, state) {
+  update(ref(db, `rooms/${ROOM_ID}/status/${myId}/${peerId}`), {
+    state, updatedAt: serverTimestamp()
+  });
+}
+
+function closePeerConnection(peerId) {
+  const entry = peers[peerId];
+  if (!entry) return;
+  if (entry.statsInterval) clearInterval(entry.statsInterval);
+  disconnectAudioSource(peerId);
+  try { entry.pc.close(); } catch (e) {}
+  delete peers[peerId];
+}
+
+// ---------- 通信統計 ----------
+async function updateStats(peerId) {
+  const entry = peers[peerId];
+  if (!entry || entry.pc.connectionState !== "connected") return;
+  const stats = await entry.pc.getStats();
+
+  let routeType = "-", rttMs = null;
+  let candidatePairReport = null;
+  stats.forEach((report) => {
+    if (report.type === "candidate-pair" && report.state === "succeeded" &&
+        (report.nominated === undefined || report.nominated)) {
+      candidatePairReport = report;
+    }
+  });
+  if (candidatePairReport) {
+    if (candidatePairReport.currentRoundTripTime != null) {
+      rttMs = Math.round(candidatePairReport.currentRoundTripTime * 1000);
+    }
+    const localCand = stats.get(candidatePairReport.localCandidateId);
+    if (localCand) {
+      routeType = localCand.candidateType === "relay" ? "relay"
+        : (localCand.candidateType === "host" ? "host" : "srflx");
+    }
+  }
+
+  let kbps = 0, lossPct = 0;
+  stats.forEach((report) => {
+    if (report.type === "inbound-rtp" && report.kind === "video") {
+      const prev = entry.prevStats;
+      const dt = (report.timestamp - prev.timestamp) / 1000;
+      if (prev.timestamp > 0 && dt > 0) {
+        const deltaBytes = report.bytesReceived - prev.bytesReceived;
+        kbps = Math.max(0, Math.round((deltaBytes * 8 / 1000) / dt));
+        const deltaLost = report.packetsLost - prev.packetsLost;
+        const deltaRecv = report.packetsReceived - prev.packetsReceived;
+        lossPct = (deltaLost + deltaRecv) > 0
+          ? Math.round((deltaLost / (deltaLost + deltaRecv)) * 1000) / 10 : 0;
+      }
+      entry.prevStats = {
+        bytesReceived: report.bytesReceived,
+        packetsLost: report.packetsLost,
+        packetsReceived: report.packetsReceived,
+        timestamp: report.timestamp
+      };
+    }
+  });
+
+  entry.lastStats = { routeType, rttMs, kbps, lossPct };
+  updateStatsDisplay(peerId, entry.lastStats);
+}
+
+// ---------- 画面共有 ----------
+async function toggleScreenShare() {
+  if (isSharing) { stopScreenShare(); return; }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 10 }, audio: false });
+  } catch (e) {
+    return; // ユーザーがキャンセルした等
+  }
+  screenStream = stream;
+  isSharing = true;
+  shareBtn.textContent = "🖥 共有を終了";
+  shareBtn.classList.add("active");
+
+  const selfVideo = document.getElementById(`video-${myId}`);
+  if (selfVideo) selfVideo.srcObject = screenStream;
+  document.getElementById(`tile-${myId}`)?.classList.remove("mirror");
+
+  for (const entry of Object.values(peers)) {
+    if (entry.videoSender) {
+      entry.videoSender.replaceTrack(screenStream.getVideoTracks()[0]);
+      applyBitrate(entry.videoSender, SCREEN_MAX_BITRATE);
+    }
+  }
+
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: true });
+
+  screenStream.getVideoTracks()[0].onended = () => { if (isSharing) stopScreenShare(); };
+}
+
+function stopScreenShare() {
+  isSharing = false;
+  shareBtn.textContent = "🖥 画面共有";
+  shareBtn.classList.remove("active");
+
+  if (screenStream) {
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+  }
+
+  const selfVideo = document.getElementById(`video-${myId}`);
+  if (selfVideo) selfVideo.srcObject = localStream;
+  document.getElementById(`tile-${myId}`)?.classList.add("mirror");
+
+  const camTrack = localStream.getVideoTracks()[0];
+  for (const entry of Object.values(peers)) {
+    if (entry.videoSender && camTrack) {
+      entry.videoSender.replaceTrack(camTrack);
+      applyBitrate(entry.videoSender, VIDEO_MAX_BITRATE);
+    }
+  }
+
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: false });
+}
+
+// ---------- UI: 映像グリッド（自由配置） ----------
+function loadPositions() {
+  try { return JSON.parse(localStorage.getItem("aiJinroTilePositions") || "{}"); }
+  catch (e) { return {}; }
+}
+function savePositions() {
+  localStorage.setItem("aiJinroTilePositions", JSON.stringify(tilePositions));
+}
+function defaultPos(index) {
+  const col = index % COLS, row = Math.floor(index / COLS);
+  return { left: col * (TILE_W + GAP), top: row * (ROW_H + GAP) };
+}
+function resetLayout() {
+  tilePositions = {};
+  savePositions();
+  syncVideoTiles(computeSlots());
+}
+
+function computeSlots() {
+  const sorted = Object.entries(members)
+    .filter(([, v]) => v && v.joinedAt != null)
+    .sort((a, b) => a[1].joinedAt - b[1].joinedAt)
+    .map(([id, v]) => ({ id, name: v.name, sharing: !!v.sharing }));
+  const slots = sorted.slice(0, MAX_PEERS);
+  while (slots.length < MAX_PEERS) slots.push(null);
+  return slots;
+}
+
+function syncVideoTiles(slots) {
+  slots.forEach((s, idx) => {
+    if (!s) return;
+    const tile = document.getElementById(`tile-${s.id}`);
+    if (tile) positionTile(tile, idx);
+  });
+}
+
+function positionTile(tile, idx) {
+  const pos = tilePositions[idx] || defaultPos(idx);
+  tile.style.left = pos.left + "px";
+  tile.style.top = pos.top + "px";
+  tile.dataset.slot = String(idx);
+}
+
+function makeDraggable(tile) {
+  let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
+
+  tile.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    tile.classList.add("dragging");
+    startX = e.clientX; startY = e.clientY;
+    origX = parseFloat(tile.style.left) || 0;
+    origY = parseFloat(tile.style.top) || 0;
+    tile.setPointerCapture(e.pointerId);
+  });
+
+  tile.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    let newX = origX + dx, newY = origY + dy;
+    const maxX = Math.max(0, videoGrid.clientWidth - tile.offsetWidth);
+    const maxY = Math.max(0, videoGrid.clientHeight - tile.offsetHeight);
+    newX = Math.max(0, Math.min(maxX, newX));
+    newY = Math.max(0, Math.min(maxY, newY));
+    tile.style.left = newX + "px";
+    tile.style.top = newY + "px";
+  });
+
+  const endDrag = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    tile.classList.remove("dragging");
+    const idx = tile.dataset.slot;
+    if (idx != null) {
+      tilePositions[idx] = { left: parseFloat(tile.style.left) || 0, top: parseFloat(tile.style.top) || 0 };
+      savePositions();
+    }
+  };
+  tile.addEventListener("pointerup", endDrag);
+  tile.addEventListener("pointercancel", endDrag);
+}
+
+function createVideoTile(peerId, name, isSelf) {
+  if (document.getElementById(`tile-${peerId}`)) return;
+  const tile = document.createElement("div");
+  tile.className = "tile" + (isSelf ? " mirror" : "");
+  tile.id = `tile-${peerId}`;
+  tile.innerHTML = `
+    <video id="video-${peerId}" autoplay playsinline ${isSelf ? "muted" : ""}></video>
+    <div class="label"><span id="name-${peerId}">${escapeHtml(name)}</span></div>
+    <div class="statsLine" id="stats-${peerId}"></div>
+  `;
+  const idx = document.querySelectorAll(".tile").length;
+  tile.style.left = defaultPos(idx).left + "px";
+  tile.style.top = defaultPos(idx).top + "px";
+  videoGrid.appendChild(tile);
+  makeDraggable(tile);
+  syncVideoTiles(computeSlots());
+}
+
+function removeVideoTile(peerId) {
+  const tile = document.getElementById(`tile-${peerId}`);
+  if (tile) tile.remove();
+}
+
+function attachStreamToTile(peerId, stream) {
+  const video = document.getElementById(`video-${peerId}`);
+  if (video) {
+    video.srcObject = stream;
+    if (peerId !== myId) video.muted = globalMuted;
+  }
+}
+
+function updateTileLabels() {
+  for (const id of Object.keys(members)) {
+    const label = document.getElementById(`name-${id}`);
+    if (label) label.textContent = members[id].name + (members[id].sharing ? " 🖥共有中" : "");
+  }
+}
+
+function updateStatsDisplay(peerId, s) {
+  const el = document.getElementById(`stats-${peerId}`);
+  if (!el) return;
+  el.textContent = `経路:${s.routeType} / ${s.kbps}kbps / RTT:${s.rttMs ?? "-"}ms / Loss:${s.lossPct}%`;
+}
+
+function toggleGlobalMute() {
+  globalMuted = !globalMuted;
+  muteBtn.textContent = globalMuted ? "🔇 ミュート解除" : "🔊 全体ミュート";
+  for (const id of Object.keys(peers)) {
+    const video = document.getElementById(`video-${id}`);
+    if (video) video.muted = globalMuted;
+  }
+}
+
+// ---------- UI: 接続マトリクス ----------
+function renderMatrix(slots) {
+  let html = "<tr><th></th>";
+  for (const s of slots) html += `<th>${s ? escapeHtml(s.name) : "―"}</th>`;
+  html += "</tr>";
+
+  for (const row of slots) {
+    html += `<tr><th>${row ? escapeHtml(row.name) : "―"}</th>`;
+    for (const col of slots) {
+      if (!row || !col || row.id === col.id) {
+        html += `<td class="${stateClass()}">${stateIcon()}</td>`;
+      } else {
+        const state = fullStatus[row.id]?.[col.id]?.state;
+        html += `<td class="${stateClass(state)}">${stateIcon(state)}</td>`;
+      }
+    }
+    html += "</tr>";
+  }
+  matrixTable.innerHTML = html;
+}
+
+function stateIcon(state) {
+  if (state === "connected") return "🟢 connected";
+  if (state === "connecting" || state === "new") return "🟡 connecting";
+  if (state === "failed" || state === "disconnected" || state === "closed") return "🔴 " + state;
+  return "⬜";
+}
+
+function stateClass(state) {
+  if (state === "connected") return "state-connected";
+  if (state === "connecting" || state === "new") return "state-connecting";
+  if (state === "failed" || state === "disconnected" || state === "closed") return "state-failed";
+  return "state-na";
+}
+
+// ---------- 録画: 音声ミキシング ----------
+function ensureAudioGraph() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioDest = audioCtx.createMediaStreamDestination();
+  }
+}
+function connectAudioSource(id, stream) {
+  ensureAudioGraph();
+  if (audioSourceNodes.has(id) || !stream.getAudioTracks().length) return;
+  try {
+    const src = audioCtx.createMediaStreamSource(stream);
+    src.connect(audioDest);
+    audioSourceNodes.set(id, src);
+  } catch (e) { console.warn("audio graph connect failed", e); }
+}
+function disconnectAudioSource(id) {
+  const src = audioSourceNodes.get(id);
+  if (src) { try { src.disconnect(); } catch (e) {} audioSourceNodes.delete(id); }
+}
+
+// ---------- 録画: 合成キャンバス ----------
+function drawRecordFrame() {
+  const ctx = recordCanvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+  const slots = computeSlots();
+  const cellW = recordCanvas.width / COLS, cellH = recordCanvas.height / 2;
+  slots.forEach((s, i) => {
+    if (!s) return;
+    const col = i % COLS, row = Math.floor(i / COLS);
+    const video = document.getElementById(`video-${s.id}`);
+    if (video && video.readyState >= 2) {
+      ctx.drawImage(video, col * cellW, row * cellH, cellW, cellH);
+    }
+    ctx.fillStyle = "#fff";
+    ctx.font = "18px sans-serif";
+    ctx.fillText(s.name, col * cellW + 8, row * cellH + cellH - 10);
+  });
+  recordLoopId = requestAnimationFrame(drawRecordFrame);
+}
+
+function pickMimeType() {
+  const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "video/webm";
+}
+
+async function startRecording() {
+  const mode = document.querySelector('input[name="recMode"]:checked').value;
+  let stream;
+
+  if (mode === "self") {
+    stream = localStream;
+  } else {
+    ensureAudioGraph();
+    if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
+    recordCanvas = document.createElement("canvas");
+    recordCanvas.width = 1280;
+    recordCanvas.height = 480;
+    drawRecordFrame();
+    const canvasStream = recordCanvas.captureStream(30);
+    stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioDest.stream.getAudioTracks()]);
+  }
+
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: pickMimeType() });
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; }
+    const blob = new Blob(recordedChunks, { type: "video/webm" });
+    const url = URL.createObjectURL(blob);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `aijinro_rec_${mode}_${ts}.webm`;
+    a.textContent = `📥 録画ファイル (${mode === "self" ? "自分のカメラ" : "レイアウト全体"} / ${ts})`;
+    recDownloads.prepend(a);
+  };
+  mediaRecorder.start();
+  recBtn.textContent = "■ 録画停止";
+  recIndicator.style.display = "inline";
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+  recBtn.textContent = "● 録画開始";
+  recIndicator.style.display = "none";
+}
+
+// ---------- 結果コピー ----------
+function copyResults() {
+  const now = new Date().toLocaleString("ja-JP");
+  const slots = computeSlots().filter(Boolean);
+
+  let text = "=== AI人狼 通話テスト結果 ===\n";
+  text += `日時: ${now}\n`;
+  text += `参加者: ${slots.map((m) => m.name).join(", ")}\n\n`;
+
+  text += "[接続状態（全ペア）]\n";
+  for (const row of slots) {
+    for (const col of slots) {
+      if (row.id === col.id) continue;
+      const state = fullStatus[row.id]?.[col.id]?.state || "unknown";
+      text += `${row.name} → ${col.name}: ${stateIcon(state)}\n`;
+    }
+  }
+
+  text += "\n[自分の接続の統計]\n";
+  for (const [peerId, entry] of Object.entries(peers)) {
+    const name = members[peerId]?.name || peerId;
+    const s = entry.lastStats;
+    if (!s) { text += `${myName} → ${name}: 統計未取得\n`; continue; }
+    text += `${myName} → ${name}: 経路=${s.routeType}, ビットレート=${s.kbps}kbps, RTT=${s.rttMs ?? "-"}ms, パケットロス=${s.lossPct}%\n`;
+  }
+
+  navigator.clipboard.writeText(text).then(() => {
+    copyToast.style.display = "inline";
+    setTimeout(() => (copyToast.style.display = "none"), 2000);
+  });
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+</script>
+</body>
+</html>
