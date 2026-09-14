@@ -130,7 +130,7 @@
     <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
-    <button id="gateBtn">🔇 ノイズゲート: ON</button>
+    <button id="gateBtn">🔇 ノイズ抑制: ON</button>
   </header>
   <div id="joinError"></div>
   <main>
@@ -217,10 +217,15 @@ const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
 let recordCanvas = null;
 let recordLoopId = null;
 
-// マイクのノイズゲート（タイピング音などを、無音時に自動で絞って抑える）
-let noiseGateNode = null;
-let noiseGateModuleLoaded = false;
-let outgoingAudioTrack = null; // 送信・録画用（ゲート後）の音声トラック
+// マイクのノイズ抑制（RNNoise）。声とタイピング音を波形の特徴から区別して、
+// 発話中でもタイピング音だけを抑えられる（単純な音量ゲートでは発話中は抑制できないため）
+const RNNOISE_CDN_BASE = "https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.4.0";
+let rnnoiseModuleLoaded = false;
+let rnnoiseWasmBinary = null;
+let RnnoiseWorkletNodeClass = null;
+let passthroughGain = null;
+let suppressedGain = null;
+let outgoingAudioTrack = null; // 送信・録画用（ノイズ抑制後）の音声トラック
 let gateEnabled = true;
 
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
@@ -929,93 +934,76 @@ function stateIcon(state) {
   return "⬜";
 }
 
-// ---------- マイクのノイズゲート ----------
-// 入力レベルが閾値を下回っている間（＝話していない間）は出力をほぼ無音まで絞る。
-// タイピング音の多くは発話の合間に発生するため、この方式が効果的。
-const NOISE_GATE_WORKLET_SRC = `
-class NoiseGateProcessor extends AudioWorkletProcessor {
-  static get parameterDescriptors() {
-    return [
-      { name: "threshold", defaultValue: 0.02, minValue: 0, maxValue: 1 },
-      { name: "releaseMs", defaultValue: 150, minValue: 0, maxValue: 2000 },
-      { name: "enabled", defaultValue: 1, minValue: 0, maxValue: 1 }
-    ];
+// ---------- マイクのノイズ抑制（RNNoise） ----------
+// 音量ベースのゲートでは「発話中に乗るタイピング音」を除去できない
+// （声の子音とキークリックは波形の特徴が似ており、音量だけでは区別できないため）。
+// RNNoiseは声とノイズを学習済みモデルで区別するため、発話中でも効く。
+// @sapphi-red/web-noise-suppressor 経由でRNNoiseのWASM/AudioWorkletをCDNから読み込む。
+async function loadRnnoiseModule() {
+  if (!rnnoiseModuleLoaded) {
+    const { loadRnnoise, RnnoiseWorkletNode } = await import(`${RNNOISE_CDN_BASE}/dist/index.js`);
+    await audioCtx.audioWorklet.addModule(`${RNNOISE_CDN_BASE}/dist/rnnoise/workletProcessor.js`);
+    rnnoiseWasmBinary = await loadRnnoise({
+      url: `${RNNOISE_CDN_BASE}/dist/rnnoise.wasm`,
+      simdUrl: `${RNNOISE_CDN_BASE}/dist/rnnoise_simd.wasm`
+    });
+    RnnoiseWorkletNodeClass = RnnoiseWorkletNode;
+    rnnoiseModuleLoaded = true;
   }
-  constructor() {
-    super();
-    this.envelope = 0;
-    this.gateGain = 1;
-  }
-  process(inputs, outputs, parameters) {
-    const input = inputs[0];
-    const output = outputs[0];
-    if (!input || !input[0]) return true;
-    const enabled = parameters.enabled[0] >= 0.5;
-    if (!enabled) {
-      for (let ch = 0; ch < input.length; ch++) output[ch].set(input[ch]);
-      return true;
-    }
-    const threshold = parameters.threshold[0];
-    const releaseMs = parameters.releaseMs[0];
-    const releaseCoeff = Math.exp(-1 / (sampleRate * (releaseMs / 1000)));
-    const attackCoeff = Math.exp(-1 / (sampleRate * 0.005));
-    for (let ch = 0; ch < input.length; ch++) {
-      const inCh = input[ch];
-      const outCh = output[ch];
-      for (let i = 0; i < inCh.length; i++) {
-        const sample = inCh[i];
-        const abs = Math.abs(sample);
-        this.envelope = abs > this.envelope
-          ? attackCoeff * this.envelope + (1 - attackCoeff) * abs
-          : releaseCoeff * this.envelope + (1 - releaseCoeff) * abs;
-        const targetGain = this.envelope > threshold ? 1 : 0;
-        this.gateGain += (targetGain - this.gateGain) * 0.05;
-        outCh[i] = sample * this.gateGain;
-      }
-    }
-    return true;
-  }
+  return RnnoiseWorkletNodeClass;
 }
-registerProcessor("noise-gate-processor", NoiseGateProcessor);
-`;
 
 // originalStream: マイクの生ストリーム / recordingDest: 録画用ミックス先
-// 戻り値: 送信・録画に使うゲート後の音声トラック（失敗時は生トラックにフォールバック）
+// 戻り値: 送信・録画に使うノイズ抑制後の音声トラック（失敗時は生トラックにフォールバック）
 async function setupNoiseGate(originalStream, recordingDest) {
   const rawTrack = originalStream.getAudioTracks()[0];
   if (!rawTrack) return null;
   try {
     ensureAudioGraph();
     if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
-    if (!noiseGateModuleLoaded) {
-      const blob = new Blob([NOISE_GATE_WORKLET_SRC], { type: "application/javascript" });
-      await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
-      noiseGateModuleLoaded = true;
-    }
+    const RnnoiseWorkletNode = await loadRnnoiseModule();
+
     const micSource = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
-    noiseGateNode = new AudioWorkletNode(audioCtx, "noise-gate-processor");
-    noiseGateNode.parameters.get("enabled").value = gateEnabled ? 1 : 0;
+    const rnnoiseNode = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
+
+    // ON/OFF切り替え用: 生音声とノイズ抑制後の音声を両方常時流しておき、
+    // ゲインで混ぜる比率を切り替えるだけにする（ノード再接続によるプツ音を避けるため）
+    passthroughGain = audioCtx.createGain();
+    suppressedGain = audioCtx.createGain();
+    passthroughGain.gain.value = gateEnabled ? 0 : 1;
+    suppressedGain.gain.value = gateEnabled ? 1 : 0;
+
+    micSource.connect(passthroughGain);
+    micSource.connect(rnnoiseNode).connect(suppressedGain);
+
     const sendDest = audioCtx.createMediaStreamDestination();
-    micSource.connect(noiseGateNode);
-    noiseGateNode.connect(sendDest);
-    if (recordingDest) noiseGateNode.connect(recordingDest);
+    passthroughGain.connect(sendDest);
+    suppressedGain.connect(sendDest);
+    if (recordingDest) {
+      passthroughGain.connect(recordingDest);
+      suppressedGain.connect(recordingDest);
+    }
     return sendDest.stream.getAudioTracks()[0];
   } catch (e) {
-    console.warn("ノイズゲートの初期化に失敗したため、通常のマイク音声を使用します", e);
+    console.warn("ノイズ抑制(RNNoise)の初期化に失敗したため、通常のマイク音声を使用します", e);
     return rawTrack;
   }
 }
 
 function toggleNoiseGate() {
   gateEnabled = !gateEnabled;
-  if (noiseGateNode) noiseGateNode.parameters.get("enabled").value = gateEnabled ? 1 : 0;
-  gateBtn.textContent = gateEnabled ? "🔇 ノイズゲート: ON" : "🔇 ノイズゲート: OFF";
+  if (passthroughGain && suppressedGain && audioCtx) {
+    const now = audioCtx.currentTime;
+    passthroughGain.gain.setTargetAtTime(gateEnabled ? 0 : 1, now, 0.05);
+    suppressedGain.gain.setTargetAtTime(gateEnabled ? 1 : 0, now, 0.05);
+  }
+  gateBtn.textContent = gateEnabled ? "🔇 ノイズ抑制: ON" : "🔇 ノイズ抑制: OFF";
 }
 
 // ---------- 録画: 音声ミキシング ----------
 function ensureAudioGraph() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
     audioDest = audioCtx.createMediaStreamDestination();
   }
 }
