@@ -265,9 +265,13 @@ const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
 
+// 表示名はこの端末に保存し、次回以降は自動で入力欄に復元する
+nameInput.value = localStorage.getItem("aiJinroDisplayName") || "";
+
 joinBtn.addEventListener("click", () => {
   const name = nameInput.value.trim();
   if (!name) { entryError.textContent = "表示名を入力してください"; return; }
+  localStorage.setItem("aiJinroDisplayName", name);
   joinRoom(name);
 });
 muteBtn.addEventListener("click", toggleGlobalMute);
