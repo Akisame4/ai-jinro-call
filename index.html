@@ -89,12 +89,18 @@
     padding: 16px; margin-bottom: 16px;
   }
   section.panel h2 { margin-top: 0; font-size: 16px; }
-  table#controlsTable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table#controlsTable { border-collapse: collapse; width: 100%; font-size: 13px; table-layout: fixed; }
   table#controlsTable th, table#controlsTable td {
-    border: 1px solid #444; padding: 6px 8px; text-align: left;
+    border: 1px solid #444; padding: 6px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis;
   }
   table#controlsTable th { background: #2c2c2c; }
+  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 34%; }
+  table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 22%; }
   table#controlsTable td.ctrlCell { text-align: center; white-space: nowrap; }
+  table#controlsTable .ctrlBtn { width: 100%; min-width: 0; }
+  table#controlsTable tr[draggable="true"] { cursor: grab; }
+  table#controlsTable tr.dragOver td { box-shadow: inset 0 0 0 2px #3a6ea5; }
+  table#controlsTable .dragHandle { color: #777; margin-right: 6px; }
   #copyBtn { margin-top: 8px; }
   #copyToast {
     display: inline-block; margin-left: 10px; color: #8dff8d; font-size: 13px;
@@ -218,6 +224,10 @@ const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 95;
 let tilePositions = loadPositions();
 
+// 参加者の並び順（操作パネルでのドラッグ入れ替え用）。peerIdはセッションごとに変わるため保存はしない。
+// 未指定の参加者は入室順で末尾に追加される。
+let customOrder = [];
+
 // ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
 const locallyMutedPeers = new Set();      // 個別に音声を消している相手
 const locallyHiddenVideoPeers = new Set(); // 個別に映像を隠している相手
@@ -263,6 +273,37 @@ controlsTable.addEventListener("click", (e) => {
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
   else if (action === "hide") toggleHideFor(id);
+});
+
+// 参加者行のドラッグ&ドロップで並び替え（＝映像タイルの位置入れ替え）
+let dragSourceId = null;
+controlsTable.addEventListener("dragstart", (e) => {
+  const tr = e.target.closest("tr[draggable='true']");
+  if (!tr) return;
+  dragSourceId = tr.dataset.id;
+  e.dataTransfer.effectAllowed = "move";
+});
+controlsTable.addEventListener("dragover", (e) => {
+  const tr = e.target.closest("tr[draggable='true']");
+  if (!tr) return;
+  e.preventDefault();
+  tr.classList.add("dragOver");
+});
+controlsTable.addEventListener("dragleave", (e) => {
+  const tr = e.target.closest("tr[draggable='true']");
+  if (tr) tr.classList.remove("dragOver");
+});
+controlsTable.addEventListener("drop", (e) => {
+  const tr = e.target.closest("tr[draggable='true']");
+  if (!tr) return;
+  e.preventDefault();
+  tr.classList.remove("dragOver");
+  if (dragSourceId && tr.dataset.id !== dragSourceId) swapOrder(dragSourceId, tr.dataset.id);
+  dragSourceId = null;
+});
+controlsTable.addEventListener("dragend", () => {
+  controlsTable.querySelectorAll("tr.dragOver").forEach((tr) => tr.classList.remove("dragOver"));
+  dragSourceId = null;
 });
 
 function toggleGridFullscreen() {
@@ -634,17 +675,39 @@ function defaultPos(index) {
 function resetLayout() {
   tilePositions = {};
   savePositions();
-  syncVideoTiles(computeSlots());
+  customOrder = [];
+  const slots = computeSlots();
+  syncVideoTiles(slots);
+  renderControls(slots);
 }
 
 function computeSlots() {
-  const sorted = Object.entries(members)
-    .filter(([, v]) => v && v.joinedAt != null)
-    .sort((a, b) => a[1].joinedAt - b[1].joinedAt)
-    .map(([id, v]) => ({ id, name: v.name, sharing: !!v.sharing }));
+  const presentIds = Object.keys(members).filter((id) => members[id]?.joinedAt != null);
+  const byJoin = presentIds.slice().sort((a, b) => members[a].joinedAt - members[b].joinedAt);
+
+  // customOrder に含まれる現存メンバーを先に、それ以外（新規参加者など）は入室順で末尾に追加
+  const orderedIds = customOrder.filter((id) => presentIds.includes(id));
+  for (const id of byJoin) {
+    if (!orderedIds.includes(id)) orderedIds.push(id);
+  }
+
+  const sorted = orderedIds.map((id) => ({ id, name: members[id].name, sharing: !!members[id].sharing }));
   const slots = sorted.slice(0, MAX_PEERS);
   while (slots.length < MAX_PEERS) slots.push(null);
   return slots;
+}
+
+function swapOrder(idA, idB) {
+  if (idA === idB) return;
+  const slots = computeSlots();
+  const order = slots.filter(Boolean).map((s) => s.id);
+  const iA = order.indexOf(idA), iB = order.indexOf(idB);
+  if (iA === -1 || iB === -1) return;
+  [order[iA], order[iB]] = [order[iB], order[iA]];
+  customOrder = order;
+  const newSlots = computeSlots();
+  syncVideoTiles(newSlots);
+  renderControls(newSlots);
 }
 
 function syncVideoTiles(slots) {
@@ -791,6 +854,7 @@ function toggleGlobalMute() {
 }
 
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
+// 行をドラッグして入れ替えると、対応する映像タイルの位置も入れ替わる
 function renderControls(slots) {
   let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>表示</th></tr>";
   for (const s of slots) {
@@ -803,8 +867,8 @@ function renderControls(slots) {
       ? (localStream?.getVideoTracks()[0]?.enabled ?? true)
       : !locallyHiddenVideoPeers.has(s.id);
     const hidden = hiddenTiles.has(s.id);
-    html += `<tr>
-      <td>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
+    html += `<tr draggable="true" data-id="${s.id}">
+      <td><span class="dragHandle">⠿</span>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button></td>
       <td class="ctrlCell">${isSelf ? "" : `<button class="small ctrlBtn" data-action="hide" data-id="${s.id}">${hidden ? "表示に戻す" : "非表示"}</button>`}</td>
