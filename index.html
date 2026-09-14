@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI人狼 通話テスト</title>
+<title>遊ぶところ撮影ツール</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -62,7 +62,8 @@
   }
   .tile {
     background: #000; border-radius: 6px; overflow: hidden; position: absolute;
-    border: 1px solid #333; width: 300px; cursor: grab; user-select: none; touch-action: none;
+    border: 1px solid #333; cursor: grab; user-select: none; touch-action: none;
+    line-height: 0;
   }
   .tile.dragging { cursor: grabbing; z-index: 20; box-shadow: 0 0 0 2px #3a6ea5; }
   .tile video {
@@ -72,7 +73,9 @@
   .tile.mirror video { transform: scaleX(-1); }
   .tile video.videoHidden { visibility: hidden; }
   .tile .statsLine {
-    padding: 2px 8px 6px; font-size: 11px; color: #9ad0ff; background: #1a1a1a;
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+    padding: 2px 6px; font-size: 11px; color: #9ad0ff; background: rgba(0,0,0,0.45);
+    pointer-events: none;
   }
   .tile .resizeHandle {
     position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
@@ -110,7 +113,7 @@
 <body>
 
 <div id="entryScreen">
-  <h2>AI人狼 通話テスト</h2>
+  <h2>遊ぶところ撮影ツール</h2>
   <input type="text" id="nameInput" placeholder="表示名を入力">
   <div><button id="joinBtn">入室</button></div>
   <div id="entryError"></div>
@@ -118,7 +121,7 @@
 
 <div id="callScreen" style="display:none;">
   <header>
-    <h1>AI人狼 通話テスト</h1>
+    <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
   </header>
@@ -208,8 +211,11 @@ let recordCanvas = null;
 let recordLoopId = null;
 
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
-const TILE_W = 300, ROW_H = 230, GAP = 14, COLS = 3;
-const MIN_TILE_W = 120, MAX_TILE_W = 900;
+// 位置・サイズはすべて配置エリアに対する%で保持する。
+// フルスクリーン化などで配置エリアの実サイズが変わっても、タイルは自動的に追従して拡大縮小される。
+const COLS = 3;
+const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
+const MIN_TILE_PCT = 10, MAX_TILE_PCT = 95;
 let tilePositions = loadPositions();
 
 // ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
@@ -615,15 +621,15 @@ function stopScreenShare() {
 
 // ---------- UI: 映像グリッド（自由配置） ----------
 function loadPositions() {
-  try { return JSON.parse(localStorage.getItem("aiJinroTilePositions") || "{}"); }
+  try { return JSON.parse(localStorage.getItem("aiJinroTilePositionsPct") || "{}"); }
   catch (e) { return {}; }
 }
 function savePositions() {
-  localStorage.setItem("aiJinroTilePositions", JSON.stringify(tilePositions));
+  localStorage.setItem("aiJinroTilePositionsPct", JSON.stringify(tilePositions));
 }
 function defaultPos(index) {
   const col = index % COLS, row = Math.floor(index / COLS);
-  return { left: col * (TILE_W + GAP), top: row * (ROW_H + GAP), width: TILE_W };
+  return { left: col * (TILE_W_PCT + COL_GAP_PCT), top: row * ROW_TOP_PCT, width: TILE_W_PCT };
 }
 function resetLayout() {
   tilePositions = {};
@@ -651,9 +657,9 @@ function syncVideoTiles(slots) {
 
 function positionTile(tile, idx) {
   const pos = tilePositions[idx] || defaultPos(idx);
-  tile.style.left = pos.left + "px";
-  tile.style.top = pos.top + "px";
-  tile.style.width = (pos.width || TILE_W) + "px";
+  tile.style.left = pos.left + "%";
+  tile.style.top = pos.top + "%";
+  tile.style.width = (pos.width || TILE_W_PCT) + "%";
   tile.dataset.slot = String(idx);
 }
 
@@ -663,34 +669,36 @@ function saveTileRect(tile) {
   tilePositions[idx] = {
     left: parseFloat(tile.style.left) || 0,
     top: parseFloat(tile.style.top) || 0,
-    width: parseFloat(tile.style.width) || TILE_W
+    width: parseFloat(tile.style.width) || TILE_W_PCT
   };
   savePositions();
 }
 
 function makeDraggable(tile) {
-  let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
+  let dragging = false, startX = 0, startY = 0, origLeftPct = 0, origTopPct = 0, containerW = 0, containerH = 0;
 
   tile.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".resizeHandle")) return;
     dragging = true;
     tile.classList.add("dragging");
+    const rect = videoGrid.getBoundingClientRect();
+    containerW = rect.width; containerH = rect.height;
     startX = e.clientX; startY = e.clientY;
-    origX = parseFloat(tile.style.left) || 0;
-    origY = parseFloat(tile.style.top) || 0;
+    origLeftPct = parseFloat(tile.style.left) || 0;
+    origTopPct = parseFloat(tile.style.top) || 0;
     tile.setPointerCapture(e.pointerId);
   });
 
   tile.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - startX, dy = e.clientY - startY;
-    let newX = origX + dx, newY = origY + dy;
-    const maxX = Math.max(0, videoGrid.clientWidth - tile.offsetWidth);
-    const maxY = Math.max(0, videoGrid.clientHeight - tile.offsetHeight);
-    newX = Math.max(0, Math.min(maxX, newX));
-    newY = Math.max(0, Math.min(maxY, newY));
-    tile.style.left = newX + "px";
-    tile.style.top = newY + "px";
+    if (!dragging || !containerW || !containerH) return;
+    const dxPct = ((e.clientX - startX) / containerW) * 100;
+    const dyPct = ((e.clientY - startY) / containerH) * 100;
+    const tileWPct = parseFloat(tile.style.width) || TILE_W_PCT;
+    const tileHPct = (tile.offsetHeight / containerH) * 100;
+    let newLeft = Math.max(0, Math.min(100 - tileWPct, origLeftPct + dxPct));
+    let newTop = Math.max(0, Math.min(100 - tileHPct, origTopPct + dyPct));
+    tile.style.left = newLeft + "%";
+    tile.style.top = newTop + "%";
   });
 
   const endDrag = (e) => {
@@ -705,22 +713,25 @@ function makeDraggable(tile) {
 
 function makeResizable(tile) {
   const handle = tile.querySelector(".resizeHandle");
-  let resizing = false, startX = 0, startW = 0;
+  let resizing = false, startX = 0, startWPct = 0, containerW = 0;
 
   handle.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
     resizing = true;
+    const rect = videoGrid.getBoundingClientRect();
+    containerW = rect.width;
     startX = e.clientX;
-    startW = tile.offsetWidth;
+    startWPct = parseFloat(tile.style.width) || TILE_W_PCT;
     handle.setPointerCapture(e.pointerId);
   });
 
   handle.addEventListener("pointermove", (e) => {
-    if (!resizing) return;
-    const dx = e.clientX - startX;
-    const maxW = Math.max(MIN_TILE_W, videoGrid.clientWidth - (parseFloat(tile.style.left) || 0));
-    const newW = Math.max(MIN_TILE_W, Math.min(MAX_TILE_W, maxW, startW + dx));
-    tile.style.width = newW + "px";
+    if (!resizing || !containerW) return;
+    const dxPct = ((e.clientX - startX) / containerW) * 100;
+    const leftPct = parseFloat(tile.style.left) || 0;
+    const maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
+    const newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
+    tile.style.width = newW + "%";
   });
 
   const endResize = (e) => {
@@ -930,7 +941,7 @@ async function startRecording() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const a = document.createElement("a");
     a.href = url;
-    a.download = `aijinro_rec_${mode}_${ts}.webm`;
+    a.download = `asobudokoro_rec_${mode}_${ts}.webm`;
     a.textContent = `📥 録画ファイル (${mode === "self" ? "自分のカメラ" : "レイアウト全体"} / ${ts})`;
     recDownloads.prepend(a);
   };
@@ -950,7 +961,7 @@ function copyResults() {
   const now = new Date().toLocaleString("ja-JP");
   const slots = computeSlots().filter(Boolean);
 
-  let text = "=== AI人狼 通話テスト結果 ===\n";
+  let text = "=== 遊ぶところ撮影ツール 結果 ===\n";
   text += `日時: ${now}\n`;
   text += `参加者: ${slots.map((m) => m.name).join(", ")}\n\n`;
 
