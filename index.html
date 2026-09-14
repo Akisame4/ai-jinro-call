@@ -70,13 +70,22 @@
     pointer-events: none;
   }
   .tile.mirror video { transform: scaleX(-1); }
-  .tile .label {
-    padding: 4px 8px; font-size: 13px; background: #1a1a1a; display: flex;
-    justify-content: space-between; align-items: center;
-  }
   .tile .statsLine {
     padding: 2px 8px 6px; font-size: 11px; color: #9ad0ff; background: #1a1a1a;
   }
+  .tile .fsBtn {
+    position: absolute; top: 4px; right: 4px; z-index: 5;
+    background: rgba(0,0,0,0.55); border: none; color: #fff;
+    width: 26px; height: 26px; border-radius: 4px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .tile .fsBtn:hover { background: rgba(0,0,0,0.8); }
+  .tile:fullscreen {
+    width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important;
+    background: #000; display: flex; flex-direction: column; justify-content: center;
+  }
+  .tile:fullscreen video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
+  .tile:fullscreen .statsLine { position: absolute; bottom: 0; left: 0; right: 0; }
   section.panel {
     background: #232323; border: 1px solid #3a3a3a; border-radius: 8px;
     padding: 16px; margin-bottom: 16px;
@@ -130,7 +139,7 @@
     <div id="videoGrid"></div>
 
     <section class="panel">
-      <h2>接続マトリクス</h2>
+      <h2>接続マトリクス <button class="small" id="toggleMatrixBtn">非表示</button></h2>
       <table id="matrix"></table>
     </section>
 
@@ -224,6 +233,7 @@ const resetLayoutBtn = document.getElementById("resetLayoutBtn");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
+const toggleMatrixBtn = document.getElementById("toggleMatrixBtn");
 
 joinBtn.addEventListener("click", () => {
   const name = nameInput.value.trim();
@@ -234,10 +244,22 @@ muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
+toggleMatrixBtn.addEventListener("click", toggleMatrixVisibility);
 recBtn.addEventListener("click", () => {
   if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
   else stopRecording();
 });
+
+// ---------- 接続マトリクス 表示/非表示 ----------
+let matrixVisible = localStorage.getItem("aiJinroMatrixVisible") !== "0";
+matrixTable.style.display = matrixVisible ? "" : "none";
+toggleMatrixBtn.textContent = matrixVisible ? "非表示" : "表示";
+function toggleMatrixVisibility() {
+  matrixVisible = !matrixVisible;
+  matrixTable.style.display = matrixVisible ? "" : "none";
+  toggleMatrixBtn.textContent = matrixVisible ? "非表示" : "表示";
+  localStorage.setItem("aiJinroMatrixVisible", matrixVisible ? "1" : "0");
+}
 
 // ---------- 入室 ----------
 async function joinRoom(name) {
@@ -316,7 +338,6 @@ function listenMembers() {
 
     const slots = computeSlots();
     renderMatrix(slots);
-    updateTileLabels();
     syncVideoTiles(slots);
   });
 }
@@ -634,6 +655,8 @@ function makeDraggable(tile) {
   let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
 
   tile.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".fsBtn")) return;
+    if (document.fullscreenElement === tile) return;
     dragging = true;
     tile.classList.add("dragging");
     startX = e.clientX; startY = e.clientY;
@@ -675,7 +698,7 @@ function createVideoTile(peerId, name, isSelf) {
   tile.id = `tile-${peerId}`;
   tile.innerHTML = `
     <video id="video-${peerId}" autoplay playsinline ${isSelf ? "muted" : ""}></video>
-    <div class="label"><span id="name-${peerId}">${escapeHtml(name)}</span></div>
+    <button class="fsBtn" type="button" title="フルスクリーン">⛶</button>
     <div class="statsLine" id="stats-${peerId}"></div>
   `;
   const idx = document.querySelectorAll(".tile").length;
@@ -683,7 +706,18 @@ function createVideoTile(peerId, name, isSelf) {
   tile.style.top = defaultPos(idx).top + "px";
   videoGrid.appendChild(tile);
   makeDraggable(tile);
+  const fsBtn = tile.querySelector(".fsBtn");
+  fsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleTileFullscreen(tile); });
+  tile.querySelector("video").addEventListener("dblclick", () => toggleTileFullscreen(tile));
   syncVideoTiles(computeSlots());
+}
+
+function toggleTileFullscreen(tile) {
+  if (document.fullscreenElement === tile) {
+    document.exitFullscreen().catch(() => {});
+  } else {
+    tile.requestFullscreen().catch(() => {});
+  }
 }
 
 function removeVideoTile(peerId) {
@@ -696,13 +730,6 @@ function attachStreamToTile(peerId, stream) {
   if (video) {
     video.srcObject = stream;
     if (peerId !== myId) video.muted = globalMuted;
-  }
-}
-
-function updateTileLabels() {
-  for (const id of Object.keys(members)) {
-    const label = document.getElementById(`name-${id}`);
-    if (label) label.textContent = members[id].name + (members[id].sharing ? " 🖥共有中" : "");
   }
 }
 
