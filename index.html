@@ -130,6 +130,7 @@
     <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
+    <button id="gateBtn">🔇 ノイズゲート: ON</button>
   </header>
   <div id="joinError"></div>
   <main>
@@ -216,6 +217,12 @@ const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
 let recordCanvas = null;
 let recordLoopId = null;
 
+// マイクのノイズゲート（タイピング音などを、無音時に自動で絞って抑える）
+let noiseGateNode = null;
+let noiseGateModuleLoaded = false;
+let outgoingAudioTrack = null; // 送信・録画用（ゲート後）の音声トラック
+let gateEnabled = true;
+
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 // 位置・サイズはすべて配置エリアに対する%で保持する。
 // フルスクリーン化などで配置エリアの実サイズが変わっても、タイルは自動的に追従して拡大縮小される。
@@ -244,6 +251,7 @@ const videoGrid = document.getElementById("videoGrid");
 const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
+const gateBtn = document.getElementById("gateBtn");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -259,6 +267,7 @@ joinBtn.addEventListener("click", () => {
 });
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
+gateBtn.addEventListener("click", toggleNoiseGate);
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
@@ -330,7 +339,10 @@ async function joinRoom(name) {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
-      audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }
+      audio: {
+        noiseSuppression: true, echoCancellation: true, autoGainControl: true,
+        voiceIsolation: true // 対応環境のみ有効。非対応ブラウザでは無視される
+      }
     });
   } catch (err) {
     entryError.textContent = "カメラ・マイクの取得に失敗しました: " + err.message;
@@ -345,7 +357,7 @@ async function joinRoom(name) {
   createVideoTile(myId, myName, true);
   attachStreamToTile(myId, localStream);
   ensureAudioGraph();
-  connectAudioSource(myId, localStream);
+  outgoingAudioTrack = await setupNoiseGate(localStream, audioDest);
 
   const myMemberRef = ref(db, `rooms/${ROOM_ID}/members/${myId}`);
   await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false });
@@ -487,14 +499,16 @@ function createPeerConnection(peerId, isInitiator) {
   };
   peers[peerId] = entry;
 
-  localStream.getTracks().forEach((track) => {
-    const sender = pc.addTrack(track, localStream);
-    if (track.kind === "video") {
-      entry.videoSender = sender;
-      applyBitrate(sender, isSharing ? SCREEN_MAX_BITRATE : VIDEO_MAX_BITRATE);
-      if (isSharing && screenStream) sender.replaceTrack(screenStream.getVideoTracks()[0]);
-    }
-  });
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    const videoSender = pc.addTrack(videoTrack, localStream);
+    entry.videoSender = videoSender;
+    applyBitrate(videoSender, isSharing ? SCREEN_MAX_BITRATE : VIDEO_MAX_BITRATE);
+    if (isSharing && screenStream) videoSender.replaceTrack(screenStream.getVideoTracks()[0]);
+  }
+  // マイクはノイズゲート後の音声を送信する（未対応時は生のマイク音声にフォールバック）
+  const audioTrackToSend = outgoingAudioTrack || localStream.getAudioTracks()[0];
+  if (audioTrackToSend) pc.addTrack(audioTrackToSend, localStream);
 
   pc.onicecandidate = (e) => {
     if (e.candidate) sendSignal(peerId, "candidate", e.candidate.toJSON());
@@ -913,6 +927,89 @@ function stateIcon(state) {
   if (state === "connecting" || state === "new") return "🟡 connecting";
   if (state === "failed" || state === "disconnected" || state === "closed") return "🔴 " + state;
   return "⬜";
+}
+
+// ---------- マイクのノイズゲート ----------
+// 入力レベルが閾値を下回っている間（＝話していない間）は出力をほぼ無音まで絞る。
+// タイピング音の多くは発話の合間に発生するため、この方式が効果的。
+const NOISE_GATE_WORKLET_SRC = `
+class NoiseGateProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: "threshold", defaultValue: 0.02, minValue: 0, maxValue: 1 },
+      { name: "releaseMs", defaultValue: 150, minValue: 0, maxValue: 2000 },
+      { name: "enabled", defaultValue: 1, minValue: 0, maxValue: 1 }
+    ];
+  }
+  constructor() {
+    super();
+    this.envelope = 0;
+    this.gateGain = 1;
+  }
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    const output = outputs[0];
+    if (!input || !input[0]) return true;
+    const enabled = parameters.enabled[0] >= 0.5;
+    if (!enabled) {
+      for (let ch = 0; ch < input.length; ch++) output[ch].set(input[ch]);
+      return true;
+    }
+    const threshold = parameters.threshold[0];
+    const releaseMs = parameters.releaseMs[0];
+    const releaseCoeff = Math.exp(-1 / (sampleRate * (releaseMs / 1000)));
+    const attackCoeff = Math.exp(-1 / (sampleRate * 0.005));
+    for (let ch = 0; ch < input.length; ch++) {
+      const inCh = input[ch];
+      const outCh = output[ch];
+      for (let i = 0; i < inCh.length; i++) {
+        const sample = inCh[i];
+        const abs = Math.abs(sample);
+        this.envelope = abs > this.envelope
+          ? attackCoeff * this.envelope + (1 - attackCoeff) * abs
+          : releaseCoeff * this.envelope + (1 - releaseCoeff) * abs;
+        const targetGain = this.envelope > threshold ? 1 : 0;
+        this.gateGain += (targetGain - this.gateGain) * 0.05;
+        outCh[i] = sample * this.gateGain;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("noise-gate-processor", NoiseGateProcessor);
+`;
+
+// originalStream: マイクの生ストリーム / recordingDest: 録画用ミックス先
+// 戻り値: 送信・録画に使うゲート後の音声トラック（失敗時は生トラックにフォールバック）
+async function setupNoiseGate(originalStream, recordingDest) {
+  const rawTrack = originalStream.getAudioTracks()[0];
+  if (!rawTrack) return null;
+  try {
+    ensureAudioGraph();
+    if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
+    if (!noiseGateModuleLoaded) {
+      const blob = new Blob([NOISE_GATE_WORKLET_SRC], { type: "application/javascript" });
+      await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+      noiseGateModuleLoaded = true;
+    }
+    const micSource = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+    noiseGateNode = new AudioWorkletNode(audioCtx, "noise-gate-processor");
+    noiseGateNode.parameters.get("enabled").value = gateEnabled ? 1 : 0;
+    const sendDest = audioCtx.createMediaStreamDestination();
+    micSource.connect(noiseGateNode);
+    noiseGateNode.connect(sendDest);
+    if (recordingDest) noiseGateNode.connect(recordingDest);
+    return sendDest.stream.getAudioTracks()[0];
+  } catch (e) {
+    console.warn("ノイズゲートの初期化に失敗したため、通常のマイク音声を使用します", e);
+    return rawTrack;
+  }
+}
+
+function toggleNoiseGate() {
+  gateEnabled = !gateEnabled;
+  if (noiseGateNode) noiseGateNode.parameters.get("enabled").value = gateEnabled ? 1 : 0;
+  gateBtn.textContent = gateEnabled ? "🔇 ノイズゲート: ON" : "🔇 ノイズゲート: OFF";
 }
 
 // ---------- 録画: 音声ミキシング ----------
