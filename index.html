@@ -49,8 +49,18 @@
   main { padding: 16px; }
   #videoGridBar {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 8px; font-size: 12px; color: #999;
+    margin-bottom: 8px; font-size: 12px; color: #999; flex-wrap: wrap; gap: 8px 16px;
   }
+  #videoGridBar .rightControls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #templateSelect {
+    background: #111; color: #fff; border: 1px solid #555; border-radius: 4px;
+    padding: 4px 6px; font-size: 12px;
+  }
+  #templateNameInput {
+    background: #111; color: #fff; border: 1px solid #555; border-radius: 4px;
+    padding: 4px 6px; font-size: 12px; width: 130px;
+  }
+  #templateStatus { color: #8dff8d; font-size: 12px; margin-left: 2px; }
   #videoGrid {
     position: relative;
     width: 100%;
@@ -136,7 +146,12 @@
   <main>
     <div id="videoGridBar">
       <span>映像タイルはドラッグで移動・右下の■でサイズ変更できます（この端末のみに保存）</span>
-      <span>
+      <span class="rightControls">
+        <select id="templateSelect"></select>
+        <input type="text" id="templateNameInput" placeholder="テンプレート名">
+        <button class="small" id="saveTemplateBtn">この配置を保存</button>
+        <button class="small" id="deleteTemplateBtn">削除</button>
+        <span id="templateStatus"></span>
         <button class="small" id="resetLayoutBtn">配置をリセット</button>
         <button class="small" id="fullscreenGridBtn">⛶ 配置エリアをフルスクリーン</button>
       </span>
@@ -236,6 +251,18 @@ const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 100;
 let tilePositions = loadPositions();
 
+// レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
+const BUILTIN_TEMPLATES = {
+  "6人グリッド（初期配置）": {},
+  "4人グリッド（2×2）": {
+    0: { left: 0, top: 0, width: 50 },
+    1: { left: 50, top: 0, width: 50 },
+    2: { left: 0, top: 50, width: 50 },
+    3: { left: 50, top: 50, width: 50 }
+  }
+};
+let templates = loadTemplates();
+
 // 参加者の並び順（操作パネルでのドラッグ入れ替え用）。peerIdはセッションごとに変わるため保存はしない。
 // 未指定の参加者は入室順で末尾に追加される。
 let customOrder = [];
@@ -264,6 +291,11 @@ const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
+const templateSelect = document.getElementById("templateSelect");
+const templateNameInput = document.getElementById("templateNameInput");
+const saveTemplateBtn = document.getElementById("saveTemplateBtn");
+const deleteTemplateBtn = document.getElementById("deleteTemplateBtn");
+const templateStatus = document.getElementById("templateStatus");
 
 // 表示名はこの端末に保存し、次回以降は自動で入力欄に復元する
 nameInput.value = localStorage.getItem("aiJinroDisplayName") || "";
@@ -280,6 +312,10 @@ gateBtn.addEventListener("click", toggleNoiseGate);
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
+templateSelect.addEventListener("change", applySelectedTemplate);
+saveTemplateBtn.addEventListener("click", saveCurrentAsTemplate);
+deleteTemplateBtn.addEventListener("click", deleteSelectedTemplate);
+renderTemplateOptions();
 recBtn.addEventListener("click", () => {
   if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
   else stopRecording();
@@ -702,6 +738,72 @@ function resetLayout() {
   const slots = computeSlots();
   syncVideoTiles(slots);
   renderControls(slots);
+}
+
+// ---------- レイアウトテンプレート ----------
+function loadTemplates() {
+  try { return JSON.parse(localStorage.getItem("aiJinroLayoutTemplates") || "{}"); }
+  catch (e) { return {}; }
+}
+function saveTemplatesStorage() {
+  localStorage.setItem("aiJinroLayoutTemplates", JSON.stringify(templates));
+}
+
+function renderTemplateOptions(selected) {
+  const builtinNames = Object.keys(BUILTIN_TEMPLATES);
+  const customNames = Object.keys(templates);
+  let html = '<option value="">レイアウトテンプレート...</option>';
+  if (builtinNames.length) {
+    html += `<optgroup label="既定">${builtinNames.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("")}</optgroup>`;
+  }
+  if (customNames.length) {
+    html += `<optgroup label="保存済み">${customNames.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("")}</optgroup>`;
+  }
+  templateSelect.innerHTML = html;
+  if (selected) templateSelect.value = selected;
+}
+
+function showTemplateStatus(msg) {
+  templateStatus.textContent = msg;
+  setTimeout(() => { templateStatus.textContent = ""; }, 2000);
+}
+
+function applySelectedTemplate() {
+  const name = templateSelect.value;
+  if (!name) return;
+  const tpl = Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name) ? BUILTIN_TEMPLATES[name] : templates[name];
+  if (!tpl) return;
+  tilePositions = JSON.parse(JSON.stringify(tpl));
+  savePositions();
+  syncVideoTiles(computeSlots());
+  showTemplateStatus(`「${name}」を適用しました`);
+}
+
+function saveCurrentAsTemplate() {
+  const name = templateNameInput.value.trim();
+  if (!name) { showTemplateStatus("テンプレート名を入力してください"); return; }
+  if (Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name)) {
+    showTemplateStatus("既定テンプレートと同じ名前は使えません");
+    return;
+  }
+  templates[name] = JSON.parse(JSON.stringify(tilePositions));
+  saveTemplatesStorage();
+  renderTemplateOptions(name);
+  templateNameInput.value = "";
+  showTemplateStatus(`「${name}」として保存しました`);
+}
+
+function deleteSelectedTemplate() {
+  const name = templateSelect.value;
+  if (!name) return;
+  if (Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name)) {
+    showTemplateStatus("既定テンプレートは削除できません");
+    return;
+  }
+  delete templates[name];
+  saveTemplatesStorage();
+  renderTemplateOptions();
+  showTemplateStatus(`「${name}」を削除しました`);
 }
 
 function computeSlots() {
