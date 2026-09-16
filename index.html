@@ -174,6 +174,7 @@
       <div id="levelMeterMark"></div>
     </div>
     <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください</span>
+    <span id="gateWarning" style="display:none; color:#ff8080;"></span>
   </div>
   <main>
     <div id="videoGridBar">
@@ -279,8 +280,14 @@ let gateThresholdDb = -25; // ゲートが開く音量のしきい値（dB）。
 const GATE_CLOSE_OFFSET_DB = 5; // ヒステリシス用（閉じる側は少し低めにする）
 const GATE_HOLD_MS = 100;
 let gateAnalyser = null;
-let meterRafId = null;
+let rawAnalyser = null;
+let meterIntervalId = null;
+let healthCheckTimer = null;
+let rawMaxRms = 0, processedMaxRms = 0;
 const METER_MIN_DB = -50, METER_MAX_DB = 0;
+const HEALTH_CHECK_MS = 4000;
+const RAW_ACTIVE_RMS = 0.01;       // 生マイクが「明らかに音を拾っている」とみなすレベル
+const PROCESSED_DEAD_RMS = 0.0015; // 処理後がほぼ無音とみなすレベル
 
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 // 位置・サイズはすべて配置エリアに対する%で保持する。
@@ -327,6 +334,7 @@ const gateThresholdSlider = document.getElementById("gateThresholdSlider");
 const gateThresholdValue = document.getElementById("gateThresholdValue");
 const levelMeterFill = document.getElementById("levelMeterFill");
 const levelMeterMark = document.getElementById("levelMeterMark");
+const gateWarning = document.getElementById("gateWarning");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -351,7 +359,10 @@ joinBtn.addEventListener("click", () => {
 });
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
-gateBtn.addEventListener("click", toggleNoiseGate);
+gateBtn.addEventListener("click", () => {
+  gateWarning.style.display = "none";
+  toggleNoiseGate();
+});
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -437,10 +448,7 @@ async function joinRoom(name) {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
-      audio: {
-        noiseSuppression: true, echoCancellation: true, autoGainControl: true,
-        voiceIsolation: true // 対応環境のみ有効。非対応ブラウザでは無視される
-      }
+      audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }
     });
   } catch (err) {
     entryError.textContent = "カメラ・マイクの取得に失敗しました: " + err.message;
@@ -1145,6 +1153,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
       holdMs: GATE_HOLD_MS,
       maxChannels: 2
     });
+    micSourceNode.connect(rnnoiseNodeRef);
     rnnoiseNodeRef.connect(gateNodeRef);
     attachLevelMeter();
 
@@ -1201,29 +1210,59 @@ function updateThresholdMarker(db) {
 }
 
 // RNNoise適用後・ゲート適用前の信号レベルを可視化する（ゲートが実際に見ている音量そのもの）
+// 生マイク側も同時に監視し、処理が壊れて無音になっていないかの自動チェックにも使う
 function attachLevelMeter() {
-  if (!rnnoiseNodeRef || !audioCtx) return;
+  if (!rnnoiseNodeRef || !micSourceNode || !audioCtx) return;
   if (gateAnalyser) { try { gateAnalyser.disconnect(); } catch (e) {} }
+  if (rawAnalyser) { try { rawAnalyser.disconnect(); } catch (e) {} }
   gateAnalyser = audioCtx.createAnalyser();
   gateAnalyser.fftSize = 1024;
   rnnoiseNodeRef.connect(gateAnalyser);
+  rawAnalyser = audioCtx.createAnalyser();
+  rawAnalyser.fftSize = 1024;
+  micSourceNode.connect(rawAnalyser);
   // destinationにつながっていないと処理系がpullしないブラウザがあるため、無音経路で明示的に繋いでおく
-  const silentOut = audioCtx.createGain();
-  silentOut.gain.value = 0;
-  gateAnalyser.connect(silentOut).connect(audioCtx.destination);
-  if (!meterRafId) meterLoop();
+  const silentOut1 = audioCtx.createGain(); silentOut1.gain.value = 0;
+  gateAnalyser.connect(silentOut1).connect(audioCtx.destination);
+  const silentOut2 = audioCtx.createGain(); silentOut2.gain.value = 0;
+  rawAnalyser.connect(silentOut2).connect(audioCtx.destination);
+  rawMaxRms = 0;
+  processedMaxRms = 0;
+  if (!meterIntervalId) meterIntervalId = setInterval(meterLoop, 100);
+  if (!healthCheckTimer) healthCheckTimer = setInterval(runNoiseGateHealthCheck, HEALTH_CHECK_MS);
 }
 
-function meterLoop() {
-  meterRafId = requestAnimationFrame(meterLoop);
-  if (!gateAnalyser) return;
-  const buf = new Float32Array(gateAnalyser.fftSize);
-  gateAnalyser.getFloatTimeDomainData(buf);
+function rmsOf(analyser) {
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
   let sum = 0;
   for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-  const rms = Math.sqrt(sum / buf.length);
+  return Math.sqrt(sum / buf.length);
+}
+
+// requestAnimationFrameはタブがバックグラウンドになると停止してしまう
+// （通話中は他のウィンドウを見ていることも多い）ため、setIntervalで動かす
+function meterLoop() {
+  if (!gateAnalyser) return;
+  const rms = rmsOf(gateAnalyser);
+  processedMaxRms = Math.max(processedMaxRms, rms);
+  if (rawAnalyser) rawMaxRms = Math.max(rawMaxRms, rmsOf(rawAnalyser));
   const db = rms > 0 ? 20 * Math.log10(rms) : METER_MIN_DB;
   levelMeterFill.style.width = dbToMeterPercent(db) + "%";
+}
+
+// 生マイクには音があるのに、ノイズ抑制後がずっと無音のままなら処理が壊れていると判断し、
+// 声が届かなくなるのを防ぐため自動でOFFに戻す（環境依存の不具合に対する保険）
+function runNoiseGateHealthCheck() {
+  const rawHadSound = rawMaxRms > RAW_ACTIVE_RMS;
+  const processedIsDead = processedMaxRms < PROCESSED_DEAD_RMS;
+  if (gateEnabled && rawHadSound && processedIsDead) {
+    toggleNoiseGate();
+    gateWarning.textContent = "⚠ ノイズ抑制の処理が機能していないようなので、自動的にOFFにしました";
+    gateWarning.style.display = "inline";
+  }
+  rawMaxRms = 0;
+  processedMaxRms = 0;
 }
 
 // ---------- 録画: 音声ミキシング ----------
