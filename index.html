@@ -1173,7 +1173,10 @@ async function startRecording() {
   let stream;
 
   if (mode === "self") {
-    stream = localStream;
+    // ノイズ抑制後の音声を使う（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
+    const videoTrack = localStream.getVideoTracks()[0];
+    const audioTrack = outgoingAudioTrack || localStream.getAudioTracks()[0];
+    stream = new MediaStream([videoTrack, audioTrack].filter(Boolean));
   } else {
     ensureAudioGraph();
     if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
