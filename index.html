@@ -26,6 +26,10 @@
     background: #111; color: #fff; border: 1px solid #555;
     padding: 6px 10px; border-radius: 4px;
   }
+  header select {
+    background: #111; color: #fff; border: 1px solid #555;
+    padding: 6px 10px; border-radius: 4px; font-size: 14px;
+  }
   button {
     background: #3a6ea5; color: #fff; border: none;
     padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 14px;
@@ -141,6 +145,11 @@
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
+    <select id="gateStrengthSelect" title="ノイズ抑制の強さ">
+      <option value="standard">抑制: 標準</option>
+      <option value="strong" selected>抑制: 強め</option>
+      <option value="max">抑制: 最強（声に影響あり）</option>
+    </select>
   </header>
   <div id="joinError"></div>
   <main>
@@ -285,6 +294,7 @@ const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
 const gateBtn = document.getElementById("gateBtn");
+const gateStrengthSelect = document.getElementById("gateStrengthSelect");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -310,6 +320,7 @@ joinBtn.addEventListener("click", () => {
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
 gateBtn.addEventListener("click", toggleNoiseGate);
+gateStrengthSelect.addEventListener("change", () => changeGateStrength(gateStrengthSelect.value));
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
@@ -537,6 +548,7 @@ function createPeerConnection(peerId, isInitiator) {
   const entry = {
     pc,
     videoSender: null,
+    audioSender: null,
     pendingCandidates: [],
     statsInterval: null,
     prevStats: { bytesReceived: 0, packetsLost: 0, packetsReceived: 0, timestamp: 0 },
@@ -554,7 +566,7 @@ function createPeerConnection(peerId, isInitiator) {
   }
   // マイクはノイズゲート後の音声を送信する（未対応時は生のマイク音声にフォールバック）
   const audioTrackToSend = outgoingAudioTrack || localStream.getAudioTracks()[0];
-  if (audioTrackToSend) pc.addTrack(audioTrackToSend, localStream);
+  if (audioTrackToSend) entry.audioSender = pc.addTrack(audioTrackToSend, localStream);
 
   pc.onicecandidate = (e) => {
     if (e.candidate) sendSignal(peerId, "candidate", e.candidate.toJSON());
@@ -1047,9 +1059,15 @@ function stateIcon(state) {
 // RNNoiseは声とノイズを学習済みモデルで区別するため、発話中でも効く。
 // そのRNNoiseの出力に、さらに軽めのゲートを重ねることで抑制を強める
 // （RNNoiseで綺麗になった後の信号にかけるので、生音声に直接ゲートをかけるより声への影響を抑えられる）。
-// 閾値はオフライン合成テストで調整済み: クリック音-11dB程度・声の劣化はほぼ0dB。
+// 閾値はオフライン合成テストで調整済み。強くするほど声への影響（子音が削れる等）も増える。
 // @sapphi-red/web-noise-suppressor 経由でRNNoise/ゲートのWASM・AudioWorkletをCDNから読み込む。
-const NOISE_GATE_OPTIONS = { openThreshold: -20, closeThreshold: -25, holdMs: 110 };
+const GATE_PRESETS = {
+  standard: { openThreshold: -20, closeThreshold: -25, holdMs: 110 },
+  strong: { openThreshold: -15, closeThreshold: -19, holdMs: 100 },
+  max: { openThreshold: -13, closeThreshold: -16, holdMs: 100 }
+};
+let gateStrength = "strong";
+let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null;
 async function loadRnnoiseModule() {
   if (!rnnoiseModuleLoaded) {
     const { loadRnnoise, RnnoiseWorkletNode, NoiseGateWorkletNode } = await import(`${RNNOISE_CDN_BASE}/dist/index.js`);
@@ -1066,6 +1084,13 @@ async function loadRnnoiseModule() {
   return { RnnoiseWorkletNode: RnnoiseWorkletNodeClass, NoiseGateWorkletNode: NoiseGateWorkletNodeClass };
 }
 
+function disconnectNoiseChain() {
+  for (const node of [micSourceNode, rnnoiseNodeRef, gateNodeRef, passthroughGain, suppressedGain]) {
+    if (node) { try { node.disconnect(); } catch (e) {} }
+  }
+  micSourceNode = rnnoiseNodeRef = gateNodeRef = passthroughGain = suppressedGain = null;
+}
+
 // originalStream: マイクの生ストリーム / recordingDest: 録画用ミックス先
 // 戻り値: 送信・録画に使うノイズ抑制後の音声トラック（失敗時は生トラックにフォールバック）
 async function setupNoiseGate(originalStream, recordingDest) {
@@ -1076,10 +1101,11 @@ async function setupNoiseGate(originalStream, recordingDest) {
     if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
     const { RnnoiseWorkletNode, NoiseGateWorkletNode } = await loadRnnoiseModule();
 
-    const micSource = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
-    const rnnoiseNode = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
-    const gateNode = new NoiseGateWorkletNode(audioCtx, { ...NOISE_GATE_OPTIONS, maxChannels: 2 });
-    rnnoiseNode.connect(gateNode);
+    disconnectNoiseChain();
+    micSourceNode = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+    rnnoiseNodeRef = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
+    gateNodeRef = new NoiseGateWorkletNode(audioCtx, { ...GATE_PRESETS[gateStrength], maxChannels: 2 });
+    rnnoiseNodeRef.connect(gateNodeRef);
 
     // ON/OFF切り替え用: 生音声とノイズ抑制後の音声を両方常時流しておき、
     // ゲインで混ぜる比率を切り替えるだけにする（ノード再接続によるプツ音を避けるため）
@@ -1088,8 +1114,8 @@ async function setupNoiseGate(originalStream, recordingDest) {
     passthroughGain.gain.value = gateEnabled ? 0 : 1;
     suppressedGain.gain.value = gateEnabled ? 1 : 0;
 
-    micSource.connect(passthroughGain);
-    gateNode.connect(suppressedGain);
+    micSourceNode.connect(passthroughGain);
+    gateNodeRef.connect(suppressedGain);
 
     const sendDest = audioCtx.createMediaStreamDestination();
     passthroughGain.connect(sendDest);
@@ -1113,6 +1139,17 @@ function toggleNoiseGate() {
     suppressedGain.gain.setTargetAtTime(gateEnabled ? 1 : 0, now, 0.05);
   }
   gateBtn.textContent = gateEnabled ? "🔇 ノイズ抑制: ON" : "🔇 ノイズ抑制: OFF";
+}
+
+// 強さプリセットを切り替え、既存の呼び出し中でも音声トラックを差し替える
+async function changeGateStrength(newStrength) {
+  gateStrength = newStrength;
+  if (!localStream) return; // 入室前は次回setupNoiseGate時に反映されるだけでよい
+  const newTrack = await setupNoiseGate(localStream, audioDest);
+  outgoingAudioTrack = newTrack;
+  for (const entry of Object.values(peers)) {
+    if (entry.audioSender && newTrack) entry.audioSender.replaceTrack(newTrack);
+  }
 }
 
 // ---------- 録画: 音声ミキシング ----------
