@@ -30,6 +30,25 @@
     background: #111; color: #fff; border: 1px solid #555;
     padding: 6px 10px; border-radius: 4px; font-size: 14px;
   }
+  #noiseGatePanel {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 16px; background: #222; border-bottom: 1px solid #3a3a3a;
+    font-size: 12px; color: #ccc;
+  }
+  #noiseGatePanel input[type="range"] { width: 160px; }
+  #noiseGatePanel .hint { color: #888; font-size: 11px; }
+  #levelMeterTrack {
+    position: relative; width: 180px; height: 14px; background: #111;
+    border: 1px solid #444; border-radius: 3px; overflow: hidden;
+  }
+  #levelMeterFill {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+    background: linear-gradient(90deg, #2c7a2c, #7ac13a, #e0c93a);
+    transition: width 60ms linear;
+  }
+  #levelMeterMark {
+    position: absolute; top: -2px; bottom: -2px; width: 2px; background: #ff5050; left: 50%;
+  }
   button {
     background: #3a6ea5; color: #fff; border: none;
     padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 14px;
@@ -145,13 +164,17 @@
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
-    <select id="gateStrengthSelect" title="ノイズ抑制の強さ">
-      <option value="standard">抑制: 標準</option>
-      <option value="strong" selected>抑制: 強め</option>
-      <option value="max">抑制: 最強（声に影響あり）</option>
-    </select>
   </header>
   <div id="joinError"></div>
+  <div id="noiseGatePanel">
+    <span id="gateThresholdLabel">ノイズ抑制の強さ: <b id="gateThresholdValue">-25dB</b></span>
+    <input type="range" id="gateThresholdSlider" min="-35" max="-8" step="1" value="-25">
+    <div id="levelMeterTrack">
+      <div id="levelMeterFill"></div>
+      <div id="levelMeterMark"></div>
+    </div>
+    <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください</span>
+  </div>
   <main>
     <div id="videoGridBar">
       <span>映像タイルはドラッグで移動・右下の■でサイズ変更できます（この端末のみに保存）</span>
@@ -252,6 +275,12 @@ let passthroughGain = null;
 let suppressedGain = null;
 let outgoingAudioTrack = null; // 送信・録画用（ノイズ抑制後）の音声トラック
 let gateEnabled = true;
+let gateThresholdDb = -25; // ゲートが開く音量のしきい値（dB）。スライダーで調整
+const GATE_CLOSE_OFFSET_DB = 5; // ヒステリシス用（閉じる側は少し低めにする）
+const GATE_HOLD_MS = 100;
+let gateAnalyser = null;
+let meterRafId = null;
+const METER_MIN_DB = -50, METER_MAX_DB = 0;
 
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 // 位置・サイズはすべて配置エリアに対する%で保持する。
@@ -294,7 +323,10 @@ const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
 const gateBtn = document.getElementById("gateBtn");
-const gateStrengthSelect = document.getElementById("gateStrengthSelect");
+const gateThresholdSlider = document.getElementById("gateThresholdSlider");
+const gateThresholdValue = document.getElementById("gateThresholdValue");
+const levelMeterFill = document.getElementById("levelMeterFill");
+const levelMeterMark = document.getElementById("levelMeterMark");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -320,7 +352,16 @@ joinBtn.addEventListener("click", () => {
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
 gateBtn.addEventListener("click", toggleNoiseGate);
-gateStrengthSelect.addEventListener("change", () => changeGateStrength(gateStrengthSelect.value));
+
+let gateThresholdDebounce = null;
+gateThresholdSlider.addEventListener("input", () => {
+  const db = parseInt(gateThresholdSlider.value, 10);
+  gateThresholdValue.textContent = db + "dB";
+  updateThresholdMarker(db);
+  clearTimeout(gateThresholdDebounce);
+  gateThresholdDebounce = setTimeout(() => applyGateThreshold(db), 250);
+});
+updateThresholdMarker(gateThresholdDb);
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
@@ -1061,12 +1102,6 @@ function stateIcon(state) {
 // （RNNoiseで綺麗になった後の信号にかけるので、生音声に直接ゲートをかけるより声への影響を抑えられる）。
 // 閾値はオフライン合成テストで調整済み。強くするほど声への影響（子音が削れる等）も増える。
 // @sapphi-red/web-noise-suppressor 経由でRNNoise/ゲートのWASM・AudioWorkletをCDNから読み込む。
-const GATE_PRESETS = {
-  standard: { openThreshold: -20, closeThreshold: -25, holdMs: 110 },
-  strong: { openThreshold: -15, closeThreshold: -19, holdMs: 100 },
-  max: { openThreshold: -13, closeThreshold: -16, holdMs: 100 }
-};
-let gateStrength = "strong";
 let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null;
 async function loadRnnoiseModule() {
   if (!rnnoiseModuleLoaded) {
@@ -1104,8 +1139,14 @@ async function setupNoiseGate(originalStream, recordingDest) {
     disconnectNoiseChain();
     micSourceNode = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
     rnnoiseNodeRef = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
-    gateNodeRef = new NoiseGateWorkletNode(audioCtx, { ...GATE_PRESETS[gateStrength], maxChannels: 2 });
+    gateNodeRef = new NoiseGateWorkletNode(audioCtx, {
+      openThreshold: gateThresholdDb,
+      closeThreshold: gateThresholdDb - GATE_CLOSE_OFFSET_DB,
+      holdMs: GATE_HOLD_MS,
+      maxChannels: 2
+    });
     rnnoiseNodeRef.connect(gateNodeRef);
+    attachLevelMeter();
 
     // ON/OFF切り替え用: 生音声とノイズ抑制後の音声を両方常時流しておき、
     // ゲインで混ぜる比率を切り替えるだけにする（ノード再接続によるプツ音を避けるため）
@@ -1141,15 +1182,48 @@ function toggleNoiseGate() {
   gateBtn.textContent = gateEnabled ? "🔇 ノイズ抑制: ON" : "🔇 ノイズ抑制: OFF";
 }
 
-// 強さプリセットを切り替え、既存の呼び出し中でも音声トラックを差し替える
-async function changeGateStrength(newStrength) {
-  gateStrength = newStrength;
+// スライダーでしきい値を変更し、既存の呼び出し中でも音声トラックを差し替える
+async function applyGateThreshold(db) {
+  gateThresholdDb = db;
   if (!localStream) return; // 入室前は次回setupNoiseGate時に反映されるだけでよい
   const newTrack = await setupNoiseGate(localStream, audioDest);
   outgoingAudioTrack = newTrack;
   for (const entry of Object.values(peers)) {
     if (entry.audioSender && newTrack) entry.audioSender.replaceTrack(newTrack);
   }
+}
+
+function dbToMeterPercent(db) {
+  return Math.max(0, Math.min(100, ((db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)) * 100));
+}
+function updateThresholdMarker(db) {
+  levelMeterMark.style.left = dbToMeterPercent(db) + "%";
+}
+
+// RNNoise適用後・ゲート適用前の信号レベルを可視化する（ゲートが実際に見ている音量そのもの）
+function attachLevelMeter() {
+  if (!rnnoiseNodeRef || !audioCtx) return;
+  if (gateAnalyser) { try { gateAnalyser.disconnect(); } catch (e) {} }
+  gateAnalyser = audioCtx.createAnalyser();
+  gateAnalyser.fftSize = 1024;
+  rnnoiseNodeRef.connect(gateAnalyser);
+  // destinationにつながっていないと処理系がpullしないブラウザがあるため、無音経路で明示的に繋いでおく
+  const silentOut = audioCtx.createGain();
+  silentOut.gain.value = 0;
+  gateAnalyser.connect(silentOut).connect(audioCtx.destination);
+  if (!meterRafId) meterLoop();
+}
+
+function meterLoop() {
+  meterRafId = requestAnimationFrame(meterLoop);
+  if (!gateAnalyser) return;
+  const buf = new Float32Array(gateAnalyser.fftSize);
+  gateAnalyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  const rms = Math.sqrt(sum / buf.length);
+  const db = rms > 0 ? 20 * Math.log10(rms) : METER_MIN_DB;
+  levelMeterFill.style.width = dbToMeterPercent(db) + "%";
 }
 
 // ---------- 録画: 音声ミキシング ----------
