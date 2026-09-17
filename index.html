@@ -1199,12 +1199,6 @@ async function setupNoiseGate(originalStream, recordingDest) {
 
     disconnectNoiseChain();
     micSourceNode = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
-    eqNodeRef = audioCtx.createBiquadFilter();
-    eqNodeRef.type = eqType;
-    eqNodeRef.frequency.value = eqFreqHz;
-    eqNodeRef.Q.value = 1;
-    eqNodeRef.gain.value = eqEnabled ? eqGainDb : 0;
-    micSourceNode.connect(eqNodeRef);
 
     rnnoiseNodeRef = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
     gateNodeRef = new NoiseGateWorkletNode(audioCtx, {
@@ -1213,7 +1207,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
       holdMs: GATE_HOLD_MS,
       maxChannels: 2
     });
-    eqNodeRef.connect(rnnoiseNodeRef);
+    micSourceNode.connect(rnnoiseNodeRef);
     rnnoiseNodeRef.connect(gateNodeRef);
     attachLevelMeter();
 
@@ -1224,15 +1218,25 @@ async function setupNoiseGate(originalStream, recordingDest) {
     passthroughGain.gain.value = gateEnabled ? 0 : 1;
     suppressedGain.gain.value = gateEnabled ? 1 : 0;
 
-    eqNodeRef.connect(passthroughGain);
+    micSourceNode.connect(passthroughGain);
     gateNodeRef.connect(suppressedGain);
 
+    // 周波数フィルタ（EQ）はRNNoiseの手前ではなく、ゲート適用後の最終出力にかける。
+    // RNNoiseに未加工の生信号を渡さないと発話検出の精度が落ち、出力が無音化することがあったため
+    // （passthrough/suppressedGainはどちらか一方しか値を持たないクロスフェードなので、
+    // 両方をそのままEQに繋いでも単純に選択したのと同じ結果になる）。
+    eqNodeRef = audioCtx.createBiquadFilter();
+    eqNodeRef.type = eqType;
+    eqNodeRef.frequency.value = eqFreqHz;
+    eqNodeRef.Q.value = 1;
+    eqNodeRef.gain.value = eqEnabled ? eqGainDb : 0;
+    passthroughGain.connect(eqNodeRef);
+    suppressedGain.connect(eqNodeRef);
+
     const sendDest = audioCtx.createMediaStreamDestination();
-    passthroughGain.connect(sendDest);
-    suppressedGain.connect(sendDest);
+    eqNodeRef.connect(sendDest);
     if (recordingDest) {
-      passthroughGain.connect(recordingDest);
-      suppressedGain.connect(recordingDest);
+      eqNodeRef.connect(recordingDest);
     }
     return sendDest.stream.getAudioTracks()[0];
   } catch (e) {
@@ -1272,7 +1276,7 @@ function updateThresholdMarker(db) {
 // RNNoise適用後・ゲート適用前の信号レベルを可視化する（ゲートが実際に見ている音量そのもの）
 // 生マイク側も同時に監視し、処理が壊れて無音になっていないかの自動チェックにも使う
 function attachLevelMeter() {
-  if (!rnnoiseNodeRef || !eqNodeRef || !audioCtx) return;
+  if (!rnnoiseNodeRef || !micSourceNode || !audioCtx) return;
   if (gateAnalyser) { try { gateAnalyser.disconnect(); } catch (e) {} }
   if (rawAnalyser) { try { rawAnalyser.disconnect(); } catch (e) {} }
   gateAnalyser = audioCtx.createAnalyser();
@@ -1280,7 +1284,7 @@ function attachLevelMeter() {
   rnnoiseNodeRef.connect(gateAnalyser);
   rawAnalyser = audioCtx.createAnalyser();
   rawAnalyser.fftSize = 1024;
-  eqNodeRef.connect(rawAnalyser); // EQ後（＝RNNoiseに実際入る信号）の音量を見る
+  micSourceNode.connect(rawAnalyser); // 生マイクそのものの音量を見る（EQの影響を受けない）
   // destinationにつながっていないと処理系がpullしないブラウザがあるため、無音経路で明示的に繋いでおく
   const silentOut1 = audioCtx.createGain(); silentOut1.gain.value = 0;
   gateAnalyser.connect(silentOut1).connect(audioCtx.destination);
