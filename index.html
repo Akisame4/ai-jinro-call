@@ -201,8 +201,8 @@
   </header>
   <div id="joinError"></div>
   <div id="noiseGatePanel">
-    <span id="gateThresholdLabel">ノイズ抑制の強さ: <b id="gateThresholdValue">-25dB</b></span>
-    <input type="range" id="gateThresholdSlider" min="-35" max="-8" step="1" value="-25">
+    <span id="gateThresholdLabel">ノイズ抑制の強さ: <b id="gateThresholdValue">20%</b></span>
+    <input type="range" id="gateThresholdSlider" min="0" max="100" step="1" value="20">
     <div id="levelMeterTrack">
       <div id="levelMeterFill"></div>
       <div id="levelMeterMark"></div>
@@ -323,7 +323,14 @@ let passthroughGain = null;
 let suppressedGain = null;
 let outgoingAudioTrack = null; // 送信・録画用（ノイズ抑制後）の音声トラック
 let gateEnabled = true;
-let gateThresholdDb = -25; // ゲートが開く音量のしきい値（dB）。スライダーで調整
+// スライダーは0〜100%の「強さ」で操作する（0%＝ほぼ無効、100%＝最強）。
+// 内部的にはこれをゲートが開く音量のしきい値（dB）に変換して使う。
+const GATE_STRENGTH_MIN_DB = -60; // 0%のときの値（ほぼ常にゲートが開いたままになる＝実質無効）
+const GATE_STRENGTH_MAX_DB = -8;  // 100%のときの値（最も声を削りやすい）
+function gateStrengthToDb(strength) {
+  return Math.round(GATE_STRENGTH_MIN_DB + (strength / 100) * (GATE_STRENGTH_MAX_DB - GATE_STRENGTH_MIN_DB));
+}
+let gateThresholdDb = gateStrengthToDb(20); // ゲートが開く音量のしきい値（dB）。スライダーで調整
 const GATE_CLOSE_OFFSET_DB = 5; // ヒステリシス用（閉じる側は少し低めにする）
 const GATE_HOLD_MS = 100;
 let gateAnalyser = null;
@@ -471,8 +478,9 @@ gateBtn.addEventListener("click", () => {
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
-  const db = parseInt(gateThresholdSlider.value, 10);
-  gateThresholdValue.textContent = db + "dB";
+  const strength = parseInt(gateThresholdSlider.value, 10);
+  const db = gateStrengthToDb(strength);
+  gateThresholdValue.textContent = strength + "%";
   updateThresholdMarker(db);
   clearTimeout(gateThresholdDebounce);
   gateThresholdDebounce = setTimeout(() => applyGateThreshold(db), 250);
