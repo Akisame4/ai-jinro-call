@@ -238,7 +238,7 @@
         <button id="recBtn">● 録画開始</button>
         <span id="recIndicator">● 録画中</span>
       </div>
-      <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音を録音できます）</span>
+      <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音＋自分のマイク（ノイズ抑制後）を両方録音します）</span>
       <div id="recDownloads"></div>
     </section>
 
@@ -1560,9 +1560,19 @@ async function startRecording() {
 
   let audioTracks;
   if (useSystemAudio) {
-    const track = await captureSystemAudioTrack();
-    if (!track) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
-    audioTracks = [track];
+    const sysTrack = await captureSystemAudioTrack();
+    if (!sysTrack) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
+    // システム音声（Discord等が再生する相手の声）には自分の声は含まれない
+    // （自分のマイクは通常、自分のスピーカー出力にループバックされないため）。
+    // このアプリ自身のマイク（ノイズ抑制後）を別トラックとして合成し、両方を録音に含める。
+    ensureAudioGraph();
+    if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
+    const localMicTrack = outgoingAudioTrack || (localStream && localStream.getAudioTracks()[0]);
+    const mixDest = audioCtx.createMediaStreamDestination();
+    [sysTrack, localMicTrack].filter(Boolean).forEach((t) => {
+      audioCtx.createMediaStreamSource(new MediaStream([t])).connect(mixDest);
+    });
+    audioTracks = mixDest.stream.getAudioTracks();
   } else if (mode === "self") {
     // ノイズ抑制後の音声を使う（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
     const audioTrack = outgoingAudioTrack || localStream.getAudioTracks()[0];
