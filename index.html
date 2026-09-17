@@ -160,10 +160,6 @@
   }
   #recControls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   #recControls label { font-size: 13px; margin-right: 12px; cursor: pointer; }
-  #recControls select {
-    background: #111; color: #fff; border: 1px solid #555; border-radius: 4px;
-    padding: 4px 6px; font-size: 12px; max-width: 220px;
-  }
   #recIndicator { color: #ff6b6b; font-size: 13px; display: none; }
   #recDownloads { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
   #recDownloads a {
@@ -238,19 +234,11 @@
           <label><input type="radio" name="recMode" value="grid" checked> レイアウト全体（合成映像＋全員の音声）</label>
           <label><input type="radio" name="recMode" value="self"> 自分のカメラのみ</label>
         </span>
-        <label>録音する音声:
-          <select id="recAudioSourceSelect">
-            <option value="normal">通常（ノイズ抑制後のマイク）</option>
-            <option value="system">画面共有のシステム音声</option>
-            <option value="device">オーディオ入力デバイスを指定</option>
-          </select>
-        </label>
-        <select id="recAudioDeviceSelect" style="display:none;"></select>
+        <label><input type="checkbox" id="recSystemAudioCheckbox"> 音声はシステム音声（Discord通話など）を使う</label>
         <button id="recBtn">● 録画開始</button>
         <span id="recIndicator">● 録画中</span>
       </div>
-      <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音を録音できます。他のアプリの音も拾ってしまう点に注意）</span>
-      <span class="hint" id="recDeviceAudioHint" style="display:none; font-size:11px; color:#888;">VB-CABLE等の仮想オーディオデバイスにDiscordの出力先を設定した上で、そのデバイスをここで選んでください</span>
+      <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音を録音できます）</span>
       <div id="recDownloads"></div>
     </section>
 
@@ -406,10 +394,8 @@ const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
-const recAudioSourceSelect = document.getElementById("recAudioSourceSelect");
-const recAudioDeviceSelect = document.getElementById("recAudioDeviceSelect");
+const recSystemAudioCheckbox = document.getElementById("recSystemAudioCheckbox");
 const recSystemAudioHint = document.getElementById("recSystemAudioHint");
-const recDeviceAudioHint = document.getElementById("recDeviceAudioHint");
 const templateSelect = document.getElementById("templateSelect");
 const templateNameInput = document.getElementById("templateNameInput");
 const saveTemplateBtn = document.getElementById("saveTemplateBtn");
@@ -551,36 +537,9 @@ recBtn.addEventListener("click", () => {
   if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
   else stopRecording();
 });
-recAudioSourceSelect.addEventListener("change", updateRecAudioSourceUi);
-recAudioDeviceSelect.addEventListener("focus", refreshRecAudioDeviceList);
-updateRecAudioSourceUi();
-
-function updateRecAudioSourceUi() {
-  const v = recAudioSourceSelect.value;
-  recSystemAudioHint.style.display = v === "system" ? "block" : "none";
-  recDeviceAudioHint.style.display = v === "device" ? "block" : "none";
-  recAudioDeviceSelect.style.display = v === "device" ? "inline-block" : "none";
-  if (v === "device") refreshRecAudioDeviceList();
-}
-
-// デバイスのlabelは一度マイク/カメラの許可を得た後でないと取得できない（入室後なら取れる）
-async function refreshRecAudioDeviceList() {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devices.filter((d) => d.kind === "audioinput");
-    const current = recAudioDeviceSelect.value;
-    recAudioDeviceSelect.innerHTML = "";
-    inputs.forEach((d, i) => {
-      const opt = document.createElement("option");
-      opt.value = d.deviceId;
-      opt.textContent = d.label || `オーディオ入力 ${i + 1}`;
-      recAudioDeviceSelect.appendChild(opt);
-    });
-    if (current && inputs.some((d) => d.deviceId === current)) recAudioDeviceSelect.value = current;
-  } catch (e) {
-    console.warn("オーディオ入力デバイスの一覧取得に失敗しました", e);
-  }
-}
+recSystemAudioCheckbox.addEventListener("change", () => {
+  recSystemAudioHint.style.display = recSystemAudioCheckbox.checked ? "block" : "none";
+});
 controlsTable.addEventListener("click", (e) => {
   const btn = e.target.closest(".ctrlBtn");
   if (!btn) return;
@@ -1581,29 +1540,9 @@ async function captureSystemAudioTrack() {
   return audioTrack;
 }
 
-// VB-CABLE等の仮想オーディオデバイスをマイク入力として直接指定するための仕組み。
-// Discordの出力先をこのデバイスに設定しておけば、他アプリの音を巻き込まずDiscordの音だけを拾える。
-let deviceAudioStream = null;
-async function captureDeviceAudioTrack() {
-  const deviceId = recAudioDeviceSelect.value;
-  if (!deviceId) {
-    alert("オーディオ入力デバイスを選択してください");
-    return null;
-  }
-  try {
-    deviceAudioStream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-    });
-    return deviceAudioStream.getAudioTracks()[0] || null;
-  } catch (e) {
-    alert("指定したオーディオ入力デバイスを開けませんでした: " + e.message);
-    return null;
-  }
-}
-
 async function startRecording() {
   const mode = document.querySelector('input[name="recMode"]:checked').value;
-  const audioSource = recAudioSourceSelect.value; // "normal" | "system" | "device"
+  const useSystemAudio = recSystemAudioCheckbox.checked;
   let videoTracks;
 
   if (mode === "self") {
@@ -1620,12 +1559,8 @@ async function startRecording() {
   }
 
   let audioTracks;
-  if (audioSource === "system") {
+  if (useSystemAudio) {
     const track = await captureSystemAudioTrack();
-    if (!track) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
-    audioTracks = [track];
-  } else if (audioSource === "device") {
-    const track = await captureDeviceAudioTrack();
     if (!track) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
     audioTracks = [track];
   } else if (mode === "self") {
@@ -1645,7 +1580,6 @@ async function startRecording() {
   mediaRecorder.onstop = () => {
     if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; }
     if (systemAudioStream) { systemAudioStream.getTracks().forEach((t) => t.stop()); systemAudioStream = null; }
-    if (deviceAudioStream) { deviceAudioStream.getTracks().forEach((t) => t.stop()); deviceAudioStream = null; }
     const blob = new Blob(recordedChunks, { type: "video/webm" });
     const url = URL.createObjectURL(blob);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
