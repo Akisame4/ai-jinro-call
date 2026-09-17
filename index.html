@@ -89,6 +89,12 @@
     width: 100%; padding: 10px; margin: 12px 0; background: #111;
     color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 15px;
   }
+  #micSelectRow { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 13px; color: #ccc; }
+  #micSelectRow label { white-space: nowrap; }
+  #micDeviceSelect {
+    flex: 1; padding: 8px; background: #111; color: #fff;
+    border: 1px solid #555; border-radius: 4px; font-size: 13px; min-width: 0;
+  }
   main { padding: 16px; }
   #videoGridBar {
     display: flex; align-items: center; justify-content: space-between;
@@ -174,6 +180,10 @@
 <div id="entryScreen">
   <h2>遊ぶところ撮影ツール</h2>
   <input type="text" id="nameInput" placeholder="表示名を入力">
+  <div id="micSelectRow">
+    <label for="micDeviceSelect">マイク（任意）</label>
+    <select id="micDeviceSelect"><option value="">既定のマイク</option></select>
+  </div>
   <div><button id="joinBtn">入室</button></div>
   <div id="entryError"></div>
 </div>
@@ -370,6 +380,7 @@ const hiddenTiles = new Set();             // グリッドから非表示にし�
 const entryScreen = document.getElementById("entryScreen");
 const callScreen = document.getElementById("callScreen");
 const nameInput = document.getElementById("nameInput");
+const micDeviceSelect = document.getElementById("micDeviceSelect");
 const joinBtn = document.getElementById("joinBtn");
 const entryError = document.getElementById("entryError");
 const joinError = document.getElementById("joinError");
@@ -404,6 +415,33 @@ const templateStatus = document.getElementById("templateStatus");
 
 // 表示名はこの端末に保存し、次回以降は自動で入力欄に復元する
 nameInput.value = localStorage.getItem("aiJinroDisplayName") || "";
+
+// マイクの選択もこの端末に保存する。NVIDIA BroadcastやKrisp等の仮想マイク（ノイズ抑制済み）を
+// 使いたい人は、一度選んでおけば次回以降も自動でそのマイクが使われる（他の参加者には影響しない）。
+// デバイス名はマイク許可を得た後でないと取得できないブラウザが多いため、入室後にも再取得している。
+const SAVED_MIC_KEY = "aiJinroMicDeviceId";
+async function refreshMicDeviceOptions() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((d) => d.kind === "audioinput");
+    const saved = localStorage.getItem(SAVED_MIC_KEY) || "";
+    micDeviceSelect.innerHTML = '<option value="">既定のマイク</option>';
+    inputs.forEach((d, i) => {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `マイク ${i + 1}`;
+      micDeviceSelect.appendChild(opt);
+    });
+    if (saved && inputs.some((d) => d.deviceId === saved)) micDeviceSelect.value = saved;
+  } catch (e) {
+    console.warn("マイク一覧の取得に失敗しました", e);
+  }
+}
+refreshMicDeviceOptions();
+micDeviceSelect.addEventListener("focus", refreshMicDeviceOptions);
+micDeviceSelect.addEventListener("change", () => {
+  localStorage.setItem(SAVED_MIC_KEY, micDeviceSelect.value);
+});
 
 joinBtn.addEventListener("click", () => {
   const name = nameInput.value.trim();
@@ -601,16 +639,21 @@ async function joinRoom(name) {
     return;
   }
 
+  const selectedMicId = micDeviceSelect.value;
+  const audioConstraints = { noiseSuppression: true, echoCancellation: true, autoGainControl: true };
+  if (selectedMicId) audioConstraints.deviceId = { exact: selectedMicId };
+
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
-      audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true }
+      audio: audioConstraints
     });
   } catch (err) {
     entryError.textContent = "カメラ・マイクの取得に失敗しました: " + err.message;
     joinBtn.disabled = false;
     return;
   }
+  refreshMicDeviceOptions(); // 許可後はデバイス名（ラベル）が取得できるようになる
 
   myName = name;
   entryScreen.style.display = "none";
