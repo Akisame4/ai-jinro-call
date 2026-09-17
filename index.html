@@ -234,9 +234,11 @@
           <label><input type="radio" name="recMode" value="grid" checked> レイアウト全体（合成映像＋全員の音声）</label>
           <label><input type="radio" name="recMode" value="self"> 自分のカメラのみ</label>
         </span>
+        <label><input type="checkbox" id="recSystemAudioCheckbox"> 音声はシステム音声（Discord通話など）を使う</label>
         <button id="recBtn">● 録画開始</button>
         <span id="recIndicator">● 録画中</span>
       </div>
+      <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音を録音できます）</span>
       <div id="recDownloads"></div>
     </section>
 
@@ -392,6 +394,8 @@ const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
+const recSystemAudioCheckbox = document.getElementById("recSystemAudioCheckbox");
+const recSystemAudioHint = document.getElementById("recSystemAudioHint");
 const templateSelect = document.getElementById("templateSelect");
 const templateNameInput = document.getElementById("templateNameInput");
 const saveTemplateBtn = document.getElementById("saveTemplateBtn");
@@ -532,6 +536,9 @@ renderTemplateOptions();
 recBtn.addEventListener("click", () => {
   if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
   else stopRecording();
+});
+recSystemAudioCheckbox.addEventListener("change", () => {
+  recSystemAudioHint.style.display = recSystemAudioCheckbox.checked ? "block" : "none";
 });
 controlsTable.addEventListener("click", (e) => {
   const btn = e.target.closest(".ctrlBtn");
@@ -1516,15 +1523,30 @@ function pickMimeType() {
   return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "video/webm";
 }
 
+// Discordなど、このアプリの外（別アプリ）で鳴っている音声を録音するための仕組み。
+// getDisplayMediaで画面共有ダイアログを出し、「画面全体」＋「システムの音声を共有」を
+// 選んでもらうことで、システム全体の音声トラックだけを取り出す（映像は使わないのですぐ止める）。
+let systemAudioStream = null;
+async function captureSystemAudioTrack() {
+  const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  displayStream.getVideoTracks().forEach((t) => t.stop());
+  const audioTrack = displayStream.getAudioTracks()[0];
+  if (!audioTrack) {
+    displayStream.getTracks().forEach((t) => t.stop());
+    alert("システム音声を取得できませんでした。画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください");
+    return null;
+  }
+  systemAudioStream = displayStream;
+  return audioTrack;
+}
+
 async function startRecording() {
   const mode = document.querySelector('input[name="recMode"]:checked').value;
-  let stream;
+  const useSystemAudio = recSystemAudioCheckbox.checked;
+  let videoTracks;
 
   if (mode === "self") {
-    // ノイズ抑制後の音声を使う（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
-    const videoTrack = localStream.getVideoTracks()[0];
-    const audioTrack = outgoingAudioTrack || localStream.getAudioTracks()[0];
-    stream = new MediaStream([videoTrack, audioTrack].filter(Boolean));
+    videoTracks = [localStream.getVideoTracks()[0]].filter(Boolean);
   } else {
     ensureAudioGraph();
     if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
@@ -1533,15 +1555,31 @@ async function startRecording() {
     recordCanvas.width = Math.max(2, Math.round(gridRect.width));
     recordCanvas.height = Math.max(2, Math.round(gridRect.height));
     drawRecordFrame();
-    const canvasStream = recordCanvas.captureStream(30);
-    stream = new MediaStream([...canvasStream.getVideoTracks(), ...audioDest.stream.getAudioTracks()]);
+    videoTracks = recordCanvas.captureStream(30).getVideoTracks();
   }
+
+  let audioTracks;
+  if (useSystemAudio) {
+    const track = await captureSystemAudioTrack();
+    if (!track) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
+    audioTracks = [track];
+  } else if (mode === "self") {
+    // ノイズ抑制後の音声を使う（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
+    const audioTrack = outgoingAudioTrack || localStream.getAudioTracks()[0];
+    audioTracks = [audioTrack].filter(Boolean);
+  } else {
+    ensureAudioGraph();
+    audioTracks = audioDest.stream.getAudioTracks();
+  }
+
+  const stream = new MediaStream([...videoTracks, ...audioTracks]);
 
   recordedChunks = [];
   mediaRecorder = new MediaRecorder(stream, { mimeType: pickMimeType() });
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
   mediaRecorder.onstop = () => {
     if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; }
+    if (systemAudioStream) { systemAudioStream.getTracks().forEach((t) => t.stop()); systemAudioStream = null; }
     const blob = new Blob(recordedChunks, { type: "video/webm" });
     const url = URL.createObjectURL(blob);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
