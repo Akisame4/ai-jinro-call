@@ -38,13 +38,22 @@
   #noiseGatePanel input[type="range"] { width: 160px; }
   #noiseGatePanel .hint { color: #888; font-size: 11px; }
   #eqPanel {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding: 8px 16px; background: #1c2422; border-bottom: 1px solid #3a3a3a;
     font-size: 12px; color: #ccc;
   }
-  #eqPanel input[type="range"] { width: 140px; }
-  #eqPanel select { background: #111; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 4px 6px; }
   #eqPanel .hint { color: #888; font-size: 11px; }
+  #eqPanel button.small { background: #333; border: 1px solid #555; }
+  #eqPanel button.small:hover { background: #444; }
+  #eqBandsRow { display: flex; align-items: flex-end; gap: 10px; }
+  .eqBandCol { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 34px; }
+  .eqBandGainLabel { font-size: 10px; color: #9cf; min-height: 12px; }
+  .eqBandFreqLabel { font-size: 10px; color: #888; }
+  .eqBandSlider {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    width: 22px; height: 100px;
+  }
   #levelMeterTrack {
     position: relative; width: 180px; height: 14px; background: #111;
     border: 1px solid #444; border-radius: 3px; overflow: hidden;
@@ -185,16 +194,10 @@
     <span id="gateWarning" style="display:none; color:#ff8080;"></span>
   </div>
   <div id="eqPanel">
-    <label><input type="checkbox" id="eqEnabledCheckbox"> 周波数フィルタ</label>
-    <select id="eqTypeSelect">
-      <option value="highshelf" selected>高域を全体的に削る</option>
-      <option value="peaking">特定の帯域だけ削る</option>
-    </select>
-    <span>周波数: <b id="eqFreqValue">3000Hz</b></span>
-    <input type="range" id="eqFreqSlider" min="500" max="8000" step="100" value="3000">
-    <span>カット量: <b id="eqGainValue">-12dB</b></span>
-    <input type="range" id="eqGainSlider" min="-30" max="0" step="1" value="-12">
-    <span class="hint">タイピング音は高域に寄りやすいので、まず「高域を全体的に削る」を2000〜4000Hz・-12dBあたりで試してみてください</span>
+    <label><input type="checkbox" id="eqEnabledCheckbox"> グラフィックイコライザー</label>
+    <button type="button" class="small" id="eqResetBtn">リセット</button>
+    <div id="eqBandsRow"></div>
+    <span class="hint">各バンドのスライダーを上げると強調・下げるとカットされます。タイピング音を抑えたい場合は2k〜8kHz付近を下げてみてください</span>
   </div>
   <main>
     <div id="videoGridBar">
@@ -309,12 +312,13 @@ const HEALTH_CHECK_MS = 4000;
 const RAW_ACTIVE_RMS = 0.01;       // 生マイクが「明らかに音を拾っている」とみなすレベル
 const PROCESSED_DEAD_RMS = 0.0015; // 処理後がほぼ無音とみなすレベル
 
-// 周波数フィルタ（EQ）。音量ベースのゲートとは独立して、常時特定帯域を削る。
+// グラフィックイコライザー。音量ベースのゲートとは独立して、常時バンドごとにゲインをかける。
 // タイピング音は高域に寄りやすいため、発話中でも一定の効果が期待できる
+const EQ_BANDS = [60, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]; // Hz
 let eqEnabled = false;
-let eqType = "highshelf"; // "highshelf" | "peaking"
-let eqFreqHz = 3000;
-let eqGainDb = -12;
+let eqGainsDb = EQ_BANDS.map(() => 0); // バンドごとのゲイン（dB）。スライダーで調整
+const eqBandSliders = [];
+const eqBandGainLabels = [];
 
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 // 位置・サイズはすべて配置エリアに対する%で保持する。
@@ -363,11 +367,8 @@ const levelMeterFill = document.getElementById("levelMeterFill");
 const levelMeterMark = document.getElementById("levelMeterMark");
 const gateWarning = document.getElementById("gateWarning");
 const eqEnabledCheckbox = document.getElementById("eqEnabledCheckbox");
-const eqTypeSelect = document.getElementById("eqTypeSelect");
-const eqFreqSlider = document.getElementById("eqFreqSlider");
-const eqFreqValue = document.getElementById("eqFreqValue");
-const eqGainSlider = document.getElementById("eqGainSlider");
-const eqGainValue = document.getElementById("eqGainValue");
+const eqResetBtn = document.getElementById("eqResetBtn");
+const eqBandsRow = document.getElementById("eqBandsRow");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -407,24 +408,52 @@ gateThresholdSlider.addEventListener("input", () => {
 });
 updateThresholdMarker(gateThresholdDb);
 
+buildEqBandsUi();
 eqEnabledCheckbox.addEventListener("change", () => {
   eqEnabled = eqEnabledCheckbox.checked;
   applyEqLive();
 });
-eqTypeSelect.addEventListener("change", () => {
-  eqType = eqTypeSelect.value;
+eqResetBtn.addEventListener("click", () => {
+  eqGainsDb = EQ_BANDS.map(() => 0);
+  eqBandSliders.forEach(s => { s.value = "0"; });
+  eqBandGainLabels.forEach(l => { l.textContent = "0dB"; });
   applyEqLive();
 });
-eqFreqSlider.addEventListener("input", () => {
-  eqFreqHz = parseInt(eqFreqSlider.value, 10);
-  eqFreqValue.textContent = eqFreqHz + "Hz";
-  applyEqLive();
-});
-eqGainSlider.addEventListener("input", () => {
-  eqGainDb = parseInt(eqGainSlider.value, 10);
-  eqGainValue.textContent = eqGainDb + "dB";
-  applyEqLive();
-});
+
+// バンドごとに縦スライダーを生成する（周波数は固定・ゲインのみ可変のグラフィックイコライザー）
+function buildEqBandsUi() {
+  eqBandsRow.innerHTML = "";
+  EQ_BANDS.forEach((freq, i) => {
+    const col = document.createElement("div");
+    col.className = "eqBandCol";
+
+    const gainLabel = document.createElement("span");
+    gainLabel.className = "eqBandGainLabel";
+    gainLabel.textContent = "0dB";
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "eqBandSlider";
+    slider.min = "-24";
+    slider.max = "12";
+    slider.step = "1";
+    slider.value = "0";
+    slider.addEventListener("input", () => {
+      eqGainsDb[i] = parseInt(slider.value, 10);
+      gainLabel.textContent = (eqGainsDb[i] > 0 ? "+" : "") + eqGainsDb[i] + "dB";
+      applyEqBandLive(i);
+    });
+
+    const freqLabel = document.createElement("span");
+    freqLabel.className = "eqBandFreqLabel";
+    freqLabel.textContent = freq >= 1000 ? (freq / 1000) + "kHz" : freq + "Hz";
+
+    col.append(gainLabel, slider, freqLabel);
+    eqBandsRow.appendChild(col);
+    eqBandSliders.push(slider);
+    eqBandGainLabels.push(gainLabel);
+  });
+}
 
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
@@ -1163,7 +1192,8 @@ function stateIcon(state) {
 // （RNNoiseで綺麗になった後の信号にかけるので、生音声に直接ゲートをかけるより声への影響を抑えられる）。
 // 閾値はオフライン合成テストで調整済み。強くするほど声への影響（子音が削れる等）も増える。
 // @sapphi-red/web-noise-suppressor 経由でRNNoise/ゲートのWASM・AudioWorkletをCDNから読み込む。
-let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null, eqNodeRef = null;
+let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null;
+let eqBandNodes = [];
 async function loadRnnoiseModule() {
   if (!rnnoiseModuleLoaded) {
     const { loadRnnoise, RnnoiseWorkletNode, NoiseGateWorkletNode } = await import(`${RNNOISE_CDN_BASE}/dist/index.js`);
@@ -1181,10 +1211,11 @@ async function loadRnnoiseModule() {
 }
 
 function disconnectNoiseChain() {
-  for (const node of [micSourceNode, eqNodeRef, rnnoiseNodeRef, gateNodeRef, passthroughGain, suppressedGain]) {
+  for (const node of [micSourceNode, ...eqBandNodes, rnnoiseNodeRef, gateNodeRef, passthroughGain, suppressedGain]) {
     if (node) { try { node.disconnect(); } catch (e) {} }
   }
-  micSourceNode = eqNodeRef = rnnoiseNodeRef = gateNodeRef = passthroughGain = suppressedGain = null;
+  micSourceNode = rnnoiseNodeRef = gateNodeRef = passthroughGain = suppressedGain = null;
+  eqBandNodes = [];
 }
 
 // originalStream: マイクの生ストリーム / recordingDest: 録画用ミックス先
@@ -1221,22 +1252,29 @@ async function setupNoiseGate(originalStream, recordingDest) {
     micSourceNode.connect(passthroughGain);
     gateNodeRef.connect(suppressedGain);
 
-    // 周波数フィルタ（EQ）はRNNoiseの手前ではなく、ゲート適用後の最終出力にかける。
+    // グラフィックイコライザーはRNNoiseの手前ではなく、ゲート適用後の最終出力にかける。
     // RNNoiseに未加工の生信号を渡さないと発話検出の精度が落ち、出力が無音化することがあったため
     // （passthrough/suppressedGainはどちらか一方しか値を持たないクロスフェードなので、
-    // 両方をそのままEQに繋いでも単純に選択したのと同じ結果になる）。
-    eqNodeRef = audioCtx.createBiquadFilter();
-    eqNodeRef.type = eqType;
-    eqNodeRef.frequency.value = eqFreqHz;
-    eqNodeRef.Q.value = 1;
-    eqNodeRef.gain.value = eqEnabled ? eqGainDb : 0;
-    passthroughGain.connect(eqNodeRef);
-    suppressedGain.connect(eqNodeRef);
+    // 両方をそのままバンド列に繋いでも単純に選択したのと同じ結果になる）。
+    // バンドは直列に繋ぎ、両端はshelf・中間はpeakingにすることで帯域外に不自然な段差が出ないようにする。
+    eqBandNodes = EQ_BANDS.map((freq, i) => {
+      const node = audioCtx.createBiquadFilter();
+      node.frequency.value = freq;
+      if (i === 0) { node.type = "lowshelf"; }
+      else if (i === EQ_BANDS.length - 1) { node.type = "highshelf"; }
+      else { node.type = "peaking"; node.Q.value = 1.4; }
+      node.gain.value = eqEnabled ? eqGainsDb[i] : 0;
+      return node;
+    });
+    passthroughGain.connect(eqBandNodes[0]);
+    suppressedGain.connect(eqBandNodes[0]);
+    for (let i = 0; i < eqBandNodes.length - 1; i++) eqBandNodes[i].connect(eqBandNodes[i + 1]);
+    const eqOut = eqBandNodes[eqBandNodes.length - 1];
 
     const sendDest = audioCtx.createMediaStreamDestination();
-    eqNodeRef.connect(sendDest);
+    eqOut.connect(sendDest);
     if (recordingDest) {
-      eqNodeRef.connect(recordingDest);
+      eqOut.connect(recordingDest);
     }
     return sendDest.stream.getAudioTracks()[0];
   } catch (e) {
@@ -1296,13 +1334,14 @@ function attachLevelMeter() {
   if (!healthCheckTimer) healthCheckTimer = setInterval(runNoiseGateHealthCheck, HEALTH_CHECK_MS);
 }
 
-// EQノードのfrequency/gainはAudioParamなので、チェーンを再構築せずその場で反映できる
+// バンドのgainはAudioParamなので、チェーンを再構築せずその場で反映できる
+function applyEqBandLive(i) {
+  if (!eqBandNodes[i] || !audioCtx) return;
+  eqBandNodes[i].gain.setTargetAtTime(eqEnabled ? eqGainsDb[i] : 0, audioCtx.currentTime, 0.02);
+}
 function applyEqLive() {
-  if (!eqNodeRef || !audioCtx) return;
-  eqNodeRef.type = eqType;
-  const now = audioCtx.currentTime;
-  eqNodeRef.frequency.setTargetAtTime(eqFreqHz, now, 0.02);
-  eqNodeRef.gain.setTargetAtTime(eqEnabled ? eqGainDb : 0, now, 0.02);
+  if (!eqBandNodes.length || !audioCtx) return;
+  eqBandNodes.forEach((node, i) => node.gain.setTargetAtTime(eqEnabled ? eqGainsDb[i] : 0, audioCtx.currentTime, 0.02));
 }
 
 function rmsOf(analyser) {
