@@ -38,21 +38,24 @@
   #noiseGatePanel input[type="range"] { width: 160px; }
   #noiseGatePanel .hint { color: #888; font-size: 11px; }
   #eqPanel {
-    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    display: flex; flex-direction: column; gap: 6px;
     padding: 8px 16px; background: #1c2422; border-bottom: 1px solid #3a3a3a;
     font-size: 12px; color: #ccc;
   }
+  #eqPanelHeader { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #eqPanel .hint { color: #888; font-size: 11px; }
   #eqPanel button.small { background: #333; border: 1px solid #555; }
   #eqPanel button.small:hover { background: #444; }
-  #eqBandsRow { display: flex; align-items: flex-end; gap: 10px; }
-  .eqBandCol { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 34px; }
-  .eqBandGainLabel { font-size: 10px; color: #9cf; min-height: 12px; }
-  .eqBandFreqLabel { font-size: 10px; color: #888; }
+  #eqVisualWrap { overflow-x: auto; padding-bottom: 2px; }
+  #eqSpectrumCanvas { display: block; background: #10151a; border: 1px solid #333; border-radius: 3px 3px 0 0; }
+  #eqBandsRow { display: flex; align-items: flex-end; gap: 3px; }
+  .eqBandCol { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 24px; flex: 0 0 auto; }
+  .eqBandGainLabel { font-size: 9px; color: #9cf; min-height: 11px; white-space: nowrap; }
+  .eqBandFreqLabel { font-size: 8px; color: #888; white-space: nowrap; }
   .eqBandSlider {
     -webkit-appearance: slider-vertical;
     appearance: slider-vertical;
-    width: 22px; height: 100px;
+    width: 20px; height: 90px;
   }
   #levelMeterTrack {
     position: relative; width: 180px; height: 14px; background: #111;
@@ -194,10 +197,15 @@
     <span id="gateWarning" style="display:none; color:#ff8080;"></span>
   </div>
   <div id="eqPanel">
-    <label><input type="checkbox" id="eqEnabledCheckbox"> グラフィックイコライザー</label>
-    <button type="button" class="small" id="eqResetBtn">リセット</button>
-    <div id="eqBandsRow"></div>
-    <span class="hint">各バンドのスライダーを上げると強調・下げるとカットされます。タイピング音を抑えたい場合は2k〜8kHz付近を下げてみてください</span>
+    <div id="eqPanelHeader">
+      <label><input type="checkbox" id="eqEnabledCheckbox"> グラフィックイコライザー</label>
+      <button type="button" class="small" id="eqResetBtn">リセット</button>
+      <span class="hint">黄=生マイク／水色=ノイズ抑制後のスペクトラム。各バンドのスライダーを上げると強調・下げるとカットされます。タイピング音を抑えたい場合は2k〜8kHz付近を下げてみてください</span>
+    </div>
+    <div id="eqVisualWrap">
+      <canvas id="eqSpectrumCanvas" height="90"></canvas>
+      <div id="eqBandsRow"></div>
+    </div>
   </div>
   <main>
     <div id="videoGridBar">
@@ -314,7 +322,14 @@ const PROCESSED_DEAD_RMS = 0.0015; // 処理後がほぼ無音とみなすレベ
 
 // グラフィックイコライザー。音量ベースのゲートとは独立して、常時バンドごとにゲインをかける。
 // タイピング音は高域に寄りやすいため、発話中でも一定の効果が期待できる
-const EQ_BANDS = [60, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]; // Hz
+// ISO標準1/3オクターブバンド（31バンドグラフィックEQの定番構成）
+const EQ_BANDS = [
+  25, 31, 40, 50, 63, 80, 100, 125, 160, 200,
+  250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000,
+  2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000
+]; // Hz
+const EQ_BAND_Q = 4.3; // 1/3オクターブ幅に相当するQ値（中間バンド用）
+const EQ_COL_WIDTH = 24, EQ_COL_GAP = 3; // スライダー列幅・間隔（スペクトラム描画のx座標と揃える）
 let eqEnabled = false;
 let eqGainsDb = EQ_BANDS.map(() => 0); // バンドごとのゲイン（dB）。スライダーで調整
 const eqBandSliders = [];
@@ -369,6 +384,7 @@ const gateWarning = document.getElementById("gateWarning");
 const eqEnabledCheckbox = document.getElementById("eqEnabledCheckbox");
 const eqResetBtn = document.getElementById("eqResetBtn");
 const eqBandsRow = document.getElementById("eqBandsRow");
+const eqSpectrumCanvas = document.getElementById("eqSpectrumCanvas");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -421,6 +437,7 @@ eqResetBtn.addEventListener("click", () => {
 });
 
 // バンドごとに縦スライダーを生成する（周波数は固定・ゲインのみ可変のグラフィックイコライザー）
+// スペクトラム表示用キャンバスは、各スライダーの列幅・間隔と揃えて同じx座標で描画する
 function buildEqBandsUi() {
   eqBandsRow.innerHTML = "";
   EQ_BANDS.forEach((freq, i) => {
@@ -453,6 +470,56 @@ function buildEqBandsUi() {
     eqBandSliders.push(slider);
     eqBandGainLabels.push(gainLabel);
   });
+  const totalWidth = EQ_BANDS.length * EQ_COL_WIDTH + (EQ_BANDS.length - 1) * EQ_COL_GAP;
+  eqSpectrumCanvas.width = totalWidth;
+  eqSpectrumCanvas.style.width = totalWidth + "px";
+  drawEqSpectrum(); // データが無くてもグリッドだけは表示しておく
+}
+
+function eqBandCenterX(i) {
+  return i * (EQ_COL_WIDTH + EQ_COL_GAP) + EQ_COL_WIDTH / 2;
+}
+
+// analyserの周波数データから、各EQバンド位置に対応するdB値を読み取る
+function eqBandLevelsFromAnalyser(analyser) {
+  const data = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(data);
+  const nyquist = audioCtx.sampleRate / 2;
+  return EQ_BANDS.map(freq => {
+    const bin = Math.min(data.length - 1, Math.max(0, Math.round((freq / nyquist) * data.length)));
+    return data[bin];
+  });
+}
+
+// マイクの生スペクトラム（黄）とノイズ抑制後のスペクトラム（水色）をバンド位置に重ねて描く
+function drawEqSpectrum() {
+  const ctx = eqSpectrumCanvas.getContext("2d");
+  const w = eqSpectrumCanvas.width, h = eqSpectrumCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.strokeStyle = "#2a3238";
+  ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(t => {
+    const y = Math.round(h * t) + 0.5;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  });
+
+  if (!audioCtx) return;
+  const minDb = -90, maxDb = -10;
+  const dbToY = db => h * (1 - (db - minDb) / (maxDb - minDb));
+  const drawCurve = (levels, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    levels.forEach((db, i) => {
+      const x = eqBandCenterX(i);
+      const y = Math.max(0, Math.min(h, dbToY(db)));
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+  if (rawAnalyser) drawCurve(eqBandLevelsFromAnalyser(rawAnalyser), "#e0c93a");
+  if (gateAnalyser) drawCurve(eqBandLevelsFromAnalyser(gateAnalyser), "#4ac1e0");
 }
 
 copyBtn.addEventListener("click", copyResults);
@@ -1262,7 +1329,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
       node.frequency.value = freq;
       if (i === 0) { node.type = "lowshelf"; }
       else if (i === EQ_BANDS.length - 1) { node.type = "highshelf"; }
-      else { node.type = "peaking"; node.Q.value = 1.4; }
+      else { node.type = "peaking"; node.Q.value = EQ_BAND_Q; }
       node.gain.value = eqEnabled ? eqGainsDb[i] : 0;
       return node;
     });
@@ -1318,10 +1385,14 @@ function attachLevelMeter() {
   if (gateAnalyser) { try { gateAnalyser.disconnect(); } catch (e) {} }
   if (rawAnalyser) { try { rawAnalyser.disconnect(); } catch (e) {} }
   gateAnalyser = audioCtx.createAnalyser();
-  gateAnalyser.fftSize = 1024;
+  gateAnalyser.fftSize = 4096;
+  gateAnalyser.minDecibels = -90;
+  gateAnalyser.maxDecibels = -10;
   rnnoiseNodeRef.connect(gateAnalyser);
   rawAnalyser = audioCtx.createAnalyser();
-  rawAnalyser.fftSize = 1024;
+  rawAnalyser.fftSize = 4096;
+  rawAnalyser.minDecibels = -90;
+  rawAnalyser.maxDecibels = -10;
   micSourceNode.connect(rawAnalyser); // 生マイクそのものの音量を見る（EQの影響を受けない）
   // destinationにつながっていないと処理系がpullしないブラウザがあるため、無音経路で明示的に繋いでおく
   const silentOut1 = audioCtx.createGain(); silentOut1.gain.value = 0;
@@ -1361,6 +1432,7 @@ function meterLoop() {
   if (rawAnalyser) rawMaxRms = Math.max(rawMaxRms, rmsOf(rawAnalyser));
   const db = rms > 0 ? 20 * Math.log10(rms) : METER_MIN_DB;
   levelMeterFill.style.width = dbToMeterPercent(db) + "%";
+  drawEqSpectrum();
 }
 
 // 生マイクには音があるのに、ノイズ抑制後がずっと無音のままなら処理が壊れていると判断し、
