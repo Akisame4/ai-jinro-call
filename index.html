@@ -37,6 +37,14 @@
   }
   #noiseGatePanel input[type="range"] { width: 160px; }
   #noiseGatePanel .hint { color: #888; font-size: 11px; }
+  #eqPanel {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 16px; background: #1c2422; border-bottom: 1px solid #3a3a3a;
+    font-size: 12px; color: #ccc;
+  }
+  #eqPanel input[type="range"] { width: 140px; }
+  #eqPanel select { background: #111; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 4px 6px; }
+  #eqPanel .hint { color: #888; font-size: 11px; }
   #levelMeterTrack {
     position: relative; width: 180px; height: 14px; background: #111;
     border: 1px solid #444; border-radius: 3px; overflow: hidden;
@@ -176,6 +184,18 @@
     <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください</span>
     <span id="gateWarning" style="display:none; color:#ff8080;"></span>
   </div>
+  <div id="eqPanel">
+    <label><input type="checkbox" id="eqEnabledCheckbox"> 周波数フィルタ</label>
+    <select id="eqTypeSelect">
+      <option value="highshelf" selected>高域を全体的に削る</option>
+      <option value="peaking">特定の帯域だけ削る</option>
+    </select>
+    <span>周波数: <b id="eqFreqValue">3000Hz</b></span>
+    <input type="range" id="eqFreqSlider" min="500" max="8000" step="100" value="3000">
+    <span>カット量: <b id="eqGainValue">-12dB</b></span>
+    <input type="range" id="eqGainSlider" min="-30" max="0" step="1" value="-12">
+    <span class="hint">タイピング音は高域に寄りやすいので、まず「高域を全体的に削る」を2000〜4000Hz・-12dBあたりで試してみてください</span>
+  </div>
   <main>
     <div id="videoGridBar">
       <span>映像タイルはドラッグで移動・右下の■でサイズ変更できます（この端末のみに保存）</span>
@@ -289,6 +309,13 @@ const HEALTH_CHECK_MS = 4000;
 const RAW_ACTIVE_RMS = 0.01;       // 生マイクが「明らかに音を拾っている」とみなすレベル
 const PROCESSED_DEAD_RMS = 0.0015; // 処理後がほぼ無音とみなすレベル
 
+// 周波数フィルタ（EQ）。音量ベースのゲートとは独立して、常時特定帯域を削る。
+// タイピング音は高域に寄りやすいため、発話中でも一定の効果が期待できる
+let eqEnabled = false;
+let eqType = "highshelf"; // "highshelf" | "peaking"
+let eqFreqHz = 3000;
+let eqGainDb = -12;
+
 // 自由レイアウト（この端末のみ・ドラッグ移動＆リサイズで配置を保存）
 // 位置・サイズはすべて配置エリアに対する%で保持する。
 // フルスクリーン化などで配置エリアの実サイズが変わっても、タイルは自動的に追従して拡大縮小される。
@@ -335,6 +362,12 @@ const gateThresholdValue = document.getElementById("gateThresholdValue");
 const levelMeterFill = document.getElementById("levelMeterFill");
 const levelMeterMark = document.getElementById("levelMeterMark");
 const gateWarning = document.getElementById("gateWarning");
+const eqEnabledCheckbox = document.getElementById("eqEnabledCheckbox");
+const eqTypeSelect = document.getElementById("eqTypeSelect");
+const eqFreqSlider = document.getElementById("eqFreqSlider");
+const eqFreqValue = document.getElementById("eqFreqValue");
+const eqGainSlider = document.getElementById("eqGainSlider");
+const eqGainValue = document.getElementById("eqGainValue");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
@@ -373,6 +406,26 @@ gateThresholdSlider.addEventListener("input", () => {
   gateThresholdDebounce = setTimeout(() => applyGateThreshold(db), 250);
 });
 updateThresholdMarker(gateThresholdDb);
+
+eqEnabledCheckbox.addEventListener("change", () => {
+  eqEnabled = eqEnabledCheckbox.checked;
+  applyEqLive();
+});
+eqTypeSelect.addEventListener("change", () => {
+  eqType = eqTypeSelect.value;
+  applyEqLive();
+});
+eqFreqSlider.addEventListener("input", () => {
+  eqFreqHz = parseInt(eqFreqSlider.value, 10);
+  eqFreqValue.textContent = eqFreqHz + "Hz";
+  applyEqLive();
+});
+eqGainSlider.addEventListener("input", () => {
+  eqGainDb = parseInt(eqGainSlider.value, 10);
+  eqGainValue.textContent = eqGainDb + "dB";
+  applyEqLive();
+});
+
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
@@ -1110,7 +1163,7 @@ function stateIcon(state) {
 // （RNNoiseで綺麗になった後の信号にかけるので、生音声に直接ゲートをかけるより声への影響を抑えられる）。
 // 閾値はオフライン合成テストで調整済み。強くするほど声への影響（子音が削れる等）も増える。
 // @sapphi-red/web-noise-suppressor 経由でRNNoise/ゲートのWASM・AudioWorkletをCDNから読み込む。
-let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null;
+let micSourceNode = null, rnnoiseNodeRef = null, gateNodeRef = null, eqNodeRef = null;
 async function loadRnnoiseModule() {
   if (!rnnoiseModuleLoaded) {
     const { loadRnnoise, RnnoiseWorkletNode, NoiseGateWorkletNode } = await import(`${RNNOISE_CDN_BASE}/dist/index.js`);
@@ -1128,10 +1181,10 @@ async function loadRnnoiseModule() {
 }
 
 function disconnectNoiseChain() {
-  for (const node of [micSourceNode, rnnoiseNodeRef, gateNodeRef, passthroughGain, suppressedGain]) {
+  for (const node of [micSourceNode, eqNodeRef, rnnoiseNodeRef, gateNodeRef, passthroughGain, suppressedGain]) {
     if (node) { try { node.disconnect(); } catch (e) {} }
   }
-  micSourceNode = rnnoiseNodeRef = gateNodeRef = passthroughGain = suppressedGain = null;
+  micSourceNode = eqNodeRef = rnnoiseNodeRef = gateNodeRef = passthroughGain = suppressedGain = null;
 }
 
 // originalStream: マイクの生ストリーム / recordingDest: 録画用ミックス先
@@ -1146,6 +1199,13 @@ async function setupNoiseGate(originalStream, recordingDest) {
 
     disconnectNoiseChain();
     micSourceNode = audioCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+    eqNodeRef = audioCtx.createBiquadFilter();
+    eqNodeRef.type = eqType;
+    eqNodeRef.frequency.value = eqFreqHz;
+    eqNodeRef.Q.value = 1;
+    eqNodeRef.gain.value = eqEnabled ? eqGainDb : 0;
+    micSourceNode.connect(eqNodeRef);
+
     rnnoiseNodeRef = new RnnoiseWorkletNode(audioCtx, { wasmBinary: rnnoiseWasmBinary, maxChannels: 2 });
     gateNodeRef = new NoiseGateWorkletNode(audioCtx, {
       openThreshold: gateThresholdDb,
@@ -1153,7 +1213,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
       holdMs: GATE_HOLD_MS,
       maxChannels: 2
     });
-    micSourceNode.connect(rnnoiseNodeRef);
+    eqNodeRef.connect(rnnoiseNodeRef);
     rnnoiseNodeRef.connect(gateNodeRef);
     attachLevelMeter();
 
@@ -1164,7 +1224,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
     passthroughGain.gain.value = gateEnabled ? 0 : 1;
     suppressedGain.gain.value = gateEnabled ? 1 : 0;
 
-    micSourceNode.connect(passthroughGain);
+    eqNodeRef.connect(passthroughGain);
     gateNodeRef.connect(suppressedGain);
 
     const sendDest = audioCtx.createMediaStreamDestination();
@@ -1212,7 +1272,7 @@ function updateThresholdMarker(db) {
 // RNNoise適用後・ゲート適用前の信号レベルを可視化する（ゲートが実際に見ている音量そのもの）
 // 生マイク側も同時に監視し、処理が壊れて無音になっていないかの自動チェックにも使う
 function attachLevelMeter() {
-  if (!rnnoiseNodeRef || !micSourceNode || !audioCtx) return;
+  if (!rnnoiseNodeRef || !eqNodeRef || !audioCtx) return;
   if (gateAnalyser) { try { gateAnalyser.disconnect(); } catch (e) {} }
   if (rawAnalyser) { try { rawAnalyser.disconnect(); } catch (e) {} }
   gateAnalyser = audioCtx.createAnalyser();
@@ -1220,7 +1280,7 @@ function attachLevelMeter() {
   rnnoiseNodeRef.connect(gateAnalyser);
   rawAnalyser = audioCtx.createAnalyser();
   rawAnalyser.fftSize = 1024;
-  micSourceNode.connect(rawAnalyser);
+  eqNodeRef.connect(rawAnalyser); // EQ後（＝RNNoiseに実際入る信号）の音量を見る
   // destinationにつながっていないと処理系がpullしないブラウザがあるため、無音経路で明示的に繋いでおく
   const silentOut1 = audioCtx.createGain(); silentOut1.gain.value = 0;
   gateAnalyser.connect(silentOut1).connect(audioCtx.destination);
@@ -1230,6 +1290,15 @@ function attachLevelMeter() {
   processedMaxRms = 0;
   if (!meterIntervalId) meterIntervalId = setInterval(meterLoop, 100);
   if (!healthCheckTimer) healthCheckTimer = setInterval(runNoiseGateHealthCheck, HEALTH_CHECK_MS);
+}
+
+// EQノードのfrequency/gainはAudioParamなので、チェーンを再構築せずその場で反映できる
+function applyEqLive() {
+  if (!eqNodeRef || !audioCtx) return;
+  eqNodeRef.type = eqType;
+  const now = audioCtx.currentTime;
+  eqNodeRef.frequency.setTargetAtTime(eqFreqHz, now, 0.02);
+  eqNodeRef.gain.setTargetAtTime(eqEnabled ? eqGainDb : 0, now, 0.02);
 }
 
 function rmsOf(analyser) {
