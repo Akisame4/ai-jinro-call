@@ -69,6 +69,13 @@
   #levelMeterMark {
     position: absolute; top: -2px; bottom: -2px; width: 2px; background: #ff5050; left: 50%;
   }
+  #gateStateIndicator {
+    display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px;
+    background: #333; color: #999; min-width: 70px; text-align: center;
+  }
+  #gateStateIndicator.open { background: #1e4a1e; color: #7ee07e; }
+  #gateStateIndicator.closing { background: #4a3f1e; color: #e0c93a; }
+  #gateStateIndicator.closed { background: #4a1e1e; color: #ff8080; }
   button {
     background: #3a6ea5; color: #fff; border: none;
     padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 14px;
@@ -207,7 +214,8 @@
       <div id="levelMeterFill"></div>
       <div id="levelMeterMark"></div>
     </div>
-    <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください</span>
+    <span id="gateStateIndicator">-</span>
+    <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください。ゲートは無音時だけ働くため、喋っている間はずっと「開」のままで正常です</span>
     <span id="gateWarning" style="display:none; color:#ff8080;"></span>
   </div>
   <div id="eqPanel">
@@ -406,6 +414,7 @@ const gateThresholdValue = document.getElementById("gateThresholdValue");
 const levelMeterFill = document.getElementById("levelMeterFill");
 const levelMeterMark = document.getElementById("levelMeterMark");
 const gateWarning = document.getElementById("gateWarning");
+const gateStateIndicator = document.getElementById("gateStateIndicator");
 const eqEnabledCheckbox = document.getElementById("eqEnabledCheckbox");
 const eqResetBtn = document.getElementById("eqResetBtn");
 const eqBandsRow = document.getElementById("eqBandsRow");
@@ -1508,7 +1517,28 @@ function meterLoop() {
   if (rawAnalyser) rawMaxRms = Math.max(rawMaxRms, rmsOf(rawAnalyser));
   const db = rms > 0 ? 20 * Math.log10(rms) : METER_MIN_DB;
   levelMeterFill.style.width = dbToMeterPercent(db) + "%";
+  updateGateStateIndicator(db);
   drawEqSpectrum();
+}
+
+// ゲートが実際に開いているか閉じているかを見た目で確認できるようにする
+// （喋っている間はずっと「開」のままで正常。ゲートは無音時にしか閉じない）
+function updateGateStateIndicator(db) {
+  gateStateIndicator.classList.remove("open", "closing", "closed");
+  if (!gateEnabled) {
+    gateStateIndicator.textContent = "ゲート: OFF";
+    return;
+  }
+  if (db >= gateThresholdDb) {
+    gateStateIndicator.textContent = "ゲート: 開（通過中）";
+    gateStateIndicator.classList.add("open");
+  } else if (db >= gateThresholdDb - GATE_CLOSE_OFFSET_DB) {
+    gateStateIndicator.textContent = "ゲート: 保持中";
+    gateStateIndicator.classList.add("closing");
+  } else {
+    gateStateIndicator.textContent = "ゲート: 閉（カット中）";
+    gateStateIndicator.classList.add("closed");
+  }
 }
 
 // 生マイクには音があるのに、ノイズ抑制後がずっと無音のままなら処理が壊れていると判断し、
