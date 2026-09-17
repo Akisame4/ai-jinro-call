@@ -1437,13 +1437,18 @@ function meterLoop() {
 
 // 生マイクには音があるのに、ノイズ抑制後がずっと無音のままなら処理が壊れていると判断し、
 // 声が届かなくなるのを防ぐため自動でOFFに戻す（環境依存の不具合に対する保険）
+// 「生マイクは音があるのに処理後が無音」は、実際には
+// タイピング音だけでしゃべっていない瞬間にRNNoiseが正しく無音化しているだけのケースが多く、
+// 処理が壊れているとは限らない。誤検知で強制OFFにすると喋り続けなければならない場面で
+// 逆にノイズ抑制が切れてしまうため、自動OFFはやめて警告表示のみに留める。
 function runNoiseGateHealthCheck() {
   const rawHadSound = rawMaxRms > RAW_ACTIVE_RMS;
   const processedIsDead = processedMaxRms < PROCESSED_DEAD_RMS;
   if (gateEnabled && rawHadSound && processedIsDead) {
-    toggleNoiseGate();
-    gateWarning.textContent = "⚠ ノイズ抑制の処理が機能していないようなので、自動的にOFFにしました";
+    gateWarning.textContent = "⚠ ノイズ抑制後の音声がずっと無音気味です（喋っていない間の誤検知の場合もあります。声が届かない場合はノイズ抑制をOFFにしてください）";
     gateWarning.style.display = "inline";
+  } else {
+    gateWarning.style.display = "none";
   }
   rawMaxRms = 0;
   processedMaxRms = 0;
