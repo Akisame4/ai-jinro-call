@@ -37,6 +37,8 @@
   }
   #noiseGatePanel input[type="range"] { width: 160px; }
   #noiseGatePanel .hint { color: #888; font-size: 11px; }
+  #gateWarning { color: #ff8080; visibility: hidden; }
+  #gateWarning.show { visibility: visible; }
   #eqPanel {
     display: flex; flex-direction: column; gap: 6px;
     padding: 8px 16px; background: #1c2422; border-bottom: 1px solid #3a3a3a;
@@ -115,6 +117,12 @@
     margin-bottom: 8px; font-size: 12px; color: #999; flex-wrap: wrap; gap: 8px 16px;
   }
   #videoGridBar .rightControls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #displayOptionsBar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 8px; font-size: 12px; color: #999;
+  }
+  #displayOptionsBar label { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  #displayOptionsBar .optionGroup { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #templateSelect {
     background: #111; color: #fff; border: 1px solid #555; border-radius: 4px;
     padding: 4px 6px; font-size: 12px;
@@ -150,6 +158,18 @@
     padding: 2px 6px; font-size: 11px; color: #9ad0ff; background: rgba(0,0,0,0.45);
     pointer-events: none;
   }
+  .tile .nameLabel {
+    position: absolute; right: 4px; bottom: 4px; z-index: 6;
+    padding: 2px 8px; font-size: 12px; color: #fff; background: rgba(0,0,0,0.55);
+    border-radius: 3px; pointer-events: none; max-width: calc(100% - 8px);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #videoGrid.hideNames .nameLabel { display: none; }
+  .tile .frameOverlay {
+    position: absolute; inset: 0; z-index: 7; pointer-events: none;
+    background-size: 100% 100%; background-repeat: no-repeat; display: none;
+  }
+  #videoGrid.showFrame .frameOverlay.hasImage { display: block; }
   .tile .resizeHandle {
     position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
     cursor: nwse-resize; background: rgba(255,255,255,0.18);
@@ -167,8 +187,8 @@
     border: 1px solid #444; padding: 6px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis;
   }
   table#controlsTable th { background: #2c2c2c; }
-  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 34%; }
-  table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 22%; }
+  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 28%; }
+  table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 18%; }
   table#controlsTable td.ctrlCell { text-align: center; white-space: nowrap; }
   table#controlsTable .ctrlBtn { width: 100%; min-width: 0; }
   table#controlsTable tr[draggable="true"] { cursor: grab; }
@@ -235,7 +255,7 @@
     </div>
     <span id="gateStateIndicator">-</span>
     <span class="hint">バー＝今のマイク音量／赤線＝抑制の境目。声が赤線より右（大きい）に来るように調整してください。ゲートは無音時だけ働くため、喋っている間はずっと「開」のままで正常です</span>
-    <span id="gateWarning" style="display:none; color:#ff8080;"></span>
+    <span id="gateWarning">⚠ ノイズ抑制後の音声がずっと無音気味です（喋っていない間の誤検知の場合もあります。声が届かない場合はノイズ抑制をOFFにしてください）</span>
   </div>
   <div id="eqPanel">
     <div id="eqPanelHeader">
@@ -259,6 +279,21 @@
         <span id="templateStatus"></span>
         <button class="small" id="resetLayoutBtn">配置をリセット</button>
         <button class="small" id="fullscreenGridBtn">⛶ 配置エリアをフルスクリーン</button>
+      </span>
+    </div>
+    <div id="displayOptionsBar">
+      <label><input type="checkbox" id="nameLabelToggle" checked> 名前表示</label>
+      <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
+      <span class="optionGroup">
+        <button class="small" id="bgImageSelectBtn">背景画像を設定</button>
+        <button class="small" id="bgImageClearBtn">背景を削除</button>
+        <input type="file" id="bgImageInput" accept="image/*" style="display:none;">
+      </span>
+      <span class="optionGroup">
+        <label><input type="checkbox" id="frameToggle"> 枠を表示</label>
+        <button class="small" id="frameImageSelectBtn">枠画像(PNG)を設定</button>
+        <button class="small" id="frameImageClearBtn">枠を削除</button>
+        <input type="file" id="frameImageInput" accept="image/png" style="display:none;">
       </span>
     </div>
     <div id="videoGrid"></div>
@@ -410,7 +445,12 @@ const COLS = 3;
 const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 100;
 let tilePositions = loadPositions();
-let tileZCounter = 1; // クリック/ドラッグ開始のたびに増分し、最後に触ったタイルが最前面に来るようにする
+const GRID_SNAP_STEP_PCT = 5; // グリッドスナップの刻み幅（配置エリアに対する%）
+let gridSnapEnabled = localStorage.getItem("aiJinroGridSnap") === "1";
+let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定はON
+function snapPct(v) {
+  return gridSnapEnabled ? Math.round(v / GRID_SNAP_STEP_PCT) * GRID_SNAP_STEP_PCT : v;
+}
 
 // レイアウト同期（申請・許可制）。leaderId が立っている間、他の参加者は個別に許可/拒否できる。
 // 許可した人（フォロワー）は自分のドラッグ操作がロックされ、リーダーの配置（peerId+種別キー基準）を反映する。
@@ -488,6 +528,15 @@ const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
 const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
+const nameLabelToggle = document.getElementById("nameLabelToggle");
+const gridSnapToggle = document.getElementById("gridSnapToggle");
+const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
+const bgImageClearBtn = document.getElementById("bgImageClearBtn");
+const bgImageInput = document.getElementById("bgImageInput");
+const frameToggle = document.getElementById("frameToggle");
+const frameImageSelectBtn = document.getElementById("frameImageSelectBtn");
+const frameImageClearBtn = document.getElementById("frameImageClearBtn");
+const frameImageInput = document.getElementById("frameImageInput");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
@@ -554,7 +603,7 @@ joinBtn.addEventListener("click", () => {
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
 gateBtn.addEventListener("click", () => {
-  gateWarning.style.display = "none";
+  gateWarning.classList.remove("show");
   toggleNoiseGate();
 });
 layoutSyncBtn.addEventListener("click", onLayoutSyncBtnClick);
@@ -675,6 +724,100 @@ function drawEqSpectrum() {
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
+
+// ---------- 表示オプション: 名前表示・グリッドスナップ・背景画像・枠画像 ----------
+nameLabelToggle.checked = showNameLabels;
+videoGrid.classList.toggle("hideNames", !showNameLabels);
+nameLabelToggle.addEventListener("change", () => {
+  showNameLabels = nameLabelToggle.checked;
+  localStorage.setItem("aiJinroShowNames", showNameLabels ? "1" : "0");
+  videoGrid.classList.toggle("hideNames", !showNameLabels);
+});
+
+gridSnapToggle.checked = gridSnapEnabled;
+gridSnapToggle.addEventListener("change", () => {
+  gridSnapEnabled = gridSnapToggle.checked;
+  localStorage.setItem("aiJinroGridSnap", gridSnapEnabled ? "1" : "0");
+});
+
+const BG_IMAGE_KEY = "aiJinroBgImage";
+function applyBgImage() {
+  const dataUrl = localStorage.getItem(BG_IMAGE_KEY);
+  if (dataUrl) {
+    videoGrid.style.backgroundImage = `url(${dataUrl})`;
+    videoGrid.style.backgroundSize = "cover";
+    videoGrid.style.backgroundPosition = "center";
+  } else {
+    videoGrid.style.backgroundImage = "";
+  }
+}
+applyBgImage();
+bgImageSelectBtn.addEventListener("click", () => bgImageInput.click());
+bgImageInput.addEventListener("change", () => {
+  const file = bgImageInput.files[0];
+  bgImageInput.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      localStorage.setItem(BG_IMAGE_KEY, reader.result);
+      applyBgImage();
+    } catch (e) {
+      alert("画像の保存に失敗しました（サイズが大きすぎる可能性があります）");
+    }
+  };
+  reader.readAsDataURL(file);
+});
+bgImageClearBtn.addEventListener("click", () => {
+  localStorage.removeItem(BG_IMAGE_KEY);
+  applyBgImage();
+});
+
+const FRAME_IMAGE_KEY = "aiJinroFrameImage";
+const FRAME_SHOW_KEY = "aiJinroFrameShow";
+let frameShowEnabled = localStorage.getItem(FRAME_SHOW_KEY) === "1";
+frameToggle.checked = frameShowEnabled;
+videoGrid.classList.toggle("showFrame", frameShowEnabled);
+function applyFrameImageToTile(tile) {
+  const dataUrl = localStorage.getItem(FRAME_IMAGE_KEY);
+  const overlay = tile.querySelector(".frameOverlay");
+  if (!overlay) return;
+  if (dataUrl) {
+    overlay.style.backgroundImage = `url(${dataUrl})`;
+    overlay.classList.add("hasImage");
+  } else {
+    overlay.style.backgroundImage = "";
+    overlay.classList.remove("hasImage");
+  }
+}
+function applyFrameImageToAllTiles() {
+  videoGrid.querySelectorAll(".tile").forEach(applyFrameImageToTile);
+}
+frameToggle.addEventListener("change", () => {
+  frameShowEnabled = frameToggle.checked;
+  localStorage.setItem(FRAME_SHOW_KEY, frameShowEnabled ? "1" : "0");
+  videoGrid.classList.toggle("showFrame", frameShowEnabled);
+});
+frameImageSelectBtn.addEventListener("click", () => frameImageInput.click());
+frameImageInput.addEventListener("change", () => {
+  const file = frameImageInput.files[0];
+  frameImageInput.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      localStorage.setItem(FRAME_IMAGE_KEY, reader.result);
+      applyFrameImageToAllTiles();
+    } catch (e) {
+      alert("画像の保存に失敗しました（サイズが大きすぎる可能性があります）");
+    }
+  };
+  reader.readAsDataURL(file);
+});
+frameImageClearBtn.addEventListener("click", () => {
+  localStorage.removeItem(FRAME_IMAGE_KEY);
+  applyFrameImageToAllTiles();
+});
 templateSelect.addEventListener("change", applySelectedTemplate);
 saveTemplateBtn.addEventListener("click", saveCurrentAsTemplate);
 deleteTemplateBtn.addEventListener("click", deleteSelectedTemplate);
@@ -689,10 +832,12 @@ recSystemAudioCheckbox.addEventListener("change", () => {
 controlsTable.addEventListener("click", (e) => {
   const btn = e.target.closest(".ctrlBtn");
   if (!btn) return;
-  const { action, id } = btn.dataset;
+  const { action, id, key } = btn.dataset;
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
-  else if (action === "hide") toggleHideFor(id);
+  else if (action === "hide") toggleHideFor(key);
+  else if (action === "front") { if (!layoutInteractionLocked()) bringTileKeyToFront(key); }
+  else if (action === "back") { if (!layoutInteractionLocked()) sendTileKeyToBack(key); }
 });
 
 // 参加者行のドラッグ&ドロップで並び替え（＝映像タイルの位置入れ替え）
@@ -839,6 +984,7 @@ function listenMembers() {
     if (isLayoutLeader()) publishLeaderLayout(); // 参加者の増減・画面共有の開始終了もフォロワーに反映する
     updateBulkHostControlsVisibility();
     renderBulkRecordStatusTable();
+    refreshNameLabels();
   });
 }
 
@@ -1564,8 +1710,15 @@ function layoutInteractionLocked() {
   return !!followingLayout && !isLayoutLeader();
 }
 
+// 常に「現在の最大z-index+1」を計算して設定する。単純増分カウンタだと、
+// スロット番号由来の既定z（idx+1、画面共有タイル等で大きくなりうる）を追い抜けないことがあるため
 function bringTileToFront(tile) {
-  tile.style.zIndex = String(++tileZCounter);
+  let maxZ = 0;
+  videoGrid.querySelectorAll(".tile").forEach((t) => {
+    const z = parseInt(t.style.zIndex, 10) || 0;
+    if (z > maxZ) maxZ = z;
+  });
+  tile.style.zIndex = String(maxZ + 1);
 }
 
 function makeDraggable(tile) {
@@ -1593,6 +1746,8 @@ function makeDraggable(tile) {
     const tileHPct = (tile.offsetHeight / containerH) * 100;
     let newLeft = Math.max(0, Math.min(100 - tileWPct, origLeftPct + dxPct));
     let newTop = Math.max(0, Math.min(100 - tileHPct, origTopPct + dyPct));
+    newLeft = Math.max(0, Math.min(100 - tileWPct, snapPct(newLeft)));
+    newTop = Math.max(0, Math.min(100 - tileHPct, snapPct(newTop)));
     tile.style.left = newLeft + "%";
     tile.style.top = newTop + "%";
     if (isLayoutLeader()) scheduleLayoutPublish();
@@ -1628,7 +1783,8 @@ function makeResizable(tile) {
     const dxPct = ((e.clientX - startX) / containerW) * 100;
     const leftPct = parseFloat(tile.style.left) || 0;
     const maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
-    const newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
+    let newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
+    newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, snapPct(newW)));
     tile.style.width = newW + "%";
     if (isLayoutLeader()) scheduleLayoutPublish();
   });
@@ -1649,13 +1805,30 @@ function createVideoTile(peerId, name, isSelf) {
   tile.id = `tile-${peerId}`;
   tile.innerHTML = `
     <video id="video-${peerId}" autoplay playsinline ${isSelf ? "muted" : ""}></video>
+    <div class="frameOverlay" id="frame-${peerId}"></div>
+    <div class="nameLabel" id="name-${peerId}">${escapeHtml(name)}</div>
     <div class="statsLine" id="stats-${peerId}"></div>
     <div class="resizeHandle" title="ドラッグでサイズ変更"></div>
   `;
   videoGrid.appendChild(tile);
+  applyFrameImageToTile(tile);
   makeDraggable(tile);
   makeResizable(tile);
   renderGrid();
+}
+
+function updateNameLabel(key, name) {
+  const el = document.getElementById(`name-${key}`);
+  if (el) el.textContent = name;
+}
+
+// 表示名は入室直後は「接続中...」のプレースホルダーで作られるため、
+// membersのデータが揃ったタイミングで実際の名前に更新する
+function refreshNameLabels() {
+  for (const id of Object.keys(members)) {
+    updateNameLabel(id, members[id].name);
+    if (members[id].sharing) updateNameLabel(`${id}-screen`, `${members[id].name}（画面共有）`);
+  }
 }
 
 function removeVideoTile(peerId) {
@@ -1692,9 +1865,23 @@ function toggleGlobalMute() {
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
 // 行をドラッグして入れ替えると、対応する映像タイルの位置も入れ替わる
 function renderControls(slots) {
-  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>表示</th></tr>";
+  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>表示</th><th>重なり順</th></tr>";
   for (const s of slots) {
-    if (!s || s.kind !== "camera") continue;
+    if (!s) continue;
+    if (s.kind === "screen") {
+      const hidden = hiddenTiles.has(s.key);
+      html += `<tr data-key="${s.key}">
+        <td>${escapeHtml(s.name)}（画面共有）</td>
+        <td class="ctrlCell">-</td>
+        <td class="ctrlCell">-</td>
+        <td class="ctrlCell"><button class="small ctrlBtn" data-action="hide" data-key="${s.key}">${hidden ? "表示に戻す" : "非表示"}</button></td>
+        <td class="ctrlCell">
+          <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
+          <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
+        </td>
+      </tr>`;
+      continue;
+    }
     const isSelf = s.id === myId;
     const micOn = isSelf
       ? (localStream?.getAudioTracks()[0]?.enabled ?? true)
@@ -1702,15 +1889,39 @@ function renderControls(slots) {
     const camOn = isSelf
       ? (localStream?.getVideoTracks()[0]?.enabled ?? true)
       : !locallyHiddenVideoPeers.has(s.id);
-    const hidden = hiddenTiles.has(s.id);
-    html += `<tr draggable="true" data-id="${s.id}">
+    const hidden = hiddenTiles.has(s.key);
+    html += `<tr draggable="true" data-id="${s.id}" data-key="${s.key}">
       <td><span class="dragHandle">⠿</span>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button></td>
-      <td class="ctrlCell">${isSelf ? "" : `<button class="small ctrlBtn" data-action="hide" data-id="${s.id}">${hidden ? "表示に戻す" : "非表示"}</button>`}</td>
+      <td class="ctrlCell">${isSelf ? "" : `<button class="small ctrlBtn" data-action="hide" data-key="${s.key}">${hidden ? "表示に戻す" : "非表示"}</button>`}</td>
+      <td class="ctrlCell">
+        <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
+        <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
+      </td>
     </tr>`;
   }
   controlsTable.innerHTML = html;
+}
+
+function bringTileKeyToFront(key) {
+  const tile = document.getElementById(`tile-${key}`);
+  if (!tile) return;
+  bringTileToFront(tile);
+  saveTileRect(tile);
+}
+function sendTileKeyToBack(key) {
+  const tile = document.getElementById(`tile-${key}`);
+  if (!tile) return;
+  let minZ = Infinity;
+  videoGrid.querySelectorAll(".tile").forEach((t) => {
+    if (t === tile) return;
+    const z = parseInt(t.style.zIndex, 10) || 0;
+    if (z < minZ) minZ = z;
+  });
+  if (!isFinite(minZ)) minZ = 1;
+  tile.style.zIndex = String(minZ - 1);
+  saveTileRect(tile);
 }
 
 function toggleMicFor(id) {
@@ -1967,12 +2178,7 @@ function updateGateStateIndicator(db) {
 function runNoiseGateHealthCheck() {
   const rawHadSound = rawMaxRms > RAW_ACTIVE_RMS;
   const processedIsDead = processedMaxRms < PROCESSED_DEAD_RMS;
-  if (gateEnabled && rawHadSound && processedIsDead) {
-    gateWarning.textContent = "⚠ ノイズ抑制後の音声がずっと無音気味です（喋っていない間の誤検知の場合もあります。声が届かない場合はノイズ抑制をOFFにしてください）";
-    gateWarning.style.display = "inline";
-  } else {
-    gateWarning.style.display = "none";
-  }
+  gateWarning.classList.toggle("show", gateEnabled && rawHadSound && processedIsDead);
   rawMaxRms = 0;
   processedMaxRms = 0;
 }
