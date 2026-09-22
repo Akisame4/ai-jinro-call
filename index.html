@@ -187,6 +187,16 @@
     padding: 6px 10px; border-radius: 4px; display: inline-block; width: fit-content;
   }
   #recDownloads a:hover { text-decoration: underline; }
+  #bulkRecordControls, #bulkHostControls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  #bulkRecordStatusTable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  #bulkRecordStatusTable th, #bulkRecordStatusTable td { border: 1px solid #444; padding: 4px 8px; text-align: left; }
+  #bulkRecordStatusTable th { background: #2c2c2c; }
+  .bulkStateBadge { padding: 2px 8px; border-radius: 3px; font-size: 12px; }
+  .bulkStateBadge.idle { background: #333; color: #999; }
+  .bulkStateBadge.ready { background: #2c4a2c; color: #9ee09e; }
+  .bulkStateBadge.recording { background: #4a1e1e; color: #ff8080; }
+  .bulkStateBadge.saved { background: #1e3a4a; color: #8dc4ff; }
+  .bulkStateBadge.error { background: #4a3f1e; color: #e0c93a; }
 </style>
 </head>
 <body>
@@ -271,6 +281,23 @@
       </div>
       <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音＋自分のマイク（ノイズ抑制後）を両方録音します）</span>
       <div id="recDownloads"></div>
+    </section>
+
+    <section class="panel">
+      <h2>一括録画（編集素材用・各自の端末にローカル保存）</h2>
+      <div class="hint">通話には表示していない画面（プレイ視点など）を、各自のブラウザから個別に保存できます。録画データは通話には一切送信されません。まず各自「録画する画面を選択」しておき、ホストの合図で全員同時に開始・停止します。</div>
+      <div id="bulkRecordControls">
+        <button id="bulkSelectSourceBtn">① 録画する画面を選択</button>
+        <button id="bulkChooseSaveBtn" style="display:none;">② 保存先を選択</button>
+        <span id="bulkSourceStatus" class="hint"></span>
+      </div>
+      <div id="bulkHostControls" style="display:none;">
+        <button id="bulkHostStartBtn">● 一斉録画開始</button>
+        <button id="bulkHostStopBtn" style="display:none;">■ 一斉録画停止</button>
+        <span class="hint">（ホストのみ操作できます）</span>
+      </div>
+      <span class="hint" id="bulkSleepWarning" style="display:none; color:#ff8080;">⚠ 長時間収録になる場合は、収録中にPCがスリープしない設定になっているか確認してください</span>
+      <table id="bulkRecordStatusTable" style="margin-top:10px;"></table>
     </section>
 
     <section class="panel">
@@ -394,6 +421,22 @@ let followingLayout = null;     // 追従中に適用しているレイアウト
 let lastLayoutPublish = 0;
 const LAYOUT_PUBLISH_THROTTLE_MS = 100;
 
+// 一括録画（編集素材用）。各自が事前に選んだ画面をローカルのMediaRecorderで録画し、
+// ホストの合図（RTDB）で全員同時に開始・停止する。映像は通話には一切送信しない
+const BULK_REC_VIDEO_BPS = 6000000; // 6Mbps（1080p想定）
+const BULK_REC_AUDIO_BPS = 128000;
+const BULK_REC_TIMESLICE_MS = 1000; // この間隔でディスクへ逐次書き込む（メモリに溜め込まない）
+const BULK_REC_WARN_BYTES = 9 * 1024 * 1024 * 1024; // 約3時間分の目安
+let bulkPendingStream = null; // ①で選択済み・②の保存先選択待ちの画面ストリーム
+let bulkRecordSourceStream = null;
+let bulkRecordFileHandle = null;
+let bulkRecordWritable = null;
+let bulkRecordExt = "mp4";
+let bulkMediaRecorder = null;
+let bulkWriteChain = Promise.resolve();
+let bulkRecordingSessionStartedAt = null; // 現在処理中の録画セッションのstartedAt（二重start防止）
+let bulkMembersStatus = {}; // peerId -> {state, updatedAt, startedAtMs, message}
+
 // レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
 const BUILTIN_TEMPLATES = {
   "6人グリッド（初期配置）": {},
@@ -455,6 +498,14 @@ const templateNameInput = document.getElementById("templateNameInput");
 const saveTemplateBtn = document.getElementById("saveTemplateBtn");
 const deleteTemplateBtn = document.getElementById("deleteTemplateBtn");
 const templateStatus = document.getElementById("templateStatus");
+const bulkSelectSourceBtn = document.getElementById("bulkSelectSourceBtn");
+const bulkChooseSaveBtn = document.getElementById("bulkChooseSaveBtn");
+const bulkSourceStatus = document.getElementById("bulkSourceStatus");
+const bulkHostControls = document.getElementById("bulkHostControls");
+const bulkHostStartBtn = document.getElementById("bulkHostStartBtn");
+const bulkHostStopBtn = document.getElementById("bulkHostStopBtn");
+const bulkSleepWarning = document.getElementById("bulkSleepWarning");
+const bulkRecordStatusTable = document.getElementById("bulkRecordStatusTable");
 
 // 表示名はこの端末に保存し、次回以降は自動で入力欄に復元する
 nameInput.value = localStorage.getItem("aiJinroDisplayName") || "";
@@ -507,6 +558,10 @@ gateBtn.addEventListener("click", () => {
   toggleNoiseGate();
 });
 layoutSyncBtn.addEventListener("click", onLayoutSyncBtnClick);
+bulkSelectSourceBtn.addEventListener("click", selectBulkRecordScreen);
+bulkChooseSaveBtn.addEventListener("click", chooseBulkRecordSaveDestination);
+bulkHostStartBtn.addEventListener("click", hostStartBulkRecording);
+bulkHostStopBtn.addEventListener("click", hostStopBulkRecording);
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -727,11 +782,13 @@ async function joinRoom(name) {
   onDisconnect(myMemberRef).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/recordingStatus/${myId}`)).remove();
 
   listenMembers();
   listenSignals();
   listenStatus();
   listenLayoutSync();
+  listenBulkRecording();
 }
 
 window.addEventListener("beforeunload", () => {
@@ -780,6 +837,8 @@ function listenMembers() {
     renderGrid();
     renderControls(slots);
     if (isLayoutLeader()) publishLeaderLayout(); // 参加者の増減・画面共有の開始終了もフォロワーに反映する
+    updateBulkHostControlsVisibility();
+    renderBulkRecordStatusTable();
   });
 }
 
@@ -2067,6 +2126,215 @@ function stopRecording() {
   recIndicator.style.display = "none";
 }
 
+// ---------- 一括録画（各自ローカル保存・編集素材用） ----------
+// rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt }
+// rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs? }
+// 通話画面に表示していない画面（プレイ視点等）を、各自のブラウザ内だけでMediaRecorderに録画し、
+// showSaveFilePickerで選んだファイルへtimesliceごとに逐次書き込む（メモリに溜め込まない）。
+// ホストは「最も早く入室した参加者」とする（新たな役職選定UIを増やさず、既存のjoinedAt順で決定的に決める）。
+function isBulkHost() {
+  const presentIds = Object.keys(members).filter((id) => members[id]?.joinedAt != null);
+  if (!presentIds.length) return false;
+  const earliest = presentIds.slice().sort((a, b) => members[a].joinedAt - members[b].joinedAt)[0];
+  return earliest === myId;
+}
+
+function updateBulkHostControlsVisibility() {
+  bulkHostControls.style.display = isBulkHost() ? "flex" : "none";
+}
+
+function pickBulkRecordMimeType(hasAudio) {
+  const mp4 = hasAudio ? "video/mp4;codecs=avc1,mp4a.40.2" : "video/mp4;codecs=avc1";
+  if (MediaRecorder.isTypeSupported(mp4)) return { mime: mp4, ext: "mp4", fallback: false };
+  const webm = hasAudio ? "video/webm;codecs=vp8,opus" : "video/webm;codecs=vp8";
+  if (MediaRecorder.isTypeSupported(webm)) return { mime: webm, ext: "webm", fallback: true };
+  return { mime: "video/webm", ext: "webm", fallback: true };
+}
+
+function writeMyBulkStatus(state, extra) {
+  update(ref(db, `rooms/${ROOM_ID}/recordingStatus/${myId}`), {
+    state, updatedAt: serverTimestamp(), ...(extra || {})
+  });
+}
+
+// ①画面を選択（getDisplayMedia）。showSaveFilePickerは別クリックのハンドラで直接呼ぶ必要があるため
+// （awaitを挟んだ後だと「ユーザー操作中」とみなされずブロックされるブラウザがある）、ここでは保存はしない
+async function selectBulkRecordScreen() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  } catch (e) {
+    return; // キャンセル等
+  }
+  if (bulkPendingStream) bulkPendingStream.getTracks().forEach((t) => t.stop());
+  bulkPendingStream = stream;
+  bulkSourceStatus.textContent = "画面を選択しました。続けて保存先を選んでください";
+  bulkChooseSaveBtn.style.display = "";
+  stream.getVideoTracks()[0].onended = () => {
+    if (bulkPendingStream === stream) {
+      bulkPendingStream = null;
+      bulkSourceStatus.textContent = "画面の共有が終了しました。もう一度選択してください";
+      bulkChooseSaveBtn.style.display = "none";
+    }
+    if (bulkRecordSourceStream === stream) {
+      bulkRecordSourceStream = null;
+      bulkSourceStatus.textContent = "録画する画面の共有が終了しました。もう一度選択してください";
+      writeMyBulkStatus("idle");
+    }
+  };
+}
+
+// ②保存先を選択（showSaveFilePicker）。クリックハンドラの最初のawaitとして直接呼ぶ
+async function chooseBulkRecordSaveDestination() {
+  if (!bulkPendingStream) return;
+  if (!window.showSaveFilePicker) {
+    bulkSourceStatus.textContent = "このブラウザは非対応です（Chromeをお使いください）";
+    return;
+  }
+  const stream = bulkPendingStream;
+  const hasAudio = stream.getAudioTracks().length > 0;
+  const { ext, fallback } = pickBulkRecordMimeType(hasAudio);
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  let handle;
+  try {
+    handle = await window.showSaveFilePicker({
+      suggestedName: `${myName}_${ts}.${ext}`,
+      types: [{
+        description: ext === "mp4" ? "MP4 動画" : "WebM 動画",
+        accept: { [ext === "mp4" ? "video/mp4" : "video/webm"]: [`.${ext}`] }
+      }]
+    });
+  } catch (e) {
+    return; // キャンセル等（画面の選択はそのまま保持し、②だけ再度押させる）
+  }
+
+  if (bulkRecordSourceStream && bulkRecordSourceStream !== stream) {
+    bulkRecordSourceStream.getTracks().forEach((t) => t.stop());
+  }
+  bulkRecordSourceStream = stream;
+  bulkRecordFileHandle = handle;
+  bulkRecordExt = ext;
+  bulkPendingStream = null;
+  bulkChooseSaveBtn.style.display = "none";
+
+  let freeSpaceNote = "";
+  try {
+    const est = await navigator.storage.estimate();
+    const available = (est.quota || 0) - (est.usage || 0);
+    if (available && available < BULK_REC_WARN_BYTES) {
+      freeSpaceNote = `（空き容量の目安が少ない可能性: 約${(available / 1024 / 1024 / 1024).toFixed(1)}GB。3時間の録画には約9GB必要です）`;
+    }
+  } catch (e) { /* Storage APIが無い環境ではスキップ */ }
+
+  bulkSourceStatus.textContent = `準備完了（${ext.toUpperCase()}${fallback ? "・非対応環境のためWebMにフォールバック" : ""}）${freeSpaceNote}`;
+  bulkSleepWarning.style.display = "inline";
+  writeMyBulkStatus("ready");
+
+  // 録画セッションが既に進行中の部屋に後から追いついた場合は、選択直後から開始する
+  if (bulkRecordingSessionStartedAt) startBulkRecordingLocal(bulkRecordingSessionStartedAt);
+}
+
+function listenBulkRecording() {
+  onValue(ref(db, `rooms/${ROOM_ID}/recording`), (snap) => {
+    const data = snap.val();
+    const state = data?.state;
+    const startedAt = data?.startedAt;
+    if (state === "recording" && startedAt !== bulkRecordingSessionStartedAt) {
+      bulkRecordingSessionStartedAt = startedAt;
+      startBulkRecordingLocal(startedAt);
+    } else if (state !== "recording" && bulkRecordingSessionStartedAt) {
+      bulkRecordingSessionStartedAt = null;
+      stopBulkRecordingLocal();
+    }
+    bulkHostStartBtn.style.display = state === "recording" ? "none" : "";
+    bulkHostStopBtn.style.display = state === "recording" ? "" : "none";
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/recordingStatus`), (snap) => {
+    bulkMembersStatus = snap.val() || {};
+    renderBulkRecordStatusTable();
+  });
+}
+
+function startBulkRecordingLocal(startedAt) {
+  if (!bulkRecordSourceStream || !bulkRecordFileHandle) {
+    writeMyBulkStatus("error", { message: "画面が未選択です" });
+    return;
+  }
+  if (bulkMediaRecorder && bulkMediaRecorder.state !== "inactive") return; // 二重開始防止
+
+  const startedAtMs = Date.now();
+  (async () => {
+    try {
+      bulkRecordWritable = await bulkRecordFileHandle.createWritable();
+    } catch (e) {
+      writeMyBulkStatus("error", { message: "保存先への書き込みに失敗しました: " + e.message });
+      return;
+    }
+    bulkWriteChain = Promise.resolve();
+    const hasAudio = bulkRecordSourceStream.getAudioTracks().length > 0;
+    const { mime } = pickBulkRecordMimeType(hasAudio);
+    try {
+      bulkMediaRecorder = new MediaRecorder(bulkRecordSourceStream, {
+        mimeType: mime,
+        videoBitsPerSecond: BULK_REC_VIDEO_BPS,
+        audioBitsPerSecond: BULK_REC_AUDIO_BPS
+      });
+    } catch (e) {
+      writeMyBulkStatus("error", { message: "MediaRecorderの初期化に失敗しました: " + e.message });
+      return;
+    }
+    bulkMediaRecorder.ondataavailable = (e) => {
+      if (e.data.size === 0 || !bulkRecordWritable) return;
+      bulkWriteChain = bulkWriteChain
+        .then(() => e.data.arrayBuffer())
+        .then((buf) => bulkRecordWritable.write(buf))
+        .catch((err) => writeMyBulkStatus("error", { message: "書き込みエラー: " + err.message }));
+    };
+    bulkMediaRecorder.onstop = async () => {
+      try {
+        await bulkWriteChain;
+        await bulkRecordWritable.close();
+        writeMyBulkStatus("saved");
+      } catch (e) {
+        writeMyBulkStatus("error", { message: "保存の完了に失敗しました: " + e.message });
+      }
+      bulkRecordWritable = null;
+    };
+    bulkMediaRecorder.start(BULK_REC_TIMESLICE_MS);
+    writeMyBulkStatus("recording", { startedAtMs });
+  })();
+}
+
+function stopBulkRecordingLocal() {
+  if (bulkMediaRecorder && bulkMediaRecorder.state !== "inactive") bulkMediaRecorder.stop();
+}
+
+async function hostStartBulkRecording() {
+  if (!isBulkHost()) return;
+  await remove(ref(db, `rooms/${ROOM_ID}/recordingStatus`)); // 前回セッションの状態を持ち越さない
+  await set(ref(db, `rooms/${ROOM_ID}/recording`), { state: "recording", startedAt: serverTimestamp() });
+}
+
+async function hostStopBulkRecording() {
+  if (!isBulkHost()) return;
+  await set(ref(db, `rooms/${ROOM_ID}/recording`), { state: "stopped", updatedAt: serverTimestamp() });
+}
+
+const BULK_STATE_LABELS = { idle: "未準備", ready: "準備完了", recording: "録画中", saved: "保存完了", error: "エラー" };
+function renderBulkRecordStatusTable() {
+  const presentIds = Object.keys(members).filter((id) => members[id]?.joinedAt != null)
+    .sort((a, b) => members[a].joinedAt - members[b].joinedAt);
+  let html = "<tr><th>参加者</th><th>状態</th></tr>";
+  for (const id of presentIds) {
+    const s = bulkMembersStatus[id];
+    const state = s?.state || "idle";
+    const label = BULK_STATE_LABELS[state] || state;
+    const extra = state === "error" && s?.message ? `（${escapeHtml(s.message)}）` : "";
+    html += `<tr><td>${escapeHtml(members[id].name)}${id === myId ? "（自分）" : ""}</td><td><span class="bulkStateBadge ${state}">${label}</span>${extra}</td></tr>`;
+  }
+  bulkRecordStatusTable.innerHTML = html;
+}
+
 // ---------- 結果コピー ----------
 function copyResults() {
   const now = new Date().toLocaleString("ja-JP");
@@ -2091,6 +2359,16 @@ function copyResults() {
     const s = entry.lastStats;
     if (!s) { text += `${myName} → ${name}: 統計未取得\n`; continue; }
     text += `${myName} → ${name}: 経路=${s.routeType}, ビットレート=${s.kbps}kbps, RTT=${s.rttMs ?? "-"}ms, パケットロス=${s.lossPct}%\n`;
+  }
+
+  if (Object.keys(bulkMembersStatus).length) {
+    text += "\n[一括録画の各自の状態・開始時刻（編集時の同期用）]\n";
+    for (const [peerId, s] of Object.entries(bulkMembersStatus)) {
+      const name = members[peerId]?.name || peerId;
+      const label = BULK_STATE_LABELS[s.state] || s.state;
+      const startedAt = s.startedAtMs ? new Date(s.startedAtMs).toISOString() : "-";
+      text += `${name}: ${label} / 開始時刻=${startedAt}\n`;
+    }
   }
 
   navigator.clipboard.writeText(text).then(() => {

@@ -12,6 +12,8 @@ rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z,hidden}(0〜1の相対値) }, updatedAt }
+rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt }
+rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs? }
 ```
 
 ## 画面共有（カメラと別タイル表示）
@@ -30,6 +32,17 @@ rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen
 - 追従中（`followingLayout`が非nullかつ自分がリーダーでない）はこの端末のドラッグ・リサイズ・非表示操作をロックする（`layoutInteractionLocked()`）。
 - 追従解除（同期解除ボタン、リーダー消失、リーダーからの拒否状態変化）の際は、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）に変換して引き継ぐ（`snapshotLayoutIntoLocal`）。手動解除は`myManualUnfollow`フラグで管理し、「再度追従する」で同じリーダーへ許可を取り直さず復帰できる。
 
+## 一括録画（編集素材用・各自ローカル保存）
+
+- 通話には表示していない画面（プレイ視点等）を、各自のブラウザ内だけで`MediaRecorder`に録画し、`showSaveFilePicker`で選んだファイルへ1秒間隔（timeslice）で逐次書き込む（メモリに溜め込まない）。映像は通話（RTCPeerConnection）には一切送信しない。
+- **ホスト＝最も早く入室した参加者**（`isBulkHost()`。新たな役職選定UIを増やさず、既存の`joinedAt`順で決定的に決める）。ホストのみ「一斉録画開始/停止」ボタンが表示される。
+- 事前準備は2クリック必須：①`getDisplayMedia`で画面選択→②`showSaveFilePicker`で保存先選択。**この2つを1つの非同期関数内で連続awaitすると、2つ目の呼び出しがユーザー操作起点と認識されず失敗するブラウザがあるため、必ず別々のクリックハンドラに分離している**（`selectBulkRecordScreen` → `chooseBulkRecordSaveDestination`）。
+- MP4（`avc1,mp4a.40.2`）を優先し、`MediaRecorder.isTypeSupported()`で非対応の場合のみWebM(vp8,opus)にフォールバック（`pickBulkRecordMimeType`）。
+- 空き容量は`navigator.storage.estimate()`で概算表示する（オリジンのストレージクォータであり、`showSaveFilePicker`で選んだ実際の保存先ドライブの空き容量とは正確には一致しない前提の目安表示）。
+- 各自の録画開始時刻（ミリ秒, `startedAtMs`）は`recordingStatus`に記録し、「結果をコピー」の出力にも含める（編集時のファイル間同期用）。フレームフラッシュ等による同期補助は未実装（将来の改善候補）。
+
 ## 既知の制約
 
 - 実カメラ・実マイク・画面共有ピッカーはブラウザのネイティブ許可ダイアログを伴うため、ブラウザ自動操作だけでは動作確認が完結しない。コード変更後は実機（複数タブ/複数人）での確認が必要。
+- `showSaveFilePicker`（File System Access API）はChrome/Edge系のみ対応。Firefox/Safariでは一括録画機能が使えない（非対応時はメッセージを表示するのみ）。
+- MP4出力ファイルをDaVinci Resolve等で読み込んだ際のシーク・音ズレ、システム音声キャプチャでゲーム音を含められるかは未検証（メモ記載の「要検証」項目のまま）。
