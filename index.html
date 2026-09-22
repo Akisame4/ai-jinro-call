@@ -87,6 +87,13 @@
   #entryError, #joinError {
     color: #ff6b6b; padding: 8px 16px; font-size: 14px; white-space: pre-wrap;
   }
+  #layoutSyncPanel {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 16px; background: #26321c; border-bottom: 1px solid #3a3a3a;
+    font-size: 13px; color: #d8e8c0;
+  }
+  #layoutSyncPanel button.small { background: #4a7a2f; }
+  #layoutSyncPanel button.small.reject { background: #7a3a2f; }
   #entryScreen {
     max-width: 420px; margin: 60px auto; padding: 24px;
     background: #262626; border-radius: 8px; text-align: center;
@@ -205,8 +212,10 @@
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
+    <button id="layoutSyncBtn">🔗 レイアウト同期を申請</button>
   </header>
   <div id="joinError"></div>
+  <div id="layoutSyncPanel" style="display:none;"></div>
   <div id="noiseGatePanel">
     <span id="gateThresholdLabel">ノイズ抑制の強さ: <b id="gateThresholdValue">20%</b></span>
     <input type="range" id="gateThresholdSlider" min="0" max="100" step="1" value="20">
@@ -274,7 +283,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, set, get, update, remove, push, onValue, onDisconnect, serverTimestamp
+  getDatabase, ref, set, get, update, remove, push, onValue, onDisconnect, serverTimestamp, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ai-jinro-call プロジェクト。ROOM_ID は RTDB セキュリティルール(rooms/test1)と一致させる必要がある
@@ -374,6 +383,16 @@ const COLS = 3;
 const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 100;
 let tilePositions = loadPositions();
+let tileZCounter = 1; // クリック/ドラッグ開始のたびに増分し、最後に触ったタイルが最前面に来るようにする
+
+// レイアウト同期（申請・許可制）。leaderId が立っている間、他の参加者は個別に許可/拒否できる。
+// 許可した人（フォロワー）は自分のドラッグ操作がロックされ、リーダーの配置（peerId+種別キー基準）を反映する。
+// 座標は画面サイズに依存しないよう0〜1の相対値でRTDBに保存する
+let syncLeaderId = null;        // 現在の同期リーダー（RTDB purview。自分がリーダーならmyId）
+let myFollowState = null;       // 自分の追従状態: null(未応答) | "accepted" | "rejected"
+let followingLayout = null;     // 追従中に適用しているレイアウトデータ（{tiles:{key:{left,top,width,z,hidden}}}）
+let lastLayoutPublish = 0;
+const LAYOUT_PUBLISH_THROTTLE_MS = 100;
 
 // レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
 const BUILTIN_TEMPLATES = {
@@ -410,6 +429,8 @@ const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
 const gateBtn = document.getElementById("gateBtn");
+const layoutSyncBtn = document.getElementById("layoutSyncBtn");
+const layoutSyncPanel = document.getElementById("layoutSyncPanel");
 const gateThresholdSlider = document.getElementById("gateThresholdSlider");
 const gateThresholdValue = document.getElementById("gateThresholdValue");
 const levelMeterFill = document.getElementById("levelMeterFill");
@@ -485,6 +506,7 @@ gateBtn.addEventListener("click", () => {
   gateWarning.style.display = "none";
   toggleNoiseGate();
 });
+layoutSyncBtn.addEventListener("click", onLayoutSyncBtnClick);
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -704,16 +726,20 @@ async function joinRoom(name) {
   await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false });
   onDisconnect(myMemberRef).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
 
   listenMembers();
   listenSignals();
   listenStatus();
+  listenLayoutSync();
 }
 
 window.addEventListener("beforeunload", () => {
   try {
     remove(ref(db, `rooms/${ROOM_ID}/members/${myId}`));
     remove(ref(db, `rooms/${ROOM_ID}/status/${myId}`));
+    remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`));
+    if (syncLeaderId === myId) remove(ref(db, `rooms/${ROOM_ID}/layoutSync/leaderId`));
   } catch (e) { /* best effort */ }
 });
 
@@ -751,8 +777,9 @@ function listenMembers() {
     }
 
     const slots = computeSlots();
-    syncVideoTiles(slots);
+    renderGrid();
     renderControls(slots);
+    if (isLayoutLeader()) publishLeaderLayout(); // 参加者の増減・画面共有の開始終了もフォロワーに反映する
   });
 }
 
@@ -805,9 +832,11 @@ async function handleDescription(fromId, type, payload) {
   entry.ignoreOffer = !entry.polite && offerCollision;
   if (entry.ignoreOffer) return;
 
+  // streamKinds は setRemoteDescription より先にマージする。ontrackはsetRemoteDescriptionの処理中に
+  // 発火するため、後でマージすると種別判定が間に合わずcameraにフォールバックしてしまう
+  if (payload.streamKinds) Object.assign(entry.remoteStreamKinds, payload.streamKinds);
   await pc.setRemoteDescription(new RTCSessionDescription({ type, sdp: payload.sdp }));
   await flushPendingCandidates(fromId);
-  if (payload.streamKinds) Object.assign(entry.remoteStreamKinds, payload.streamKinds);
 
   if (type === "offer") {
     const answer = await pc.createAnswer();
@@ -1053,8 +1082,7 @@ async function toggleScreenShare() {
   update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: true });
 
   screenStream.getVideoTracks()[0].onended = () => { if (isSharing) stopScreenShare(); };
-  const slots = computeSlots();
-  syncVideoTiles(slots);
+  renderGrid();
 }
 
 function stopScreenShare() {
@@ -1071,6 +1099,7 @@ function stopScreenShare() {
     screenStream = null;
   }
   removeVideoTile(`${myId}-screen`);
+  renderGrid();
 
   update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: false });
 }
@@ -1080,7 +1109,7 @@ function attachScreenStreamToTile(peerId, stream) {
   createVideoTile(`${peerId}-screen`, `${name}（画面共有）`, false);
   const video = document.getElementById(`video-${peerId}-screen`);
   if (video) video.srcObject = stream;
-  syncVideoTiles(computeSlots());
+  renderGrid();
 }
 
 function removeRemoteScreenTile(peerId) {
@@ -1102,12 +1131,14 @@ function defaultPos(index) {
   return { left: col * (TILE_W_PCT + COL_GAP_PCT), top: row * ROW_TOP_PCT, width: TILE_W_PCT };
 }
 function resetLayout() {
+  if (layoutInteractionLocked()) return;
   tilePositions = {};
   savePositions();
   customOrder = [];
   const slots = computeSlots();
-  syncVideoTiles(slots);
+  renderGrid();
   renderControls(slots);
+  if (isLayoutLeader()) publishLeaderLayout();
 }
 
 // ---------- レイアウトテンプレート ----------
@@ -1141,12 +1172,14 @@ function showTemplateStatus(msg) {
 function applySelectedTemplate() {
   const name = templateSelect.value;
   if (!name) return;
+  if (layoutInteractionLocked()) { showTemplateStatus("追従中は変更できません"); return; }
   const tpl = Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name) ? BUILTIN_TEMPLATES[name] : templates[name];
   if (!tpl) return;
   tilePositions = JSON.parse(JSON.stringify(tpl));
   savePositions();
-  syncVideoTiles(computeSlots());
+  renderGrid();
   showTemplateStatus(`「${name}」を適用しました`);
+  if (isLayoutLeader()) publishLeaderLayout();
 }
 
 function saveCurrentAsTemplate() {
@@ -1176,6 +1209,220 @@ function deleteSelectedTemplate() {
   showTemplateStatus(`「${name}」を削除しました`);
 }
 
+// ---------- レイアウト同期（申請・許可制） ----------
+// rooms/{ROOM_ID}/layoutSync/leaderId: 現在のリーダーのpeerId（先着優先。runTransactionで排他制御）
+// rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
+// rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたはpeerId-screen]: {left,top,width,z,hidden}(0〜1の相対値) }, updatedAt }
+let followingLeaderId = null;   // 現在購読中のlayouts/{leaderId}のleaderId（購読の張り替え判定用）
+let layoutDataUnsub = null;     // layouts/{leaderId}購読の解除関数
+let myManualUnfollow = false;   // 「同期解除」ボタンで自分から抜けた状態（同じリーダーの間は再追従しない）
+let prevRawSyncLeaderId = undefined;
+
+function isLayoutLeader() {
+  return syncLeaderId === myId;
+}
+
+function listenLayoutSync() {
+  onValue(ref(db, `rooms/${ROOM_ID}/layoutSync/leaderId`), (snap) => {
+    const val = snap.val() || null;
+    if (val !== prevRawSyncLeaderId) myManualUnfollow = false; // リーダーが変わった＝新しい申請なので手動解除状態をリセット
+    prevRawSyncLeaderId = val;
+    syncLeaderId = val;
+    updateFollowingSubscription();
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`), (snap) => {
+    myFollowState = snap.val() || null;
+    updateFollowingSubscription();
+  });
+}
+
+// syncLeaderId・myFollowState・myManualUnfollow の現在値から「追従すべきか」を判定し、
+// layouts/{leaderId}の購読を必要に応じて張り替える。追従が終わったときは直前のレイアウトを
+// この端末のローカル配置として引き継いでから自由操作に戻す
+function updateFollowingSubscription() {
+  const shouldFollow = !!syncLeaderId && syncLeaderId !== myId && myFollowState === "accepted" && !myManualUnfollow;
+
+  if (shouldFollow) {
+    if (followingLeaderId !== syncLeaderId) {
+      if (layoutDataUnsub) { layoutDataUnsub(); layoutDataUnsub = null; }
+      followingLeaderId = syncLeaderId;
+      layoutDataUnsub = onValue(ref(db, `rooms/${ROOM_ID}/layouts/${syncLeaderId}`), (snap) => {
+        followingLayout = snap.val();
+        renderGrid();
+      });
+    }
+  } else {
+    if (layoutDataUnsub) { layoutDataUnsub(); layoutDataUnsub = null; followingLeaderId = null; }
+    if (followingLayout) {
+      snapshotLayoutIntoLocal(followingLayout);
+      followingLayout = null;
+      renderGrid();
+    }
+  }
+  renderLayoutSyncPanel();
+}
+
+function onLayoutSyncBtnClick() {
+  if (isLayoutLeader()) stopLeadingLayoutSync();
+  else if (syncLeaderId) showLayoutSyncMessage("既に他の人がレイアウト同期を申請中です");
+  else requestLayoutSync();
+}
+
+async function requestLayoutSync() {
+  const leaderRef = ref(db, `rooms/${ROOM_ID}/layoutSync/leaderId`);
+  let result;
+  try {
+    result = await runTransaction(leaderRef, (current) => (current ? undefined : myId));
+  } catch (e) {
+    console.warn("layout sync request failed", e);
+    return;
+  }
+  if (!result.committed) {
+    showLayoutSyncMessage("既に他の人がレイアウト同期を申請中です");
+    return;
+  }
+  onDisconnect(leaderRef).remove(); // 申請者が切断したら自動で同期解除される
+  await remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers`)); // 前回セッションの応答を持ち越さない
+  await publishLeaderLayout();
+  renderLayoutSyncPanel();
+}
+
+async function stopLeadingLayoutSync() {
+  const leaderRef = ref(db, `rooms/${ROOM_ID}/layoutSync/leaderId`);
+  onDisconnect(leaderRef).cancel();
+  await remove(leaderRef);
+  await remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers`));
+  await remove(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`));
+  renderLayoutSyncPanel();
+}
+
+function acceptLayoutSync() {
+  if (!syncLeaderId) return;
+  myManualUnfollow = false;
+  set(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`), "accepted");
+}
+
+function rejectLayoutSync() {
+  if (!syncLeaderId) return;
+  set(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`), "rejected");
+}
+
+// 追従者がいつでも抜けられる解除ボタン。抜けた時点のレイアウトはそのままローカル配置として維持する
+function unfollowLayoutSync() {
+  myManualUnfollow = true;
+  updateFollowingSubscription();
+}
+
+// 同じリーダーに（許可を取り直さず）再度追従する
+function refollowLayoutSync() {
+  myManualUnfollow = false;
+  updateFollowingSubscription();
+}
+
+async function publishLeaderLayout() {
+  if (!isLayoutLeader()) return;
+  const slots = computeSlots();
+  const tiles = {};
+  slots.forEach((s, idx) => {
+    if (!s) return;
+    const pos = tilePositions[idx] || defaultPos(idx);
+    tiles[s.key] = {
+      left: (pos.left || 0) / 100,
+      top: (pos.top || 0) / 100,
+      width: (pos.width || TILE_W_PCT) / 100,
+      z: pos.z || idx + 1,
+      hidden: hiddenTiles.has(s.key)
+    };
+  });
+  try {
+    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, updatedAt: serverTimestamp() });
+  } catch (e) { console.warn("publishLeaderLayout failed", e); }
+}
+
+function scheduleLayoutPublish() {
+  const now = Date.now();
+  if (now - lastLayoutPublish < LAYOUT_PUBLISH_THROTTLE_MS) return;
+  lastLayoutPublish = now;
+  publishLeaderLayout();
+}
+
+// リーダーのレイアウト（peerId+種別キー基準・0〜1の相対値）をこの端末の画面にそのまま反映する
+function applySyncedLayout(layoutData) {
+  const tiles = layoutData?.tiles || {};
+  for (const [key, pos] of Object.entries(tiles)) {
+    const tile = document.getElementById(`tile-${key}`);
+    if (!tile) continue; // まだ生成されていないタイル（相手の接続確立待ち等）。生成時に改めて反映される
+    tile.style.left = (pos.left * 100) + "%";
+    tile.style.top = (pos.top * 100) + "%";
+    tile.style.width = (pos.width * 100) + "%";
+    tile.style.zIndex = String(pos.z || 1);
+    tile.style.display = pos.hidden ? "none" : "";
+  }
+}
+
+// 追従解除・リーダー消失時に、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）へ変換して引き継ぐ
+function snapshotLayoutIntoLocal(layoutData) {
+  const tiles = layoutData?.tiles || {};
+  const slots = computeSlots();
+  const newPositions = {};
+  slots.forEach((s, idx) => {
+    if (!s) return;
+    const pos = tiles[s.key];
+    if (pos) {
+      newPositions[idx] = { left: pos.left * 100, top: pos.top * 100, width: pos.width * 100, z: pos.z || idx + 1 };
+      if (pos.hidden) hiddenTiles.add(s.key); else hiddenTiles.delete(s.key);
+    } else if (tilePositions[idx]) {
+      newPositions[idx] = tilePositions[idx];
+    }
+  });
+  tilePositions = newPositions;
+  savePositions();
+}
+
+function showLayoutSyncMessage(msg) {
+  layoutSyncPanel.style.display = "flex";
+  layoutSyncPanel.textContent = msg;
+  setTimeout(renderLayoutSyncPanel, 2000);
+}
+
+function renderLayoutSyncPanel() {
+  if (isLayoutLeader()) {
+    layoutSyncBtn.textContent = "🔗 同期を終了";
+    layoutSyncBtn.classList.add("active");
+    layoutSyncBtn.disabled = false;
+    layoutSyncPanel.style.display = "flex";
+    layoutSyncPanel.textContent = "あなたがレイアウト同期のリーダーです。タイルの移動・サイズ変更・非表示が、許可した参加者にリアルタイムで反映されます。";
+    return;
+  }
+
+  layoutSyncBtn.classList.remove("active");
+  layoutSyncBtn.textContent = "🔗 レイアウト同期を申請";
+  layoutSyncBtn.disabled = !!syncLeaderId;
+
+  if (!syncLeaderId) {
+    layoutSyncPanel.style.display = "none";
+    layoutSyncPanel.innerHTML = "";
+    return;
+  }
+
+  const leaderName = members[syncLeaderId]?.name || "参加者";
+  layoutSyncPanel.style.display = "flex";
+
+  if (myFollowState === "accepted" && myManualUnfollow) {
+    layoutSyncPanel.innerHTML = `<span>「${escapeHtml(leaderName)}」への同期を解除しました</span><button class="small" id="layoutRefollowBtn">再度追従する</button>`;
+    document.getElementById("layoutRefollowBtn").addEventListener("click", refollowLayoutSync);
+  } else if (myFollowState === "accepted") {
+    layoutSyncPanel.innerHTML = `<span>🔗「${escapeHtml(leaderName)}」のレイアウトに追従中です</span><button class="small" id="layoutUnfollowBtn">同期解除</button>`;
+    document.getElementById("layoutUnfollowBtn").addEventListener("click", unfollowLayoutSync);
+  } else if (myFollowState === "rejected") {
+    layoutSyncPanel.textContent = `「${leaderName}」からのレイアウト同期申請を拒否しました`;
+  } else {
+    layoutSyncPanel.innerHTML = `<span>🔗「${escapeHtml(leaderName)}」がレイアウト同期を申請しています</span><button class="small" id="layoutAcceptBtn">許可</button><button class="small reject" id="layoutRejectBtn">拒否</button>`;
+    document.getElementById("layoutAcceptBtn").addEventListener("click", acceptLayoutSync);
+    document.getElementById("layoutRejectBtn").addEventListener("click", rejectLayoutSync);
+  }
+}
+
 // スロット配列は「カメラ枠（常にMAX_PEERS個・空きはnull）」＋「画面共有枠（共有中の人数分だけ末尾に追加）」で構成する。
 // 画面共有枠はpeerIdの昇順で並べる（開始/終了のたびに他の共有者の枠がガタつかないよう、順序を決定的にする）
 function computeSlots() {
@@ -1200,6 +1447,7 @@ function computeSlots() {
 
 function swapOrder(idA, idB) {
   if (idA === idB) return;
+  if (layoutInteractionLocked()) return;
   const slots = computeSlots();
   const order = slots.filter((s) => s && s.kind === "camera").map((s) => s.id);
   const iA = order.indexOf(idA), iB = order.indexOf(idB);
@@ -1207,8 +1455,9 @@ function swapOrder(idA, idB) {
   [order[iA], order[iB]] = [order[iB], order[iA]];
   customOrder = order;
   const newSlots = computeSlots();
-  syncVideoTiles(newSlots);
+  renderGrid();
   renderControls(newSlots);
+  if (isLayoutLeader()) publishLeaderLayout();
 }
 
 function syncVideoTiles(slots) {
@@ -1219,11 +1468,22 @@ function syncVideoTiles(slots) {
   });
 }
 
+// グリッドの再配置窓口。追従中（かつ自分がリーダーでない）はリーダーのレイアウトをそのまま反映し、
+// それ以外はこの端末のローカル配置（tilePositions）を反映する
+function renderGrid() {
+  if (followingLayout && !isLayoutLeader()) {
+    applySyncedLayout(followingLayout);
+  } else {
+    syncVideoTiles(computeSlots());
+  }
+}
+
 function positionTile(tile, idx) {
   const pos = tilePositions[idx] || defaultPos(idx);
   tile.style.left = pos.left + "%";
   tile.style.top = pos.top + "%";
   tile.style.width = (pos.width || TILE_W_PCT) + "%";
+  tile.style.zIndex = String(pos.z || idx + 1);
   tile.dataset.slot = String(idx);
 }
 
@@ -1233,18 +1493,31 @@ function saveTileRect(tile) {
   tilePositions[idx] = {
     left: parseFloat(tile.style.left) || 0,
     top: parseFloat(tile.style.top) || 0,
-    width: parseFloat(tile.style.width) || TILE_W_PCT
+    width: parseFloat(tile.style.width) || TILE_W_PCT,
+    z: parseInt(tile.style.zIndex, 10) || 1
   };
   savePositions();
+  if (isLayoutLeader()) publishLeaderLayout();
+}
+
+// 自分がフォロワー（他人のレイアウトに追従中）の間は、ドラッグ・リサイズ・最前面化を操作できないようにする
+function layoutInteractionLocked() {
+  return !!followingLayout && !isLayoutLeader();
+}
+
+function bringTileToFront(tile) {
+  tile.style.zIndex = String(++tileZCounter);
 }
 
 function makeDraggable(tile) {
   let dragging = false, startX = 0, startY = 0, origLeftPct = 0, origTopPct = 0, containerW = 0, containerH = 0;
 
   tile.addEventListener("pointerdown", (e) => {
+    if (layoutInteractionLocked()) return;
     if (e.target.closest(".resizeHandle")) return;
     dragging = true;
     tile.classList.add("dragging");
+    bringTileToFront(tile);
     const rect = videoGrid.getBoundingClientRect();
     containerW = rect.width; containerH = rect.height;
     startX = e.clientX; startY = e.clientY;
@@ -1263,6 +1536,7 @@ function makeDraggable(tile) {
     let newTop = Math.max(0, Math.min(100 - tileHPct, origTopPct + dyPct));
     tile.style.left = newLeft + "%";
     tile.style.top = newTop + "%";
+    if (isLayoutLeader()) scheduleLayoutPublish();
   });
 
   const endDrag = (e) => {
@@ -1280,6 +1554,7 @@ function makeResizable(tile) {
   let resizing = false, startX = 0, startWPct = 0, containerW = 0;
 
   handle.addEventListener("pointerdown", (e) => {
+    if (layoutInteractionLocked()) return;
     e.stopPropagation();
     resizing = true;
     const rect = videoGrid.getBoundingClientRect();
@@ -1296,6 +1571,7 @@ function makeResizable(tile) {
     const maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
     const newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
     tile.style.width = newW + "%";
+    if (isLayoutLeader()) scheduleLayoutPublish();
   });
 
   const endResize = (e) => {
@@ -1320,7 +1596,7 @@ function createVideoTile(peerId, name, isSelf) {
   videoGrid.appendChild(tile);
   makeDraggable(tile);
   makeResizable(tile);
-  syncVideoTiles(computeSlots());
+  renderGrid();
 }
 
 function removeVideoTile(peerId) {
@@ -1403,10 +1679,12 @@ function toggleCamFor(id) {
 }
 
 function toggleHideFor(id) {
+  if (layoutInteractionLocked()) return;
   if (hiddenTiles.has(id)) hiddenTiles.delete(id); else hiddenTiles.add(id);
   const tile = document.getElementById(`tile-${id}`);
   if (tile) tile.style.display = hiddenTiles.has(id) ? "none" : "";
   renderControls(computeSlots());
+  if (isLayoutLeader()) publishLeaderLayout();
 }
 
 function stateIcon(state) {
