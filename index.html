@@ -220,6 +220,54 @@
   #syncFlashOverlay { position: fixed; inset: 0; background: #fff; z-index: 99999; pointer-events: none; display: none; }
   #syncFlashOverlay.show { display: block; }
   #bulkSourceStatus.warn { color: #e0c93a; }
+  /* 早押し */
+  #buzzPanel h3 { font-size: 13px; margin: 8px 0 4px; color: #ccc; }
+  #buzzMain { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  #buzzBtn {
+    font-size: 22px; font-weight: bold; padding: 14px 36px; border-radius: 40px;
+    background: #c62828; color: #fff; border: 3px solid #ff8a80; cursor: pointer;
+  }
+  #buzzBtn small { font-size: 11px; font-weight: normal; display: block; }
+  #buzzBtn:disabled { background: #444; border-color: #555; color: #999; cursor: default; }
+  #buzzStatusText { font-size: 16px; font-weight: bold; }
+  #buzzTimer { font-size: 20px; font-weight: bold; color: #ffd54f; min-width: 80px; }
+  #buzzTimer.over { color: #ff5252; }
+  #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
+  .buzzSettings input[type="number"] { width: 56px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
+  #buzzTeamInput { width: 100px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 6px; }
+  .buzzCols { display: flex; gap: 16px; flex-wrap: wrap; }
+  .buzzCols > div { flex: 1 1 260px; min-width: 0; }
+  #buzzPressTable, #buzzScoreTable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  #buzzPressTable th, #buzzPressTable td, #buzzScoreTable th, #buzzScoreTable td { border: 1px solid #444; padding: 4px 8px; text-align: left; }
+  #buzzPressTable th, #buzzScoreTable th { background: #2c2c2c; }
+  #buzzPressTable tr.answering td { background: #4a3b10; }
+  #buzzPressTable tr.lockedOut td { color: #777; text-decoration: line-through; }
+  .buzzBadge { font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+  .buzzBadge.win { background: #1e4a2c; color: #8dffb0; }
+  .buzzBadge.out { background: #4a1e1e; color: #ff8a8a; }
+  #buzzScoreTable button.small { padding: 0 6px; }
+  #buzzHostControls { border-top: 1px solid #3a3a3a; margin-top: 12px; padding-top: 4px; }
+  #buzzCorrectBtn { background: #1e5a2c; }
+  #buzzWrongBtn { background: #6a1e1e; }
+  .tile.buzzAnswer { box-shadow: 0 0 0 4px #ffd54f, 0 0 18px 6px rgba(255,213,79,0.7); z-index: 50 !important; }
+  #buzzCutin {
+    position: absolute; left: 0; right: 0; bottom: 12%; z-index: 9000; pointer-events: none;
+    text-align: center; line-height: 1.2; display: none;
+  }
+  #buzzCutin span {
+    display: inline-block; padding: 10px 40px; font-size: clamp(20px, 4vw, 56px); font-weight: bold;
+    color: #1c1c1c; background: #ffd54f; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  }
+  #buzzCutin.show { display: block; animation: buzzCutinIn 0.25s ease-out; }
+  @keyframes buzzCutinIn { from { transform: translateX(-30%); opacity: 0; } to { transform: none; opacity: 1; } }
+  #buzzJudgeMark {
+    position: absolute; inset: 0; z-index: 9001; pointer-events: none; display: none;
+    align-items: center; justify-content: center; line-height: 1;
+    font-size: min(40vw, 60vh); font-weight: bold; text-shadow: 0 0 30px rgba(0,0,0,0.7);
+  }
+  #buzzJudgeMark.show { display: flex; }
+  #buzzJudgeMark.correct { color: rgba(255,82,82,0.85); }
+  #buzzJudgeMark.wrong { color: rgba(80,160,255,0.85); }
 </style>
 </head>
 <body>
@@ -300,7 +348,48 @@
         <input type="file" id="frameImageInput" accept="image/png" style="display:none;">
       </span>
     </div>
-    <div id="videoGrid"></div>
+    <div id="videoGrid"><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div></div>
+
+    <section class="panel" id="buzzPanel">
+      <h2>早押し</h2>
+      <div id="buzzHostToggleRow" style="display:none;">
+        <label><input type="checkbox" id="buzzEnabledToggle"> 早押しを使う（全員の画面に表示されます）</label>
+      </div>
+      <div id="buzzOffNote" class="hint">早押しは現在オフです（ホストがオンにすると表示されます）</div>
+      <div id="buzzBody" style="display:none;">
+        <div id="buzzMain">
+          <button id="buzzBtn">早押し！<small>（スペースキーでも押せます）</small></button>
+          <div id="buzzStatusText"></div>
+          <div id="buzzTimer"></div>
+        </div>
+        <div id="buzzSelfRow">
+          <label><input type="checkbox" id="buzzSpectatorToggle"> 観戦者として参加（ボタンを使わない）</label>
+          <label id="buzzTeamLabel" style="display:none;">チーム名: <input type="text" id="buzzTeamInput" placeholder="例: 赤チーム"></label>
+          <span id="buzzRuleSummary" class="hint"></span>
+        </div>
+        <div class="buzzCols">
+          <div><h3>着順（この問題）</h3><table id="buzzPressTable"></table></div>
+          <div><h3>スコア</h3><table id="buzzScoreTable"></table></div>
+        </div>
+        <div id="buzzHostControls" style="display:none;">
+          <div class="buzzHostRow">
+            <b>ホスト操作:</b>
+            <button id="buzzCorrectBtn">○ 正解</button>
+            <button id="buzzWrongBtn">× 不正解</button>
+            <button id="buzzResetBtn">▶ 次の問題へ（リセット）</button>
+          </div>
+          <div class="buzzHostRow buzzSettings">
+            <label>正解 +<input type="number" id="buzzPtsCorrect" min="0" step="1">点</label>
+            <label>誤答 −<input type="number" id="buzzPtsWrong" min="0" step="1">点</label>
+            <label>制限時間 <input type="number" id="buzzAnswerSec" min="0" step="1">秒（0=なし）</label>
+            <label><input type="number" id="buzzWinPts" min="0" step="1">点先取で勝ち抜け（0=なし）</label>
+            <label>誤答 <input type="number" id="buzzMaxWrong" min="0" step="1">回で失格（0=なし）</label>
+            <label><input type="checkbox" id="buzzTeamMode"> チーム戦</label>
+            <button class="small" id="buzzClearScoresBtn">スコアを全消去</button>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <section class="panel">
       <h2>操作</h2>
@@ -571,6 +660,34 @@ const bulkHostStartBtn = document.getElementById("bulkHostStartBtn");
 const bulkHostStopBtn = document.getElementById("bulkHostStopBtn");
 const bulkHostSyncMarkBtn = document.getElementById("bulkHostSyncMarkBtn");
 const syncFlashOverlay = document.getElementById("syncFlashOverlay");
+const buzzHostToggleRow = document.getElementById("buzzHostToggleRow");
+const buzzEnabledToggle = document.getElementById("buzzEnabledToggle");
+const buzzOffNote = document.getElementById("buzzOffNote");
+const buzzBody = document.getElementById("buzzBody");
+const buzzBtn = document.getElementById("buzzBtn");
+const buzzStatusText = document.getElementById("buzzStatusText");
+const buzzTimer = document.getElementById("buzzTimer");
+const buzzSpectatorToggle = document.getElementById("buzzSpectatorToggle");
+const buzzTeamLabel = document.getElementById("buzzTeamLabel");
+const buzzTeamInput = document.getElementById("buzzTeamInput");
+const buzzRuleSummary = document.getElementById("buzzRuleSummary");
+const buzzPressTable = document.getElementById("buzzPressTable");
+const buzzScoreTable = document.getElementById("buzzScoreTable");
+const buzzHostControls = document.getElementById("buzzHostControls");
+const buzzCorrectBtn = document.getElementById("buzzCorrectBtn");
+const buzzWrongBtn = document.getElementById("buzzWrongBtn");
+const buzzResetBtn = document.getElementById("buzzResetBtn");
+const buzzClearScoresBtn = document.getElementById("buzzClearScoresBtn");
+const buzzTeamModeToggle = document.getElementById("buzzTeamMode");
+const buzzCutin = document.getElementById("buzzCutin");
+const buzzJudgeMark = document.getElementById("buzzJudgeMark");
+const BUZZ_NUMBER_INPUTS = {
+  ptsCorrect: document.getElementById("buzzPtsCorrect"),
+  ptsWrong: document.getElementById("buzzPtsWrong"),
+  answerSec: document.getElementById("buzzAnswerSec"),
+  winPts: document.getElementById("buzzWinPts"),
+  maxWrong: document.getElementById("buzzMaxWrong")
+};
 const bulkSleepWarning = document.getElementById("bulkSleepWarning");
 const bulkRecordStatusTable = document.getElementById("bulkRecordStatusTable");
 
@@ -630,6 +747,37 @@ bulkChooseSaveBtn.addEventListener("click", chooseBulkRecordSaveDestination);
 bulkHostStartBtn.addEventListener("click", hostStartBulkRecording);
 bulkHostStopBtn.addEventListener("click", hostStopBulkRecording);
 bulkHostSyncMarkBtn.addEventListener("click", hostRequestSyncMark);
+buzzBtn.addEventListener("click", pressBuzzer);
+buzzEnabledToggle.addEventListener("change", () => hostUpdateBuzzConfig({ enabled: buzzEnabledToggle.checked }));
+buzzTeamModeToggle.addEventListener("change", () => hostUpdateBuzzConfig({ teamMode: buzzTeamModeToggle.checked }));
+for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
+  input.addEventListener("change", () => hostUpdateBuzzConfig({ [field]: Math.max(0, parseInt(input.value, 10) || 0) }));
+}
+buzzCorrectBtn.addEventListener("click", () => hostJudgeBuzz(true));
+buzzWrongBtn.addEventListener("click", () => hostJudgeBuzz(false));
+buzzResetBtn.addEventListener("click", hostResetBuzzQuestion);
+buzzClearScoresBtn.addEventListener("click", hostClearBuzzScores);
+buzzSpectatorToggle.addEventListener("change", () => {
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { buzzSpectator: buzzSpectatorToggle.checked });
+});
+buzzTeamInput.addEventListener("change", () => {
+  const team = buzzTeamInput.value.trim();
+  try { localStorage.setItem("buzzTeam", team); } catch (e) {}
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { buzzTeam: team });
+});
+buzzScoreTable.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-buzz-adjust]");
+  if (btn) hostAdjustBuzzScore(btn.dataset.key, parseInt(btn.dataset.buzzAdjust, 10));
+});
+// スペースキーで早押し（入力欄にフォーカスがあるときは文字入力を優先する）
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (!buzzConfig.enabled || callScreen.style.display === "none") return;
+  e.preventDefault(); // フォーカス中のボタンがスペースで押されたり、ページがスクロールしたりするのを防ぐ
+  pressBuzzer();
+});
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -941,7 +1089,13 @@ async function joinRoom(name) {
   outgoingAudioTrack = await setupNoiseGate(localStream, audioDest);
 
   const myMemberRef = ref(db, `rooms/${ROOM_ID}/members/${myId}`);
-  await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn() });
+  let savedTeam = "";
+  try { savedTeam = localStorage.getItem("buzzTeam") || ""; } catch (e) {}
+  buzzTeamInput.value = savedTeam;
+  await set(myMemberRef, {
+    name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn(),
+    buzzSpectator: false, buzzTeam: savedTeam
+  });
   onDisconnect(myMemberRef).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
@@ -952,6 +1106,7 @@ async function joinRoom(name) {
   listenStatus();
   listenLayoutSync();
   listenBulkRecording();
+  listenBuzzer();
 }
 
 window.addEventListener("beforeunload", () => {
@@ -1003,6 +1158,7 @@ function listenMembers() {
     updateBulkHostControlsVisibility();
     renderBulkRecordStatusTable();
     refreshNameLabels();
+    renderBuzzer();
   });
 }
 
@@ -2258,6 +2414,8 @@ function drawRecordFrame() {
     ctx.restore();
   });
 
+  drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
+
   if (Date.now() < syncFlashUntil) { // 同期合図は合成録画にも白フレームとして残す
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
@@ -2640,6 +2798,504 @@ function renderBulkRecordStatusTable() {
   bulkRecordStatusTable.innerHTML = html;
 }
 
+// ---------- 早押し ----------
+// rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
+// rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
+// rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at(サーバー時刻換算ms), recv, name, team }
+// rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
+// rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, diffMs}] }
+// 順位は「届いた順」ではなく各自が押した瞬間の時刻（サーバー時刻に換算）で決める（ネット遅延の補正）。
+// 最初の押下が届いてからBUZZ_WINDOW_MSの間は他の人の押下も受け付け、その後ホスト端末が回答者を確定してロックする。
+// 判定・状態遷移はホスト（isBulkHost＝最初に入室した人）の端末だけが書き込む。スコアは再入室でpeerIdが変わっても残るよう名前で持つ。
+const BUZZ_WINDOW_MS = 500;
+const BUZZ_CUTIN_MS = 1800;
+const BUZZ_JUDGE_MARK_MS = 1200;
+const BUZZ_DEFAULT_CONFIG = { enabled: false, ptsCorrect: 1, ptsWrong: 0, answerSec: 0, winPts: 0, maxWrong: 0, teamMode: false };
+let buzzConfig = { ...BUZZ_DEFAULT_CONFIG };
+let buzzState = {};
+let buzzPresses = {};       // phase -> { peerId: press }
+let buzzScores = {};
+let buzzLog = [];
+let buzzListenersReady = { state: false };
+let buzzLastAnswerer = null;   // 演出の二重発火防止（どの回答権に対して演出したか）
+let buzzLastJudgeId = null;
+let buzzWindowTimers = {};     // phase -> { endsAt, timer }
+let buzzTimerInterval = null;
+let buzzTimeUpShownFor = null;
+let buzzCutinUntil = 0, buzzCutinText = "";
+let buzzJudgeUntil = 0, buzzJudgeCorrect = false;
+
+function fbKey(str) {
+  return encodeURIComponent(String(str)).replace(/\./g, "%2E");
+}
+// 押した後に退室・再読み込みした人も、押下記録の名前で扱えるようにする
+function buzzNameOf(id) {
+  return members[id]?.name || buzzCurrentPresses()[id]?.name || "";
+}
+function buzzTeamOf(id) {
+  const team = members[id] ? members[id].buzzTeam : buzzCurrentPresses()[id]?.team;
+  return (team || "").trim();
+}
+// 早押しで「1人（1チーム）」として扱う単位。チーム戦ではチームが未入力の人は個人扱い
+function buzzEntityOf(id) {
+  const name = buzzNameOf(id);
+  const team = buzzTeamOf(id);
+  return buzzConfig.teamMode && team ? { key: "t_" + fbKey(team), label: team } : { key: "p_" + fbKey(name), label: name };
+}
+function buzzEntityStats(entity) {
+  let points = 0, wrong = 0;
+  for (const r of Object.values(buzzScores)) {
+    const rEntityKey = buzzConfig.teamMode && r.team ? "t_" + fbKey(r.team) : "p_" + fbKey(r.name);
+    if (rEntityKey !== entity.key) continue;
+    points += r.points || 0;
+    wrong += r.wrong || 0;
+  }
+  return { points, wrong, won: buzzConfig.winPts > 0 && points >= buzzConfig.winPts, out: buzzConfig.maxWrong > 0 && wrong >= buzzConfig.maxWrong };
+}
+function buzzEligible(id) {
+  if (!members[id] || members[id].buzzSpectator) return false;
+  const entity = buzzEntityOf(id);
+  if (buzzState.lockedOut?.[entity.key]) return false;
+  const st = buzzEntityStats(entity);
+  return !st.won && !st.out;
+}
+function buzzCurrentPresses() {
+  return buzzPresses[buzzState.phase] || {};
+}
+// 現在のphaseの押下を時刻順に並べ、1チーム1枠にまとめ、回答できない人を除いた回答順
+function buzzAnswerOrder() {
+  const seen = new Set();
+  const order = [];
+  for (const [id, pr] of buzzSortedPresses()) {
+    if (!members[id] || !buzzEligible(id)) continue;
+    const key = buzzEntityOf(id).key;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    order.push(id);
+  }
+  return order;
+}
+function buzzSortedPresses() {
+  return Object.entries(buzzCurrentPresses())
+    .sort((a, b) => (a[1].at - b[1].at) || ((a[1].recv || 0) - (b[1].recv || 0)) || (a[0] < b[0] ? -1 : 1));
+}
+function buzzServerNow() {
+  return Date.now() + serverTimeOffset;
+}
+function buzzWindowClosed() {
+  const w = buzzWindowTimers[buzzState.phase];
+  return !!w && Date.now() >= w.endsAt;
+}
+function canIPressBuzzer() {
+  if (!buzzConfig.enabled || buzzState.status !== "open") return false;
+  if (!buzzEligible(myId)) return false;
+  if (buzzCurrentPresses()[myId]) return false;
+  return !buzzWindowClosed();
+}
+
+function listenBuzzer() {
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/config`), (snap) => {
+    buzzConfig = { ...BUZZ_DEFAULT_CONFIG, ...(snap.val() || {}) };
+    renderBuzzer();
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/state`), (snap) => {
+    const prevPhase = buzzState.phase;
+    buzzState = snap.val() || {};
+    const first = !buzzListenersReady.state;
+    buzzListenersReady.state = true;
+    handleBuzzStateEffects(first);
+    if (prevPhase !== buzzState.phase) buzzWindowTimers = {};
+    renderBuzzer();
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/presses`), (snap) => {
+    buzzPresses = snap.val() || {};
+    startBuzzWindowIfNeeded();
+    renderBuzzer();
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/scores`), (snap) => {
+    buzzScores = snap.val() || {};
+    renderBuzzer();
+  });
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/log`), (snap) => {
+    buzzLog = Object.values(snap.val() || {});
+  });
+  buzzTimerInterval = setInterval(updateBuzzTimer, 100);
+}
+
+function initBuzzState() {
+  set(ref(db, `rooms/${ROOM_ID}/buzzer/state`), { question: 1, phase: 1, status: "open" });
+}
+
+// 最初の押下が届いた時点から受付窓を開始。窓が閉じたらボタンをロックし、ホストが回答者を確定する
+function startBuzzWindowIfNeeded() {
+  const phase = buzzState.phase;
+  if (phase == null || buzzWindowTimers[phase]) return;
+  if (!Object.keys(buzzCurrentPresses()).length) return;
+  const endsAt = Date.now() + BUZZ_WINDOW_MS;
+  const timer = setTimeout(() => {
+    renderBuzzer();
+    if (isBulkHost() && buzzState.phase === phase && buzzState.status === "open") hostAssignAnswerer();
+  }, BUZZ_WINDOW_MS);
+  buzzWindowTimers[phase] = { endsAt, timer };
+}
+
+async function pressBuzzer() {
+  if (!canIPressBuzzer()) return;
+  const at = buzzServerNow(); // 押した瞬間の時刻（ネットワーク遅延の影響を受けない）
+  const phase = buzzState.phase;
+  playBuzzTones([{ f: 1500, d: 0.05, type: "square", g: 0.15 }]);
+  buzzBtn.disabled = true;
+  await set(ref(db, `rooms/${ROOM_ID}/buzzer/presses/${phase}/${myId}`), {
+    at, recv: serverTimestamp(), name: myName, team: buzzTeamOf(myId)
+  });
+}
+
+function buzzAnswerDeadline() {
+  return buzzConfig.answerSec > 0 ? buzzServerNow() + buzzConfig.answerSec * 1000 : null;
+}
+
+async function hostAssignAnswerer() {
+  const order = buzzAnswerOrder();
+  if (!order.length) return;
+  await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
+    status: "answering", answererId: order[0], answerDeadline: buzzAnswerDeadline()
+  });
+}
+
+function hostUpdateBuzzConfig(patch) {
+  if (!isBulkHost()) return;
+  update(ref(db, `rooms/${ROOM_ID}/buzzer/config`), patch);
+}
+
+async function addBuzzScore(peerId, delta) {
+  const name = buzzNameOf(peerId);
+  if (!name) return;
+  const team = buzzTeamOf(peerId);
+  await runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${fbKey(name)}`), (cur) => {
+    const r = cur || { name, points: 0, correct: 0, wrong: 0 };
+    r.name = name;
+    r.team = team;
+    r.points = (r.points || 0) + (delta.points || 0);
+    r.correct = (r.correct || 0) + (delta.correct || 0);
+    r.wrong = (r.wrong || 0) + (delta.wrong || 0);
+    return r;
+  });
+}
+
+async function hostJudgeBuzz(correct) {
+  if (!isBulkHost() || buzzState.status !== "answering" || !buzzState.answererId) return;
+  const answererId = buzzState.answererId;
+  const name = buzzNameOf(answererId) || "?";
+  const sorted = buzzSortedPresses();
+  const firstAt = sorted[0]?.[1].at || 0;
+  push(ref(db, `rooms/${ROOM_ID}/buzzer/log`), {
+    question: buzzState.question || 1, name, correct,
+    order: sorted.map(([id, pr]) => ({ name: pr.name, diffMs: pr.at - firstAt }))
+  });
+  const judge = { id: Date.now() + "_" + Math.random().toString(36).slice(2, 6), correct, name };
+  if (correct) {
+    await addBuzzScore(answererId, { points: buzzConfig.ptsCorrect, correct: 1 });
+    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), { status: "done", answerDeadline: null, judge });
+    return;
+  }
+  await addBuzzScore(answererId, { points: -buzzConfig.ptsWrong, wrong: 1 });
+  const lockedOut = { ...(buzzState.lockedOut || {}), [buzzEntityOf(answererId).key]: true };
+  buzzState.lockedOut = lockedOut; // 次の回答者の計算に即反映する
+  const next = buzzAnswerOrder()[0];
+  if (next) {
+    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
+      status: "answering", answererId: next, answerDeadline: buzzAnswerDeadline(), lockedOut, judge
+    });
+  } else {
+    // 押していた人が残っていなければ、誤答した人以外で押し直し
+    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
+      status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut, judge
+    });
+  }
+}
+
+async function hostResetBuzzQuestion() {
+  if (!isBulkHost()) return;
+  await remove(ref(db, `rooms/${ROOM_ID}/buzzer/presses`));
+  await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
+    question: (buzzState.question || 0) + 1, phase: (buzzState.phase || 0) + 1,
+    status: "open", answererId: null, answerDeadline: null, lockedOut: null
+  });
+}
+
+function hostAdjustBuzzScore(key, delta) {
+  if (!isBulkHost() || !buzzScores[key]) return;
+  runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}/points`), (cur) => (cur || 0) + delta);
+}
+
+// 誤操作防止のため、2回押しで消去（ブラウザのconfirmダイアログは使わない）
+let buzzClearArmedUntil = 0;
+async function hostClearBuzzScores() {
+  if (!isBulkHost()) return;
+  if (Date.now() > buzzClearArmedUntil) {
+    buzzClearArmedUntil = Date.now() + 3000;
+    buzzClearScoresBtn.textContent = "もう一度押すと消去";
+    setTimeout(() => { buzzClearScoresBtn.textContent = "スコアを全消去"; }, 3000);
+    return;
+  }
+  buzzClearArmedUntil = 0;
+  buzzClearScoresBtn.textContent = "スコアを全消去";
+  await remove(ref(db, `rooms/${ROOM_ID}/buzzer/scores`));
+  await remove(ref(db, `rooms/${ROOM_ID}/buzzer/log`));
+  await hostResetBuzzQuestion();
+  await set(ref(db, `rooms/${ROOM_ID}/buzzer/state/question`), 1);
+}
+
+// ---- 演出 ----
+function handleBuzzStateEffects(isInitialSnapshot) {
+  const answererId = buzzState.status === "answering" ? buzzState.answererId : null;
+  const answerKey = answererId ? `${buzzState.phase}:${answererId}` : null;
+  const judgeId = buzzState.judge?.id || null;
+  if (isInitialSnapshot) { // 入室時点の状態では演出しない（時間切れ音も鳴らさない）
+    buzzLastAnswerer = answerKey;
+    buzzLastJudgeId = judgeId;
+    buzzTimeUpShownFor = `${buzzState.phase}:${buzzState.answererId}:${buzzState.answerDeadline}`;
+    return;
+  }
+  const judgeIsNew = !!judgeId && judgeId !== buzzLastJudgeId;
+  if (judgeIsNew) {
+    buzzLastJudgeId = judgeId;
+    showBuzzJudge(!!buzzState.judge.correct);
+  }
+  if (answerKey && answerKey !== buzzLastAnswerer) {
+    const delay = judgeIsNew && !buzzState.judge.correct ? BUZZ_JUDGE_MARK_MS : 0; // 誤答→次の人、は×を見せてから出す
+    setTimeout(() => {
+      if (buzzState.answererId === answererId && buzzState.status === "answering") showBuzzCutin(answererId);
+    }, delay);
+  }
+  buzzLastAnswerer = answerKey;
+}
+
+function showBuzzCutin(peerId) {
+  const name = buzzNameOf(peerId);
+  const team = buzzConfig.teamMode ? buzzTeamOf(peerId) : "";
+  buzzCutinText = team ? `${name}（${team}）` : name;
+  buzzCutin.querySelector("span").textContent = buzzCutinText;
+  buzzCutin.classList.remove("show");
+  void buzzCutin.offsetWidth; // アニメーションを毎回やり直す
+  buzzCutin.classList.add("show");
+  buzzCutinUntil = Date.now() + BUZZ_CUTIN_MS;
+  setTimeout(() => { if (Date.now() >= buzzCutinUntil) buzzCutin.classList.remove("show"); }, BUZZ_CUTIN_MS);
+  // ピンポーン
+  playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
+}
+
+function showBuzzJudge(correct) {
+  buzzJudgeCorrect = correct;
+  buzzJudgeMark.textContent = correct ? "○" : "×";
+  buzzJudgeMark.className = "show " + (correct ? "correct" : "wrong");
+  buzzJudgeUntil = Date.now() + BUZZ_JUDGE_MARK_MS;
+  setTimeout(() => { if (Date.now() >= buzzJudgeUntil) buzzJudgeMark.className = ""; }, BUZZ_JUDGE_MARK_MS);
+  if (correct) {
+    playBuzzTones([{ f: 988, d: 0.15, type: "sine", g: 0.35 }, { f: 1319, d: 0.4, type: "sine", g: 0.35 }]);
+  } else {
+    playBuzzTones([{ f: 150, d: 0.7, type: "sawtooth", g: 0.25 }]);
+  }
+}
+
+// 効果音はスピーカーと合成録画の音声ミックスの両方に出す（同期合図のビープと同じ）
+function playBuzzTones(tones) {
+  try {
+    ensureAudioGraph();
+    let t = audioCtx.currentTime;
+    for (const tone of tones) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = tone.type || "sine";
+      osc.frequency.value = tone.f;
+      gain.gain.setValueAtTime(tone.g ?? 0.3, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + tone.d);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      gain.connect(audioDest);
+      osc.start(t);
+      osc.stop(t + tone.d + 0.02);
+      t += tone.d;
+    }
+  } catch (e) { console.warn("buzz sound failed", e); }
+}
+
+function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
+  if (!buzzConfig.enabled) return;
+  const now = Date.now();
+  const answerTile = buzzState.status === "answering" && buzzState.answererId ? document.getElementById(`tile-${buzzState.answererId}`) : null;
+  if (answerTile && answerTile.offsetParent !== null) {
+    const r = answerTile.getBoundingClientRect();
+    ctx.save();
+    ctx.strokeStyle = "#ffd54f";
+    ctx.lineWidth = 8;
+    ctx.strokeRect((r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
+    ctx.restore();
+  }
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  if (now < buzzCutinUntil && buzzCutinText) {
+    ctx.save();
+    const fontPx = Math.round(H * 0.07);
+    ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+    const tw = ctx.measureText(buzzCutinText).width;
+    const bw = tw + fontPx * 1.6, bh = fontPx * 1.6;
+    const bx = (W - bw) / 2, by = H * 0.88 - bh;
+    ctx.fillStyle = "#ffd54f";
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = "#1c1c1c";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(buzzCutinText, W / 2, by + bh / 2);
+    ctx.restore();
+  }
+  if (now < buzzJudgeUntil) {
+    ctx.save();
+    ctx.font = `bold ${Math.round(H * 0.6)}px system-ui, sans-serif`;
+    ctx.fillStyle = buzzJudgeCorrect ? "rgba(255,82,82,0.85)" : "rgba(80,160,255,0.85)";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(buzzJudgeCorrect ? "○" : "×", W / 2, H / 2);
+    ctx.restore();
+  }
+}
+
+function updateBuzzTimer() {
+  if (!buzzConfig.enabled || buzzState.status !== "answering" || !buzzState.answerDeadline) {
+    buzzTimer.textContent = "";
+    buzzTimer.classList.remove("over");
+    return;
+  }
+  const remain = buzzState.answerDeadline - buzzServerNow();
+  if (remain > 0) {
+    buzzTimer.textContent = `残り ${(remain / 1000).toFixed(1)}秒`;
+    buzzTimer.classList.remove("over");
+  } else {
+    buzzTimer.textContent = "時間切れ";
+    buzzTimer.classList.add("over");
+    const key = `${buzzState.phase}:${buzzState.answererId}:${buzzState.answerDeadline}`;
+    if (buzzTimeUpShownFor !== key) {
+      buzzTimeUpShownFor = key;
+      playBuzzTones([{ f: 440, d: 0.2, type: "square", g: 0.15 }, { f: 440, d: 0.2, type: "square", g: 0.15 }]);
+    }
+  }
+}
+
+// ---- 表示 ----
+let buzzInitRequested = false;
+function renderBuzzer() {
+  if (!buzzListenersReady.state) return;
+  const host = isBulkHost();
+  if (host && buzzState.phase == null && !buzzInitRequested) { // 部屋で初めて使うときだけ初期化
+    buzzInitRequested = true;
+    initBuzzState();
+  }
+  const enabled = !!buzzConfig.enabled;
+  buzzHostToggleRow.style.display = host ? "" : "none";
+  buzzEnabledToggle.checked = enabled;
+  buzzOffNote.style.display = enabled ? "none" : "";
+  buzzOffNote.textContent = host ? "チェックを入れると全員の画面に早押しパネルが表示されます" : "早押しは現在オフです（ホストがオンにすると表示されます）";
+  buzzBody.style.display = enabled ? "" : "none";
+  buzzHostControls.style.display = enabled && host ? "" : "none";
+  buzzTeamLabel.style.display = buzzConfig.teamMode ? "" : "none";
+  buzzSpectatorToggle.checked = !!members[myId]?.buzzSpectator;
+  buzzTeamModeToggle.checked = !!buzzConfig.teamMode;
+  for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
+    if (document.activeElement !== input) input.value = buzzConfig[field] ?? 0;
+  }
+  const rules = [`正解+${buzzConfig.ptsCorrect}`];
+  if (buzzConfig.ptsWrong) rules.push(`誤答−${buzzConfig.ptsWrong}`);
+  if (buzzConfig.answerSec) rules.push(`制限${buzzConfig.answerSec}秒`);
+  if (buzzConfig.winPts) rules.push(`${buzzConfig.winPts}点先取`);
+  if (buzzConfig.maxWrong) rules.push(`${buzzConfig.maxWrong}誤答で失格`);
+  if (buzzConfig.teamMode) rules.push("チーム戦");
+  buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
+
+  // タイルの強調（回答権のある人）
+  videoGrid.querySelectorAll(".tile.buzzAnswer").forEach((t) => t.classList.remove("buzzAnswer"));
+  if (enabled && buzzState.status === "answering" && buzzState.answererId) {
+    document.getElementById(`tile-${buzzState.answererId}`)?.classList.add("buzzAnswer");
+  }
+  if (!enabled) return;
+
+  // ボタンと状態テキスト
+  buzzBtn.disabled = !canIPressBuzzer();
+  const me = members[myId];
+  const myEntity = buzzEntityOf(myId);
+  const myStats = buzzEntityStats(myEntity);
+  let status = `第${buzzState.question || 1}問 `;
+  if (buzzState.status === "answering") {
+    const ans = buzzState.answererId;
+    status += ans === myId ? "あなたの回答です！" : `${buzzNameOf(ans) || "?"} さんが回答中${members[ans] ? "" : "（退室中）"}`;
+  } else if (buzzState.status === "done") {
+    status += "正解が出ました（ホストが次の問題へ進めます）";
+  } else if (me?.buzzSpectator) {
+    status += "観戦中";
+  } else if (myStats.won) {
+    status += "勝ち抜け済み";
+  } else if (myStats.out) {
+    status += "失格";
+  } else if (buzzState.lockedOut?.[myEntity.key]) {
+    status += "この問題は誤答済みのため押せません";
+  } else if (buzzCurrentPresses()[myId]) {
+    status += "押しました（判定待ち）";
+  } else if (buzzWindowClosed()) {
+    status += "ロック中";
+  } else {
+    status += "受付中";
+  }
+  buzzStatusText.textContent = status;
+  buzzCorrectBtn.disabled = buzzWrongBtn.disabled = buzzState.status !== "answering";
+
+  // 着順
+  const sorted = buzzSortedPresses();
+  const firstAt = sorted[0]?.[1].at;
+  let html = "<tr><th>着順</th><th>名前</th><th>1着との差</th></tr>";
+  sorted.forEach(([id, pr], i) => {
+    const team = buzzConfig.teamMode && pr.team ? `（${escapeHtml(pr.team)}）` : "";
+    const entityKey = members[id] ? buzzEntityOf(id).key : null;
+    const cls = id === buzzState.answererId && buzzState.status === "answering" ? "answering"
+      : (entityKey && buzzState.lockedOut?.[entityKey] ? "lockedOut" : "");
+    const diff = i === 0 ? "-" : `+${((pr.at - firstAt) / 1000).toFixed(3)}秒${pr.at === firstAt ? "（同着）" : ""}`;
+    html += `<tr class="${cls}"><td>${i + 1}着</td><td>${escapeHtml(pr.name)}${team}</td><td>${diff}</td></tr>`;
+  });
+  if (!sorted.length) html += `<tr><td colspan="3" class="hint">まだ誰も押していません</td></tr>`;
+  buzzPressTable.innerHTML = html;
+
+  // スコア
+  const rows = Object.entries(buzzScores);
+  let sh = `<tr><th>${buzzConfig.teamMode ? "チーム / 名前" : "名前"}</th><th>点</th><th>正解</th><th>誤答</th>${host ? "<th>修正</th>" : ""}</tr>`;
+  const scoreRow = (key, r, indent) => {
+    const adjust = host ? `<td><button class="small" data-buzz-adjust="1" data-key="${key}">+1</button> <button class="small" data-buzz-adjust="-1" data-key="${key}">−1</button></td>` : "";
+    return `<tr><td>${indent ? "　" : ""}${escapeHtml(r.name)}</td><td>${r.points || 0}</td><td>${r.correct || 0}</td><td>${r.wrong || 0}</td>${adjust}</tr>`;
+  };
+  const badge = (st) => (st.won ? `<span class="buzzBadge win">勝ち抜け</span>` : "") + (st.out ? `<span class="buzzBadge out">失格</span>` : "");
+  if (buzzConfig.teamMode) {
+    const teams = {};
+    for (const [key, r] of rows) {
+      const t = r.team || "";
+      (teams[t] = teams[t] || []).push([key, r]);
+    }
+    const teamTotals = Object.entries(teams).map(([t, list]) => [t, list, list.reduce((a, [, r]) => a + (r.points || 0), 0)])
+      .sort((a, b) => b[2] - a[2]);
+    for (const [t, list, total] of teamTotals) {
+      if (t) {
+        const st = buzzEntityStats({ key: "t_" + fbKey(t) });
+        const c = list.reduce((a, [, r]) => a + (r.correct || 0), 0);
+        const w = list.reduce((a, [, r]) => a + (r.wrong || 0), 0);
+        sh += `<tr><td><b>${escapeHtml(t)}</b>${badge(st)}</td><td><b>${total}</b></td><td>${c}</td><td>${w}</td>${host ? "<td></td>" : ""}</tr>`;
+        for (const [key, r] of list) sh += scoreRow(key, r, true);
+      } else {
+        for (const [key, r] of list) sh += scoreRow(key, r, false).replace("</td>", `${badge(buzzEntityStats({ key: "p_" + fbKey(r.name) }))}</td>`);
+      }
+    }
+  } else {
+    rows.sort((a, b) => (b[1].points || 0) - (a[1].points || 0));
+    for (const [key, r] of rows) sh += scoreRow(key, r, false).replace("</td>", `${badge(buzzEntityStats({ key: "p_" + fbKey(r.name) }))}</td>`);
+  }
+  if (!rows.length) sh += `<tr><td colspan="${host ? 5 : 4}" class="hint">まだ得点はありません</td></tr>`;
+  buzzScoreTable.innerHTML = sh;
+}
+
 // ---------- 結果コピー ----------
 function copyResults() {
   const now = new Date().toLocaleString("ja-JP");
@@ -2678,6 +3334,21 @@ function copyResults() {
         markNote = ` / 同期合図の位置=${offsets.join(", ")}`;
       }
       text += `${name}: ${label} / 開始時刻=${startedAt}${markNote}\n`;
+    }
+  }
+
+  if (buzzLog.length) {
+    text += "\n[早押しの履歴]\n";
+    for (const l of buzzLog) {
+      const order = (l.order || []).map((o, i) => `${i + 1}着 ${o.name}(+${(o.diffMs / 1000).toFixed(3)}秒)`).join(", ");
+      text += `第${l.question}問: ${l.name} ${l.correct ? "○正解" : "×不正解"} / 着順: ${order}\n`;
+    }
+  }
+  const scoreRows = Object.values(buzzScores);
+  if (scoreRows.length) {
+    text += "\n[早押しのスコア]\n";
+    for (const r of scoreRows.sort((a, b) => (b.points || 0) - (a.points || 0))) {
+      text += `${r.name}${r.team ? `（${r.team}）` : ""}: ${r.points || 0}点（正解${r.correct || 0}・誤答${r.wrong || 0}）\n`;
     }
   }
 

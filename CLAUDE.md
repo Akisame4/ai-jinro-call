@@ -6,7 +6,7 @@ YouTube企画の撮影用WebRTCビデオ通話アプリ。単一HTMLファイル
 ## RTDB構造
 
 ```
-rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing, cameraOn }
+rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing, cameraOn, buzzSpectator, buzzTeam }
 rooms/{ROOM_ID}/signals/{toId}/{fromId}/{pushId}: { type: "offer"|"answer"|"candidate", payload }
 rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
@@ -14,6 +14,11 @@ rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt, syncMarkRequestedAt? }
 rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs?, startedAtServerMs? }
+rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
+rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
+rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at, recv, name, team }
+rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
+rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, diffMs}] }
 ```
 
 ## 画面共有（カメラと別タイル表示）
@@ -57,6 +62,19 @@ rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"s
 - 「表示/非表示」ボタンは廃止。カメラがオフの参加者はタイルごと非表示にし、真っ黒な枠を出さない（`applyCameraVisibility`、`renderGrid`の最後で毎回適用）。音声は再生し続ける。
 - 自分のカメラON/OFFは`members/{myId}/cameraOn`に書き込み、全員の画面で同じタイルが消える。相手の行の「📷 オフ」はこの端末だけでそのタイルを隠す（`locallyHiddenVideoPeers`）。
 - レイアウト同期のデータから`hidden`は削除した（表示/非表示は各端末がカメラ状態から決める）。
+
+## 早押し（オプション機能・第一弾）
+
+- ホスト（`isBulkHost()`＝最初に入室した人。一括録画と同じ）が「早押しを使う」をONにすると全員に早押しパネルが出る（`buzzer/config/enabled`）。判定・状態遷移・設定の書き込みはホスト端末だけが行う。
+- **公平性**：押下時刻は各自の`Date.now() + serverTimeOffset`（押した瞬間のサーバー時刻換算）で記録し、届いた順ではなくこの時刻順で順位を決める。最初の押下が届いてから`BUZZ_WINDOW_MS`（500ms）は他の人の押下も受け付け、その後ボタンをロックしてホストが回答者を確定する（`hostAssignAnswerer`）。同時刻は`recv`（サーバー受信時刻）→peerIdで決める。
+- **phase**：押し直しの単位。誤答で押していた人が残っていないときは`phase+1`で「誤答した人以外」で押し直し。`question`は問題番号で、「次の問題へ」で`phase`とともに進み、`presses`と`lockedOut`を消す。受付開始・お手つき判定は仕様で不要とされたため無い（リセット直後から押せる）。
+- **誤答**：回答者（チーム戦ならチーム）を`lockedOut`に入れ、着順で次の人へ回答権を移す。
+- **チーム戦**：`members/{id}/buzzTeam`（各自が入力、localStorageにも保存）。チーム戦中は同じチームは1枠として扱い、誤答・勝ち抜け・失格もチーム単位。チーム未入力の人は個人扱い。
+- **スコア**：再入室でpeerIdが変わっても残るよう**名前キー**（`fbKey(name)`）で保持。チーム合計は各人のteamから集計。ホストは+1/−1で手動修正でき、「スコアを全消去」は2回押しで実行（confirmダイアログは使わない）。
+- 回答者が押した後に退室しても、押下記録の名前で判定・得点できる（`buzzNameOf`）。
+- 制限時間は表示と時間切れ音のみで、自動で不正解にはしない（判定はホスト）。
+- **演出**：回答権が決まると名前のカットイン＋タイルを金色に光らせる＋ピンポーン。正解/不正解は画面中央に○/×＋効果音。効果音は同期合図と同じく`audioCtx.destination`と`audioDest`の両方へ出し、合成録画キャンバスにも枠・カットイン・○×を描く（`drawBuzzerOverlayOnCanvas`）。入室時点の状態では演出しない。
+- 「結果をコピー」に早押しの履歴（問題ごとの判定と着順・時間差）とスコアを出力する。
 
 ## 既知の制約
 
