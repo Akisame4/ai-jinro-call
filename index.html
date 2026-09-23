@@ -187,8 +187,13 @@
     border: 1px solid #444; padding: 6px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis;
   }
   table#controlsTable th { background: #2c2c2c; }
-  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 28%; }
-  table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 18%; }
+  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 24%; }
+  table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 15%; }
+  table#controlsTable th.volCol, table#controlsTable td.volCol { width: 22%; }
+  table#controlsTable th:last-child, table#controlsTable td:last-child { width: 20%; }
+  table#controlsTable td:last-child .ctrlBtn { width: calc(50% - 3px); } /* ⬆⬇の2つを並べる */
+  table#controlsTable .volSlider { width: calc(100% - 44px); vertical-align: middle; }
+  table#controlsTable .volLabel { display: inline-block; width: 40px; text-align: right; font-size: 12px; color: #ccc; }
   table#controlsTable td.ctrlCell { text-align: center; white-space: nowrap; }
   table#controlsTable .ctrlBtn { width: 100%; min-width: 0; }
   table#controlsTable tr[draggable="true"] { cursor: grab; }
@@ -569,6 +574,11 @@ let customOrder = [];
 // ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
 const locallyMutedPeers = new Set();      // 個別に音声を消している相手
 const locallyHiddenVideoPeers = new Set(); // 個別に映像をオフにしている相手（タイルごと隠す）
+// 相手ごとの聞こえる音量（この端末だけ・0〜100%）。再入室でpeerIdが変わっても残るよう名前で保存する。
+// 100%を超える増幅はWeb Audio経由の再生が必要になり、Chromeではエコーキャンセルが効かなくなることがあるため行わない
+let peerVolumes = {};
+try { peerVolumes = JSON.parse(localStorage.getItem("peerVolumes") || "{}") || {}; } catch (e) {}
+let volSliderActive = false; // 音量スライダー操作中は行のドラッグ並び替えを始めない
 
 // ---------- DOM ----------
 const entryScreen = document.getElementById("entryScreen");
@@ -989,7 +999,24 @@ controlsTable.addEventListener("click", (e) => {
 
 // 参加者行のドラッグ&ドロップで並び替え（＝映像タイルの位置入れ替え）
 let dragSourceId = null;
+controlsTable.addEventListener("input", (e) => {
+  const slider = e.target.closest(".volSlider");
+  if (!slider) return;
+  const id = slider.dataset.id;
+  const vol = parseInt(slider.value, 10);
+  const name = members[id]?.name;
+  if (name) {
+    peerVolumes[name] = vol;
+    try { localStorage.setItem("peerVolumes", JSON.stringify(peerVolumes)); } catch (e) {}
+  }
+  applyPeerVolume(id);
+  const label = slider.parentElement.querySelector(".volLabel");
+  if (label) label.textContent = vol + "%";
+});
+controlsTable.addEventListener("pointerdown", (e) => { volSliderActive = !!e.target.closest(".volSlider"); });
+document.addEventListener("pointerup", () => { volSliderActive = false; });
 controlsTable.addEventListener("dragstart", (e) => {
+  if (volSliderActive) { e.preventDefault(); return; }
   const tr = e.target.closest("tr[draggable='true']");
   if (!tr) return;
   dragSourceId = tr.dataset.id;
@@ -2015,6 +2042,17 @@ function attachStreamToTile(peerId, stream) {
     video.srcObject = stream;
     if (peerId !== myId) video.muted = globalMuted || locallyMutedPeers.has(peerId);
   }
+  applyPeerVolume(peerId);
+}
+
+function getPeerVolume(id) {
+  const v = peerVolumes[members[id]?.name];
+  return typeof v === "number" ? v : 100;
+}
+function applyPeerVolume(id) {
+  if (id === myId) return;
+  const video = document.getElementById(`video-${id}`);
+  if (video) video.volume = Math.max(0, Math.min(1, getPeerVolume(id) / 100));
 }
 
 function updateStatsDisplay(peerId, s) {
@@ -2035,13 +2073,14 @@ function toggleGlobalMute() {
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
 // 行をドラッグして入れ替えると、対応する映像タイルの位置も入れ替わる
 function renderControls(slots) {
-  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>重なり順</th></tr>";
+  let html = "<tr><th>参加者</th><th>マイク</th><th class=\"volCol\">聞こえる音量</th><th>カメラ</th><th>重なり順</th></tr>";
   for (const s of slots) {
     if (!s) continue;
     if (s.kind === "screen") {
       html += `<tr data-key="${s.key}">
         <td>${escapeHtml(s.name)}（画面共有）</td>
         <td class="ctrlCell">-</td>
+        <td class="ctrlCell volCol">-</td>
         <td class="ctrlCell">-</td>
         <td class="ctrlCell">
           <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
@@ -2060,6 +2099,7 @@ function renderControls(slots) {
     html += `<tr draggable="true" data-id="${s.id}" data-key="${s.key}">
       <td><span class="dragHandle">⠿</span>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
+      <td class="ctrlCell volCol">${isSelf ? "-" : `<input type="range" class="volSlider" min="0" max="100" step="5" value="${getPeerVolume(s.id)}" data-id="${s.id}" title="この端末で聞こえる${escapeHtml(s.name)}さんの音量"><span class="volLabel">${getPeerVolume(s.id)}%</span>`}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button></td>
       <td class="ctrlCell">
         <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
@@ -2068,6 +2108,7 @@ function renderControls(slots) {
     </tr>`;
   }
   controlsTable.innerHTML = html;
+  for (const s of slots) if (s && s.kind === "camera") applyPeerVolume(s.id); // 名前が後から判明した相手にも保存済みの音量を反映
 }
 
 function bringTileKeyToFront(key) {

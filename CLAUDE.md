@@ -57,6 +57,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - **背景画像**：選択した画像をlocalStorageにdata URLで保存し、`#videoGrid`の`background-image`に設定（`applyBgImage`）。
 - **枠画像（PNG）**：各タイル内の`.frameOverlay`（z-index最上位・`pointer-events:none`）にdata URLを設定して重ねる（`applyFrameImageToTile`/`applyFrameImageToAllTiles`）。表示ON/OFFは`#videoGrid.showFrame`で制御。
 - **無音警告のレイアウト固定**：`#gateWarning`は常にDOMに存在させ、`display`ではなく`visibility`（`.show`クラス）で切り替える。これにより表示/非表示で他要素の行がずれない。
+- **聞こえる音量（相手ごと）**：操作テーブルの「聞こえる音量」スライダー（0〜100%）で、この端末で聞こえる相手の音量を変える（`<video>.volume`）。ミュートとは独立。再入室でpeerIdが変わっても残るよう**名前をキー**にlocalStorage（`peerVolumes`）へ保存。100%超の増幅は、Web Audio経由で再生する必要があり、Chromeではその経路だとエコーキャンセルが効かなくなることがあるため行っていない。スライダー操作中は行のドラッグ並び替えを始めない（`volSliderActive`）。
 - **タイルの重なり順（手動）**：操作テーブルの各行に「⬆最前面へ/⬇最背面へ」ボタンを持つ（画面共有タイルの行も含む）。`bringTileToFront`は現在の全タイルの最大z-indexを都度計算して+1する（固定カウンタ方式だと、スロット番号由来の既定z＝`idx+1`を追い抜けないバグがあったため修正済み）。`sendTileKeyToBack`は他タイルの最小z-index-1を設定する。
 
 ## カメラオフ＝タイル非表示
