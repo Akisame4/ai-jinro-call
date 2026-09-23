@@ -12,8 +12,8 @@ rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z,hidden}(0〜1の相対値) }, updatedAt }
-rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt }
-rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs? }
+rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt, syncMarkRequestedAt? }
+rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs?, startedAtServerMs? }
 ```
 
 ## 画面共有（カメラと別タイル表示）
@@ -39,7 +39,9 @@ rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"s
 - 事前準備は2クリック必須：①`getDisplayMedia`で画面選択→②`showSaveFilePicker`で保存先選択。**この2つを1つの非同期関数内で連続awaitすると、2つ目の呼び出しがユーザー操作起点と認識されず失敗するブラウザがあるため、必ず別々のクリックハンドラに分離している**（`selectBulkRecordScreen` → `chooseBulkRecordSaveDestination`）。
 - MP4（`avc1,mp4a.40.2`）を優先し、`MediaRecorder.isTypeSupported()`で非対応の場合のみWebM(vp8,opus)にフォールバック（`pickBulkRecordMimeType`）。
 - 空き容量は`navigator.storage.estimate()`で概算表示する（オリジンのストレージクォータであり、`showSaveFilePicker`で選んだ実際の保存先ドライブの空き容量とは正確には一致しない前提の目安表示）。
-- 各自の録画開始時刻（ミリ秒, `startedAtMs`）は`recordingStatus`に記録し、「結果をコピー」の出力にも含める（編集時のファイル間同期用）。フレームフラッシュ等による同期補助は未実装（将来の改善候補）。
+- 各自の録画開始時刻（ミリ秒, `startedAtMs`＝ローカル時計、`startedAtServerMs`＝`.info/serverTimeOffset`でサーバー時刻に換算した値）は`recordingStatus`に記録し、「結果をコピー」の出力にも含める（編集時のファイル間同期用）。
+- **同期合図（フラッシュ＋ビープ）**：録画開始（`recording/startedAt`）の3秒後に、全員の端末で同時に画面全体を200ms白く光らせ（`#syncFlashOverlay`）、1kHzのビープを鳴らす（`fireSyncMark`）。時刻はサーバー時刻基準で各端末が`setTimeout`で予約する（`scheduleSyncMark`）。ビープは`audioCtx.destination`（スピーカー＝システム音声として一括録画に入る）と`audioDest`（合成録画の音声）の両方に出し、合成録画キャンバスにも白フレームを描く。録画中はホストの「同期合図を出す」ボタンで`syncMarkRequestedAt`を書き込み、その1.5秒後に追加の合図を出せる。1秒以上過ぎた合図は発火しない（途中参加・再読み込み時の誤発火防止）。「結果をコピー」には各自の録画ファイル内での合図の位置（秒）を出力する。
+- 準備完了時に空き容量の目安を常に表示し、9GB未満またはWebMフォールバック時は黄色の警告色にする。
 
 ## 表示オプション（この端末のみ・localStorage保存）
 

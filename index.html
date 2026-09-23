@@ -217,9 +217,13 @@
   .bulkStateBadge.recording { background: #4a1e1e; color: #ff8080; }
   .bulkStateBadge.saved { background: #1e3a4a; color: #8dc4ff; }
   .bulkStateBadge.error { background: #4a3f1e; color: #e0c93a; }
+  #syncFlashOverlay { position: fixed; inset: 0; background: #fff; z-index: 99999; pointer-events: none; display: none; }
+  #syncFlashOverlay.show { display: block; }
+  #bulkSourceStatus.warn { color: #e0c93a; }
 </style>
 </head>
 <body>
+<div id="syncFlashOverlay"></div>
 
 <div id="entryScreen">
   <h2>遊ぶところ撮影ツール</h2>
@@ -329,8 +333,10 @@
       <div id="bulkHostControls" style="display:none;">
         <button id="bulkHostStartBtn">● 一斉録画開始</button>
         <button id="bulkHostStopBtn" style="display:none;">■ 一斉録画停止</button>
+        <button id="bulkHostSyncMarkBtn" style="display:none;" title="全員の画面を一瞬白く光らせ、ビープ音を鳴らします（編集で素材の位置を揃える目印）">◎ 同期合図を出す</button>
         <span class="hint">（ホストのみ操作できます）</span>
       </div>
+      <div class="hint">録画開始の約3秒後に、全員の画面が一瞬白く光りビープ音が鳴ります（同期合図）。編集時はこの光・音の位置で各素材を揃えてください（録画する画面にこのタブが映っていない場合は、システム音声に入るビープで揃えます）。</div>
       <span class="hint" id="bulkSleepWarning" style="display:none; color:#ff8080;">⚠ 長時間収録になる場合は、収録中にPCがスリープしない設定になっているか確認してください</span>
       <table id="bulkRecordStatusTable" style="margin-top:10px;"></table>
     </section>
@@ -475,7 +481,15 @@ let bulkRecordExt = "mp4";
 let bulkMediaRecorder = null;
 let bulkWriteChain = Promise.resolve();
 let bulkRecordingSessionStartedAt = null; // 現在処理中の録画セッションのstartedAt（二重start防止）
-let bulkMembersStatus = {}; // peerId -> {state, updatedAt, startedAtMs, message}
+let bulkMembersStatus = {}; // peerId -> {state, updatedAt, startedAtMs, startedAtServerMs, message}
+// 同期合図（フラッシュ＋ビープ）。サーバー時刻基準で全員同じ瞬間に出す
+const BULK_SYNC_MARK_AFTER_START_MS = 3000; // 録画開始からこの時間後に自動で合図（全員の録画が確実に回り始めてから）
+const BULK_SYNC_MARK_MANUAL_DELAY_MS = 1500; // 手動合図は押してからこの時間後（RTDBの伝搬待ち）
+const SYNC_FLASH_MS = 200;
+let serverTimeOffset = 0; // サーバー時刻 = Date.now() + serverTimeOffset
+let bulkSyncMarks = []; // 今回の録画セッションで出した合図のサーバー時刻（ms）
+const bulkScheduledSyncMarks = new Set();
+let syncFlashUntil = 0; // 合成録画キャンバスにも白フレームを描くための期限（Date.now()基準）
 
 // レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
 const BUILTIN_TEMPLATES = {
@@ -553,6 +567,8 @@ const bulkSourceStatus = document.getElementById("bulkSourceStatus");
 const bulkHostControls = document.getElementById("bulkHostControls");
 const bulkHostStartBtn = document.getElementById("bulkHostStartBtn");
 const bulkHostStopBtn = document.getElementById("bulkHostStopBtn");
+const bulkHostSyncMarkBtn = document.getElementById("bulkHostSyncMarkBtn");
+const syncFlashOverlay = document.getElementById("syncFlashOverlay");
 const bulkSleepWarning = document.getElementById("bulkSleepWarning");
 const bulkRecordStatusTable = document.getElementById("bulkRecordStatusTable");
 
@@ -611,6 +627,7 @@ bulkSelectSourceBtn.addEventListener("click", selectBulkRecordScreen);
 bulkChooseSaveBtn.addEventListener("click", chooseBulkRecordSaveDestination);
 bulkHostStartBtn.addEventListener("click", hostStartBulkRecording);
 bulkHostStopBtn.addEventListener("click", hostStopBulkRecording);
+bulkHostSyncMarkBtn.addEventListener("click", hostRequestSyncMark);
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -2237,6 +2254,11 @@ function drawRecordFrame() {
     ctx.restore();
   });
 
+  if (Date.now() < syncFlashUntil) { // 同期合図は合成録画にも白フレームとして残す
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+  }
+
   recordLoopId = requestAnimationFrame(drawRecordFrame);
 }
 
@@ -2424,15 +2446,21 @@ async function chooseBulkRecordSaveDestination() {
   bulkChooseSaveBtn.style.display = "none";
 
   let freeSpaceNote = "";
+  let lowSpace = false;
   try {
     const est = await navigator.storage.estimate();
     const available = (est.quota || 0) - (est.usage || 0);
-    if (available && available < BULK_REC_WARN_BYTES) {
-      freeSpaceNote = `（空き容量の目安が少ない可能性: 約${(available / 1024 / 1024 / 1024).toFixed(1)}GB。3時間の録画には約9GB必要です）`;
+    if (available) {
+      const gb = (available / 1024 / 1024 / 1024).toFixed(1);
+      lowSpace = available < BULK_REC_WARN_BYTES;
+      freeSpaceNote = lowSpace
+        ? ` ⚠ 空き容量の目安: 約${gb}GB（3時間の録画には約9GB必要です）`
+        : ` 空き容量の目安: 約${gb}GB（1時間あたり約2.8GB）`;
     }
   } catch (e) { /* Storage APIが無い環境ではスキップ */ }
 
-  bulkSourceStatus.textContent = `準備完了（${ext.toUpperCase()}${fallback ? "・非対応環境のためWebMにフォールバック" : ""}）${freeSpaceNote}`;
+  bulkSourceStatus.textContent = `準備完了（${ext.toUpperCase()}${fallback ? "・⚠ MP4非対応の環境のためWebMで録画します" : ""}）${freeSpaceNote}`;
+  bulkSourceStatus.classList.toggle("warn", fallback || lowSpace);
   bulkSleepWarning.style.display = "inline";
   writeMyBulkStatus("ready");
 
@@ -2447,13 +2475,25 @@ function listenBulkRecording() {
     const startedAt = data?.startedAt;
     if (state === "recording" && startedAt !== bulkRecordingSessionStartedAt) {
       bulkRecordingSessionStartedAt = startedAt;
+      bulkSyncMarks = [];
+      bulkScheduledSyncMarks.clear();
       startBulkRecordingLocal(startedAt);
     } else if (state !== "recording" && bulkRecordingSessionStartedAt) {
       bulkRecordingSessionStartedAt = null;
       stopBulkRecordingLocal();
     }
+    if (state === "recording" && typeof startedAt === "number") {
+      scheduleSyncMark(startedAt + BULK_SYNC_MARK_AFTER_START_MS);
+      if (typeof data.syncMarkRequestedAt === "number" && data.syncMarkRequestedAt > startedAt) {
+        scheduleSyncMark(data.syncMarkRequestedAt + BULK_SYNC_MARK_MANUAL_DELAY_MS);
+      }
+    }
     bulkHostStartBtn.style.display = state === "recording" ? "none" : "";
     bulkHostStopBtn.style.display = state === "recording" ? "" : "none";
+    bulkHostSyncMarkBtn.style.display = state === "recording" ? "" : "none";
+  });
+  onValue(ref(db, ".info/serverTimeOffset"), (snap) => {
+    serverTimeOffset = snap.val() || 0;
   });
   onValue(ref(db, `rooms/${ROOM_ID}/recordingStatus`), (snap) => {
     bulkMembersStatus = snap.val() || {};
@@ -2468,7 +2508,6 @@ function startBulkRecordingLocal(startedAt) {
   }
   if (bulkMediaRecorder && bulkMediaRecorder.state !== "inactive") return; // 二重開始防止
 
-  const startedAtMs = Date.now();
   (async () => {
     try {
       bulkRecordWritable = await bulkRecordFileHandle.createWritable();
@@ -2507,7 +2546,9 @@ function startBulkRecordingLocal(startedAt) {
       bulkRecordWritable = null;
     };
     bulkMediaRecorder.start(BULK_REC_TIMESLICE_MS);
-    writeMyBulkStatus("recording", { startedAtMs });
+    const startedAtMs = Date.now();
+    // 端末ごとの時計のズレを除くため、サーバー時刻換算の開始時刻も残す（同期合図との差分計算用）
+    writeMyBulkStatus("recording", { startedAtMs, startedAtServerMs: startedAtMs + serverTimeOffset });
   })();
 }
 
@@ -2524,6 +2565,45 @@ async function hostStartBulkRecording() {
 async function hostStopBulkRecording() {
   if (!isBulkHost()) return;
   await set(ref(db, `rooms/${ROOM_ID}/recording`), { state: "stopped", updatedAt: serverTimestamp() });
+}
+
+async function hostRequestSyncMark() {
+  if (!isBulkHost()) return;
+  await update(ref(db, `rooms/${ROOM_ID}/recording`), { syncMarkRequestedAt: serverTimestamp() });
+}
+
+// サーバー時刻markAtに合わせて全員同時に合図を出す（既に過ぎた合図は出さない＝途中参加・再読み込み時の誤発火防止）
+function scheduleSyncMark(markAt) {
+  if (bulkScheduledSyncMarks.has(markAt)) return;
+  bulkScheduledSyncMarks.add(markAt);
+  const delay = markAt - (Date.now() + serverTimeOffset);
+  if (delay < -1000) return;
+  bulkSyncMarks.push(markAt);
+  setTimeout(() => {
+    if (!bulkRecordingSessionStartedAt) return; // 合図前に停止された
+    fireSyncMark();
+  }, Math.max(0, delay));
+}
+
+function fireSyncMark() {
+  syncFlashUntil = Date.now() + SYNC_FLASH_MS;
+  syncFlashOverlay.classList.add("show");
+  setTimeout(() => syncFlashOverlay.classList.remove("show"), SYNC_FLASH_MS);
+  // ビープはスピーカー（システム音声として一括録画に入る）と合成録画の音声ミックスの両方に出す
+  try {
+    ensureAudioGraph();
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 1000;
+    gain.gain.setValueAtTime(0.5, t);
+    gain.gain.setValueAtTime(0, t + SYNC_FLASH_MS / 1000);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    gain.connect(audioDest);
+    osc.start(t);
+    osc.stop(t + SYNC_FLASH_MS / 1000 + 0.05);
+  } catch (e) { console.warn("sync beep failed", e); }
 }
 
 const BULK_STATE_LABELS = { idle: "未準備", ready: "準備完了", recording: "録画中", saved: "保存完了", error: "エラー" };
@@ -2573,7 +2653,12 @@ function copyResults() {
       const name = members[peerId]?.name || peerId;
       const label = BULK_STATE_LABELS[s.state] || s.state;
       const startedAt = s.startedAtMs ? new Date(s.startedAtMs).toISOString() : "-";
-      text += `${name}: ${label} / 開始時刻=${startedAt}\n`;
+      let markNote = "";
+      if (s.startedAtServerMs && bulkSyncMarks.length) {
+        const offsets = bulkSyncMarks.map((m) => ((m - s.startedAtServerMs) / 1000).toFixed(2) + "秒");
+        markNote = ` / 同期合図の位置=${offsets.join(", ")}`;
+      }
+      text += `${name}: ${label} / 開始時刻=${startedAt}${markNote}\n`;
     }
   }
 
