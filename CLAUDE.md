@@ -12,8 +12,6 @@ rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
-rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt, syncMarkRequestedAt? }
-rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs?, startedAtServerMs? }
 rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
 rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
 rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at, recv, name, team }
@@ -37,16 +35,9 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 追従中（`followingLayout`が非nullかつ自分がリーダーでない）はこの端末のドラッグ・リサイズ・非表示操作をロックする（`layoutInteractionLocked()`）。
 - 追従解除（同期解除ボタン、リーダー消失、リーダーからの拒否状態変化）の際は、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）に変換して引き継ぐ（`snapshotLayoutIntoLocal`）。手動解除は`myManualUnfollow`フラグで管理し、「再度追従する」で同じリーダーへ許可を取り直さず復帰できる。
 
-## 一括録画（編集素材用・各自ローカル保存）
+## 一括録画（廃止）
 
-- 通話には表示していない画面（プレイ視点等）を、各自のブラウザ内だけで`MediaRecorder`に録画し、`showSaveFilePicker`で選んだファイルへ1秒間隔（timeslice）で逐次書き込む（メモリに溜め込まない）。映像は通話（RTCPeerConnection）には一切送信しない。
-- **ホスト＝最も早く入室した参加者**（`isBulkHost()`。新たな役職選定UIを増やさず、既存の`joinedAt`順で決定的に決める）。ホストのみ「一斉録画開始/停止」ボタンが表示される。
-- 事前準備は2クリック必須：①`getDisplayMedia`で画面選択→②`showSaveFilePicker`で保存先選択。**この2つを1つの非同期関数内で連続awaitすると、2つ目の呼び出しがユーザー操作起点と認識されず失敗するブラウザがあるため、必ず別々のクリックハンドラに分離している**（`selectBulkRecordScreen` → `chooseBulkRecordSaveDestination`）。
-- MP4（`avc1,mp4a.40.2`）を優先し、`MediaRecorder.isTypeSupported()`で非対応の場合のみWebM(vp8,opus)にフォールバック（`pickBulkRecordMimeType`）。
-- 空き容量は`navigator.storage.estimate()`で概算表示する（オリジンのストレージクォータであり、`showSaveFilePicker`で選んだ実際の保存先ドライブの空き容量とは正確には一致しない前提の目安表示）。
-- 各自の録画開始時刻（ミリ秒, `startedAtMs`＝ローカル時計、`startedAtServerMs`＝`.info/serverTimeOffset`でサーバー時刻に換算した値）は`recordingStatus`に記録し、「結果をコピー」の出力にも含める（編集時のファイル間同期用）。
-- **同期合図（フラッシュ＋ビープ）**：録画開始（`recording/startedAt`）の3秒後に、全員の端末で同時に画面全体を200ms白く光らせ（`#syncFlashOverlay`）、1kHzのビープを鳴らす（`fireSyncMark`）。時刻はサーバー時刻基準で各端末が`setTimeout`で予約する（`scheduleSyncMark`）。`serverTimestamp()`は書き込んだ本人の端末で「推定値→確定値」の2回通知されるため、合図は種類（auto/manual）ごとに未発火のものを置き換えて二重発火を防いでいる。ビープは`audioCtx.destination`（スピーカー＝システム音声として一括録画に入る）と`audioDest`（合成録画の音声）の両方に出し、合成録画キャンバスにも白フレームを描く。録画中はホストの「同期合図を出す」ボタンで`syncMarkRequestedAt`を書き込み、その1.5秒後に追加の合図を出せる。1秒以上過ぎた合図は発火しない（途中参加・再読み込み時の誤発火防止）。「結果をコピー」には各自の録画ファイル内での合図の位置（秒）を出力する。
-- 準備完了時に空き容量の目安を常に表示し、9GB未満またはWebMフォールバック時は黄色の警告色にする。
+- 2026-09-23にUCの判断で一括録画（各自ローカル録画・同期合図）は削除した。ホスト判定は`isRoomHost()`（最初に入室した人）として早押しで引き続き使用。
 
 ## 表示オプション（この端末のみ・localStorage保存）
 
@@ -65,7 +56,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 ## 早押し（オプション機能・第一弾）
 
-- ホスト（`isBulkHost()`＝最初に入室した人。一括録画と同じ）が「早押しを使う」をONにすると全員に早押しパネルが出る（`buzzer/config/enabled`）。判定・状態遷移・設定の書き込みはホスト端末だけが行う。
+- ホスト（`isRoomHost()`＝最初に入室した人。一括録画と同じ）が「早押しを使う」をONにすると全員に早押しパネルが出る（`buzzer/config/enabled`）。判定・状態遷移・設定の書き込みはホスト端末だけが行う。
 - **公平性**：押下時刻は各自の`Date.now() + serverTimeOffset`（押した瞬間のサーバー時刻換算）で記録し、届いた順ではなくこの時刻順で順位を決める。最初の押下が届いてから`BUZZ_WINDOW_MS`（500ms）は他の人の押下も受け付け、その後ボタンをロックしてホストが回答者を確定する（`hostAssignAnswerer`）。同時刻は`recv`（サーバー受信時刻）→peerIdで決める。
 - **phase**：押し直しの単位。誤答で押していた人が残っていないときは`phase+1`で「誤答した人以外」で押し直し。`question`は問題番号で、「次の問題へ」で`phase`とともに進み、`presses`と`lockedOut`を消す。受付開始・お手つき判定は仕様で不要とされたため無い（リセット直後から押せる）。
 - **誤答**：回答者（チーム戦ならチーム）を`lockedOut`に入れ、着順で次の人へ回答権を移す。
@@ -73,11 +64,9 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - **スコア**：再入室でpeerIdが変わっても残るよう**名前キー**（`fbKey(name)`）で保持。チーム合計は各人のteamから集計。ホストは+1/−1で手動修正でき、「スコアを全消去」は2回押しで実行（confirmダイアログは使わない）。
 - 回答者が押した後に退室しても、押下記録の名前で判定・得点できる（`buzzNameOf`）。
 - 制限時間は表示と時間切れ音のみで、自動で不正解にはしない（判定はホスト）。
-- **演出**：回答権が決まると名前のカットイン＋タイルを金色に光らせる＋ピンポーン。正解/不正解は画面中央に○/×＋効果音。効果音は同期合図と同じく`audioCtx.destination`と`audioDest`の両方へ出し、合成録画キャンバスにも枠・カットイン・○×を描く（`drawBuzzerOverlayOnCanvas`）。入室時点の状態では演出しない。
+- **演出**：回答権が決まると名前のカットイン＋タイルを金色に光らせる＋ピンポーン。正解/不正解は画面中央に○/×＋効果音。効果音は`audioCtx.destination`と`audioDest`の両方へ出し、合成録画キャンバスにも枠・カットイン・○×を描く（`drawBuzzerOverlayOnCanvas`）。入室時点の状態では演出しない。
 - 「結果をコピー」に早押しの履歴（問題ごとの判定と着順・時間差）とスコアを出力する。
 
 ## 既知の制約
 
 - 実カメラ・実マイク・画面共有ピッカーはブラウザのネイティブ許可ダイアログを伴うため、ブラウザ自動操作だけでは動作確認が完結しない。コード変更後は実機（複数タブ/複数人）での確認が必要。
-- `showSaveFilePicker`（File System Access API）はChrome/Edge系のみ対応。Firefox/Safariでは一括録画機能が使えない（非対応時はメッセージを表示するのみ）。
-- MP4出力ファイルをDaVinci Resolve等で読み込んだ際のシーク・音ズレ、システム音声キャプチャでゲーム音を含められるかは未検証（メモ記載の「要検証」項目のまま）。
