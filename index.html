@@ -219,6 +219,8 @@
   #buzzStatusText { font-size: 16px; font-weight: bold; }
   #buzzTimer { font-size: 20px; font-weight: bold; color: #ffd54f; min-width: 80px; }
   #buzzTimer.over { color: #ff5252; }
+  #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
+  #buzzHostInfo b { color: #ffd54f; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
   .buzzSettings input[type="number"] { width: 56px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
   #buzzTeamInput { width: 100px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 6px; }
@@ -338,6 +340,11 @@
 
     <section class="panel" id="buzzPanel">
       <h2>早押し</h2>
+      <div id="buzzRoleRow">
+        <label><input type="checkbox" id="buzzHostClaimToggle"> ホスト（司会）になる</label>
+        <label><input type="checkbox" id="buzzSpectatorToggle"> 観戦者として参加（ボタンを使わない）</label>
+        <span id="buzzHostInfo" class="hint"></span>
+      </div>
       <div id="buzzHostToggleRow" style="display:none;">
         <label><input type="checkbox" id="buzzEnabledToggle"> 早押しを使う（全員の画面に表示されます）</label>
       </div>
@@ -349,7 +356,6 @@
           <div id="buzzTimer"></div>
         </div>
         <div id="buzzSelfRow">
-          <label><input type="checkbox" id="buzzSpectatorToggle"> 観戦者として参加（ボタンを使わない）</label>
           <label id="buzzTeamLabel" style="display:none;">チーム名: <input type="text" id="buzzTeamInput" placeholder="例: 赤チーム"></label>
           <span id="buzzRuleSummary" class="hint"></span>
         </div>
@@ -603,6 +609,8 @@ const buzzBtn = document.getElementById("buzzBtn");
 const buzzStatusText = document.getElementById("buzzStatusText");
 const buzzTimer = document.getElementById("buzzTimer");
 const buzzSpectatorToggle = document.getElementById("buzzSpectatorToggle");
+const buzzHostClaimToggle = document.getElementById("buzzHostClaimToggle");
+const buzzHostInfo = document.getElementById("buzzHostInfo");
 const buzzTeamLabel = document.getElementById("buzzTeamLabel");
 const buzzTeamInput = document.getElementById("buzzTeamInput");
 const buzzRuleSummary = document.getElementById("buzzRuleSummary");
@@ -687,6 +695,12 @@ buzzWrongBtn.addEventListener("click", () => hostJudgeBuzz(false));
 buzzResetBtn.addEventListener("click", () => hostResetBuzzQuestion(true));
 buzzRetryBtn.addEventListener("click", () => hostResetBuzzQuestion(false));
 buzzClearScoresBtn.addEventListener("click", hostClearBuzzScores);
+// ホストは各自のチェックで決める（後からチェックした人に交代）。名前で持つので再読み込みしてもホストのまま
+buzzHostClaimToggle.addEventListener("change", () => {
+  const hostRef = ref(db, `rooms/${ROOM_ID}/buzzer/host`);
+  if (buzzHostClaimToggle.checked) set(hostRef, { name: myName, at: serverTimestamp() });
+  else if (buzzHostName === myName) remove(hostRef);
+});
 buzzSpectatorToggle.addEventListener("change", () => {
   update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { buzzSpectator: buzzSpectatorToggle.checked });
 });
@@ -2442,11 +2456,20 @@ function stopRecording() {
 
 // ---------- ホスト ----------
 // ホスト＝最も早く入室した参加者（新たな役職選定UIを増やさず、既存のjoinedAt順で決定的に決める）
-function isRoomHost() {
+// 早押しの「ホスト（司会）になる」でホストに指定された人（buzzer/host/name）。
+// 指定が無いとき・指定された人がルームにいないときは、最も早く入室した参加者がホストを代行する
+let buzzHostName = null;
+function isHostNamePresent() {
+  return !!buzzHostName && Object.values(members).some((m) => m?.joinedAt != null && m.name === buzzHostName);
+}
+function earliestMemberId() {
   const presentIds = Object.keys(members).filter((id) => members[id]?.joinedAt != null);
-  if (!presentIds.length) return false;
-  const earliest = presentIds.slice().sort((a, b) => members[a].joinedAt - members[b].joinedAt)[0];
-  return earliest === myId;
+  if (!presentIds.length) return null;
+  return presentIds.sort((a, b) => members[a].joinedAt - members[b].joinedAt)[0];
+}
+function isRoomHost() {
+  if (isHostNamePresent()) return members[myId]?.name === buzzHostName;
+  return earliestMemberId() === myId;
 }
 
 // ---------- 早押し ----------
@@ -2545,6 +2568,10 @@ function canIPressBuzzer() {
 }
 
 function listenBuzzer() {
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/host`), (snap) => {
+    buzzHostName = snap.val()?.name || null;
+    renderBuzzer();
+  });
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/config`), (snap) => {
     buzzConfig = { ...BUZZ_DEFAULT_CONFIG, ...(snap.val() || {}) };
     renderBuzzer();
@@ -2850,6 +2877,11 @@ function renderBuzzer() {
   buzzHostControls.style.display = enabled && host ? "" : "none";
   buzzTeamLabel.style.display = buzzConfig.teamMode ? "" : "none";
   buzzSpectatorToggle.checked = !!members[myId]?.buzzSpectator;
+  buzzHostClaimToggle.checked = isHostNamePresent() && buzzHostName === myName;
+  const hostName = isHostNamePresent() ? buzzHostName : members[earliestMemberId()]?.name;
+  buzzHostInfo.innerHTML = hostName
+    ? `ホスト: <b>${escapeHtml(hostName)}</b>${isHostNamePresent() ? "" : "（未指定のため最初に入室した人が代行中）"}`
+    : "";
   buzzTeamModeToggle.checked = !!buzzConfig.teamMode;
   for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
     if (document.activeElement !== input) input.value = buzzConfig[field] ?? 0;

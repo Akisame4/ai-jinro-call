@@ -12,6 +12,7 @@ rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
+rooms/{ROOM_ID}/buzzer/host: { name, at }
 rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
 rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
 rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at, recv, name, team }
@@ -56,7 +57,8 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 ## 早押し（オプション機能・第一弾）
 
-- ホスト（`isRoomHost()`＝最初に入室した人）が「早押しを使う」をONにすると全員に早押しパネルが出る（`buzzer/config/enabled`）。判定・状態遷移・設定の書き込みはホスト端末だけが行う。
+- **ホスト（司会）の決め方**：各自が早押しパネルの「ホスト（司会）になる」にチェックすると`buzzer/host/name`に自分の名前を書き込み、ホストになる（後からチェックした人に交代。観戦者チェックと同じ操作感）。名前で持つので再読み込みしてもホストのまま。チェックを外すと指定解除。指定が無い／指定された名前の人がルームにいないときは、最も早く入室した人が代行する（`isRoomHost()`）。
+- ホストが「早押しを使う」をONにすると全員に早押しパネルが出る（`buzzer/config/enabled`）。判定・状態遷移・設定の書き込みはホスト端末だけが行う。
 - **公平性**：押下時刻は各自の`Date.now() + serverTimeOffset`（押した瞬間のサーバー時刻換算）で記録し、届いた順ではなくこの時刻順で順位を決める。最初の押下が届いてから`BUZZ_WINDOW_MS`（500ms）は他の人の押下も受け付け、その後ボタンをロックしてホストが回答者を確定する（`hostAssignAnswerer`）。同時刻は`recv`（サーバー受信時刻）→peerIdで決める。
 - **phase**：押し直しの単位。誤答で押していた人が残っていないときは`phase+1`で「誤答した人以外」で押し直し。`question`は問題番号で、「次の問題へ」で`phase`とともに進み、`presses`と`lockedOut`を消す。「押し直し」は問題番号を変えずに同じ処理（押下記録・回答権・誤答ロックを消す。得点は変えない）を行う（`hostResetBuzzQuestion(false)`）。受付開始・お手つき判定は仕様で不要とされたため無い（リセット直後から押せる）。
 - **誤答**：回答者（チーム戦ならチーム）を`lockedOut`に入れ、着順で次の人へ回答権を移す。
