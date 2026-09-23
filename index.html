@@ -219,6 +219,9 @@
   #buzzStatusText { font-size: 16px; font-weight: bold; }
   #buzzTimer { font-size: 20px; font-weight: bold; color: #ffd54f; min-width: 80px; }
   #buzzTimer.over { color: #ff5252; }
+  #introRow { border-top: 1px dashed #3a3a3a; margin-top: 10px; padding-top: 8px; }
+  #introTrackSelect { max-width: 260px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
+  #introIndicator { font-size: 14px; font-weight: bold; color: #8dc4ff; }
   #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
   #buzzHostInfo b { color: #ffd54f; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
@@ -354,6 +357,7 @@
           <button id="buzzBtn">早押し！<small>（スペースキーでも押せます）</small></button>
           <div id="buzzStatusText"></div>
           <div id="buzzTimer"></div>
+          <div id="introIndicator"></div>
         </div>
         <div id="buzzSelfRow">
           <label id="buzzTeamLabel" style="display:none;">チーム名: <input type="text" id="buzzTeamInput" placeholder="例: 赤チーム"></label>
@@ -380,6 +384,20 @@
             <label><input type="checkbox" id="buzzTeamMode"> チーム戦</label>
             <button class="small" id="buzzClearScoresBtn">スコアを全消去</button>
           </div>
+        </div>
+        <div class="buzzHostRow" id="introRow" style="display:none;">
+          <b>🎵 イントロクイズ:</b>
+          <button class="small" id="introFileBtn">曲を選ぶ（複数可）</button>
+          <input type="file" id="introFileInput" accept="audio/*" multiple style="display:none;">
+          <select id="introTrackSelect"></select>
+          <button id="introPlayBtn">▶ 再生</button>
+          <button id="introPauseBtn">⏸ 一時停止</button>
+          <button id="introRewindBtn">⏮ 頭出し</button>
+          <label>音量 <input type="range" id="introVolume" min="0" max="100" value="70"></label>
+          <label><input type="checkbox" id="introAutoStop" checked> 早押しで自動停止</label>
+          <label><input type="checkbox" id="introAutoResume" checked> 誤答で押し直しになったら続きから再生</label>
+          <span id="introStatus" class="hint"></span>
+          <div class="hint" style="flex-basis:100%;">曲はこの端末から通話の音声に混ぜて全員に流れます（ノイズ抑制はかかりません）。曲名は他の人には表示されません。「次の問題へ」で次の曲に切り替わります。</div>
         </div>
       </div>
     </section>
@@ -611,6 +629,18 @@ const buzzTimer = document.getElementById("buzzTimer");
 const buzzSpectatorToggle = document.getElementById("buzzSpectatorToggle");
 const buzzHostClaimToggle = document.getElementById("buzzHostClaimToggle");
 const buzzHostInfo = document.getElementById("buzzHostInfo");
+const introIndicator = document.getElementById("introIndicator");
+const introRow = document.getElementById("introRow");
+const introFileBtn = document.getElementById("introFileBtn");
+const introFileInput = document.getElementById("introFileInput");
+const introTrackSelect = document.getElementById("introTrackSelect");
+const introPlayBtn = document.getElementById("introPlayBtn");
+const introPauseBtn = document.getElementById("introPauseBtn");
+const introRewindBtn = document.getElementById("introRewindBtn");
+const introVolume = document.getElementById("introVolume");
+const introAutoStop = document.getElementById("introAutoStop");
+const introAutoResume = document.getElementById("introAutoResume");
+const introStatus = document.getElementById("introStatus");
 const buzzTeamLabel = document.getElementById("buzzTeamLabel");
 const buzzTeamInput = document.getElementById("buzzTeamInput");
 const buzzRuleSummary = document.getElementById("buzzRuleSummary");
@@ -690,6 +720,13 @@ buzzTeamModeToggle.addEventListener("change", () => hostUpdateBuzzConfig({ teamM
 for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
   input.addEventListener("change", () => hostUpdateBuzzConfig({ [field]: Math.max(0, parseInt(input.value, 10) || 0) }));
 }
+introFileBtn.addEventListener("click", () => introFileInput.click());
+introFileInput.addEventListener("change", () => { addIntroTracks(introFileInput.files); introFileInput.value = ""; });
+introTrackSelect.addEventListener("change", () => loadIntroTrack(parseInt(introTrackSelect.value, 10)));
+introPlayBtn.addEventListener("click", playIntro);
+introPauseBtn.addEventListener("click", pauseIntro);
+introRewindBtn.addEventListener("click", rewindIntro);
+introVolume.addEventListener("input", () => { if (introGain) introGain.gain.value = introVolume.value / 100; });
 buzzCorrectBtn.addEventListener("click", () => hostJudgeBuzz(true));
 buzzWrongBtn.addEventListener("click", () => hostJudgeBuzz(false));
 buzzResetBtn.addEventListener("click", () => hostResetBuzzQuestion(true));
@@ -2173,6 +2210,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
 
     const sendDest = audioCtx.createMediaStreamDestination();
     eqOut.connect(sendDest);
+    connectIntroBusToSend(sendDest); // イントロクイズの曲はノイズ抑制・ゲート・EQの後で混ぜる（通すと音楽が削られるため）
     if (recordingDest) {
       eqOut.connect(recordingDest);
     }
@@ -2572,6 +2610,10 @@ function canIPressBuzzer() {
 }
 
 function listenBuzzer() {
+  onValue(ref(db, `rooms/${ROOM_ID}/buzzer/music`), (snap) => {
+    buzzMusicPlaying = !!snap.val()?.playing;
+    renderBuzzer();
+  });
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/host`), (snap) => {
     buzzHostName = snap.val()?.name || null;
     renderBuzzer();
@@ -2697,12 +2739,20 @@ async function hostJudgeBuzz(correct) {
     await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
       status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut, judge
     });
+    // イントロクイズ：×の演出が終わってから曲を続きから再開する
+    if (introAutoResume.checked && introPausedByBuzz && !introPlaying && !introEnded) {
+      setTimeout(() => { if (buzzState.status === "open") playIntro(); }, BUZZ_JUDGE_MARK_MS);
+    }
   }
 }
 
 // nextQuestion=true: 次の問題へ（問題番号を進める）／false: 押し直し（同じ問題のまま押した状況だけ消す。得点はそのまま）
 async function hostResetBuzzQuestion(nextQuestion = true) {
   if (!isRoomHost()) return;
+  if (nextQuestion && introTracks.length) { // イントロクイズ：次の問題では次の曲を頭から（再生はホストが▶で開始）
+    const nextIdx = Math.min(introCurrentIndex + 1, introTracks.length - 1);
+    loadIntroTrack(introCurrentIndex < introTracks.length - 1 ? nextIdx : introCurrentIndex);
+  }
   await remove(ref(db, `rooms/${ROOM_ID}/buzzer/presses`));
   await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
     question: (buzzState.question || 0) + (nextQuestion ? 1 : 0), phase: (buzzState.phase || 0) + 1,
@@ -2762,6 +2812,7 @@ function handleNewBuzzPresses() {
 function announceBuzzPress(phase, id) {
   if (buzzAnnounced.phase !== phase) {
     buzzAnnounced = { phase, id };
+    introAutoStopOnPress();
     showBuzzCutin(id);
   } else {
     playBuzzTones([{ f: 1760, d: 0.08, type: "sine", g: 0.2 }]); // 2着以降
@@ -2899,6 +2950,7 @@ function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
 }
 
 function updateBuzzTimer() {
+  updateIntroStatus();
   if (!buzzConfig.enabled || buzzState.status !== "answering" || !buzzState.answerDeadline) {
     buzzTimer.textContent = "";
     buzzTimer.classList.remove("over");
@@ -2935,6 +2987,9 @@ function renderBuzzer() {
   buzzOffNote.textContent = host ? "チェックを入れると全員の画面に早押しパネルが表示されます" : "早押しは現在オフです（ホストがオンにすると表示されます）";
   buzzBody.style.display = enabled ? "" : "none";
   buzzHostControls.style.display = enabled && host ? "" : "none";
+  // 曲の再生中は、ホストが交代しても流している本人が止められるように操作欄を残す
+  introRow.style.display = enabled && (host || introPlaying) ? "" : "none";
+  introIndicator.textContent = enabled && buzzMusicPlaying ? "♪ 曲が流れています" : "";
   buzzTeamLabel.style.display = buzzConfig.teamMode ? "" : "none";
   buzzSpectatorToggle.checked = !!members[myId]?.buzzSpectator;
   buzzHostClaimToggle.checked = isHostNamePresent() && buzzHostName === myName;
@@ -3039,6 +3094,177 @@ function renderBuzzer() {
   }
   if (!rows.length) sh += `<tr><td colspan="${host ? 5 : 4}" class="hint">まだ得点はありません</td></tr>`;
   buzzScoreTable.innerHTML = sh;
+}
+
+// ---------- イントロクイズ（早押しの追加機能） ----------
+// ホストの端末で選んだ曲を再生し、通話の送信音声（ノイズ抑制・ゲート・EQの後段）に混ぜて全員に流す。
+// 早押しの最初の押下が届いた瞬間に、曲を流している端末で一時停止する（announceBuzzPressから）。
+// 曲名は流している端末だけに表示し、他の人には「曲が流れている」ことだけを buzzer/music/playing で伝える。
+// 再生は<audio>ではなく、通話で既に動いているAudioContextのAudioBufferSourceで行う
+// （<audio>.play()はブラウザの自動再生制限で、誤答後の自動再開などクリック直後以外の再生が止められることがあるため。
+//  一時停止した位置はintroOffsetで自前管理する）
+let introTracks = [];        // { name, file, buffer }（この端末の中だけ）
+let introCurrentIndex = -1;
+let introGain = null;
+let introBus = null;         // 曲の出力をまとめる。スピーカー・録画ミックス・送信先に繋ぐ
+let introBusSendDest = null;
+let introSource = null;      // 再生中のAudioBufferSourceNode（一時停止のたびに作り直す）
+let introPlaying = false;
+let introEnded = false;
+let introOffset = 0;         // 一時停止中の再生位置（秒）
+let introStartedAt = 0;      // 再生開始時の audioCtx.currentTime - offset
+let introLoadError = "";
+let introPausedByBuzz = false; // 早押しで自動停止した（＝誤答後に自動で続きから再開してよい）状態
+let buzzMusicPlaying = false;
+
+function getIntroBus() {
+  ensureAudioGraph();
+  if (!introBus) {
+    introBus = audioCtx.createGain();
+    introBus.connect(audioCtx.destination); // 流している本人も聞こえるように
+    introBus.connect(audioDest);            // 合成録画にも入れる
+    introGain = audioCtx.createGain();
+    introGain.gain.value = introVolume.value / 100;
+    introGain.connect(introBus);
+  }
+  return introBus;
+}
+
+// ノイズ抑制の設定変更等で送信用トラックが作り直されるたびに、曲の出力も新しい送信先へ繋ぎ直す
+function connectIntroBusToSend(sendDest) {
+  const bus = getIntroBus();
+  if (introBusSendDest) { try { bus.disconnect(introBusSendDest); } catch (e) {} }
+  bus.connect(sendDest);
+  introBusSendDest = sendDest;
+}
+
+function addIntroTracks(files) {
+  for (const f of files) introTracks.push({ name: f.name, file: f, buffer: null });
+  introTrackSelect.innerHTML = introTracks.map((t, i) => `<option value="${i}">${i + 1}. ${escapeHtml(t.name)}</option>`).join("");
+  if (introCurrentIndex < 0 && introTracks.length) loadIntroTrack(0);
+  else introTrackSelect.value = String(introCurrentIndex);
+}
+
+async function decodeIntroTrack(idx) {
+  const t = introTracks[idx];
+  if (!t || t.buffer) return t?.buffer || null;
+  getIntroBus();
+  t.buffer = await audioCtx.decodeAudioData(await t.file.arrayBuffer());
+  return t.buffer;
+}
+
+async function loadIntroTrack(idx) {
+  if (!introTracks[idx]) return;
+  stopIntroSource();
+  introCurrentIndex = idx;
+  introOffset = 0;
+  introPausedByBuzz = false;
+  introEnded = false;
+  introLoadError = "";
+  introTrackSelect.value = String(idx);
+  onIntroPlayStateChange();
+  try {
+    await decodeIntroTrack(idx);
+  } catch (e) {
+    introLoadError = "この曲は読み込めませんでした（" + e.message + "）";
+  }
+  updateIntroStatus();
+}
+
+function introCurrentTime() {
+  return introPlaying ? audioCtx.currentTime - introStartedAt : introOffset;
+}
+
+async function playIntro() {
+  if (!introTracks.length) { introLoadError = "先に「曲を選ぶ」で曲を追加してください"; updateIntroStatus(); return; }
+  if (introPlaying) return;
+  if (introCurrentIndex < 0) introCurrentIndex = 0;
+  const idx = introCurrentIndex;
+  let buffer;
+  try {
+    buffer = await decodeIntroTrack(idx);
+  } catch (e) {
+    introLoadError = "この曲は読み込めませんでした（" + e.message + "）";
+    updateIntroStatus();
+    return;
+  }
+  if (!buffer || introPlaying || idx !== introCurrentIndex) return;
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  if (introEnded || introOffset >= buffer.duration) { introOffset = 0; introEnded = false; }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(introGain);
+  src.onended = () => { // 最後まで再生し終えたとき（一時停止によるstopではonendedを外している）
+    if (introSource !== src) return;
+    introSource = null;
+    introPlaying = false;
+    introEnded = true;
+    introOffset = buffer.duration;
+    onIntroPlayStateChange();
+  };
+  src.start(0, introOffset);
+  introPausedByBuzz = false;
+  introSource = src;
+  introStartedAt = audioCtx.currentTime - introOffset;
+  introPlaying = true;
+  onIntroPlayStateChange();
+}
+
+function stopIntroSource() {
+  if (!introSource) return;
+  introSource.onended = null;
+  try { introSource.stop(); } catch (e) {}
+  introSource.disconnect();
+  introSource = null;
+}
+
+function pauseIntro() {
+  introPausedByBuzz = false; // 手動の一時停止では自動再開しない（早押しの自動停止はこの後でtrueに戻す）
+  if (!introPlaying) return;
+  introOffset = introCurrentTime();
+  stopIntroSource();
+  introPlaying = false;
+  onIntroPlayStateChange();
+}
+
+function rewindIntro() {
+  pauseIntro();
+  introOffset = 0;
+  introEnded = false;
+  updateIntroStatus();
+}
+
+function introAutoStopOnPress() {
+  if (introPlaying && introAutoStop.checked) {
+    pauseIntro();
+    introPausedByBuzz = true;
+  }
+}
+
+function onIntroPlayStateChange() {
+  const musicRef = ref(db, `rooms/${ROOM_ID}/buzzer/music`);
+  if (introPlaying) {
+    set(musicRef, { playing: true });
+    onDisconnect(musicRef).remove(); // 流している人が落ちたら「流れています」表示を消す
+  } else if (buzzMusicPlaying) {
+    set(musicRef, { playing: false });
+  }
+  updateIntroStatus();
+  renderBuzzer();
+}
+
+function fmtTime(sec) {
+  if (!isFinite(sec)) return "--:--";
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+function updateIntroStatus() {
+  if (introLoadError) { introStatus.textContent = introLoadError; return; }
+  const t = introTracks[introCurrentIndex];
+  if (!t) { introStatus.textContent = ""; return; }
+  if (!t.buffer) { introStatus.textContent = "読み込み中…"; return; }
+  const state = introEnded ? "終了" : introPlaying ? "再生中" : "停止中";
+  introStatus.textContent = `${state} ${fmtTime(Math.min(introCurrentTime(), t.buffer.duration))} / ${fmtTime(t.buffer.duration)}`;
 }
 
 // ---------- 結果コピー ----------

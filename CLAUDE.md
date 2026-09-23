@@ -13,6 +13,7 @@ rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同�
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/buzzer/host: { name, at }
+rooms/{ROOM_ID}/buzzer/music: { playing }   // イントロクイズの曲が流れているか（曲名は送らない）
 rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
 rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
 rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at, recv, name, team }
@@ -35,6 +36,15 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - タイルの識別は表示スロットではなく`peerId`または`` `${peerId}-screen` ``（画面共有タイルも同期対象）。座標は0〜1の相対値。ドラッグ・リサイズ中はリーダー側で100ms間隔にスロットルして`layouts/{leaderId}`へ書き込む（`scheduleLayoutPublish`）。
 - 追従中（`followingLayout`が非nullかつ自分がリーダーでない）はこの端末のドラッグ・リサイズ・非表示操作をロックする（`layoutInteractionLocked()`）。
 - 追従解除（同期解除ボタン、リーダー消失、リーダーからの拒否状態変化）の際は、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）に変換して引き継ぐ（`snapshotLayoutIntoLocal`）。手動解除は`myManualUnfollow`フラグで管理し、「再度追従する」で同じリーダーへ許可を取り直さず復帰できる。
+
+## イントロクイズ（早押しの追加機能）
+
+- ホストの操作欄の「🎵 イントロクイズ」で、この端末の音声ファイルを選んで再生する。曲は**通話の送信音声に混ぜて**全員に流す（`introBus`）。混ぜる位置はノイズ抑制・ゲート・EQの**後段**（`setupNoiseGate`内の`connectIntroBusToSend`）。RNNoise/ゲートを通すと音楽が削られるため。`introBus`はスピーカー（本人のモニター）と`audioDest`（合成録画）にも繋ぐ。ノイズ抑制の初期化に失敗して生マイクにフォールバックした場合は曲が送られない。
+- 再生は`<audio>`ではなく、通話で既に動いているAudioContextの`AudioBufferSourceNode`で行う（`decodeAudioData`）。`<audio>.play()`はブラウザの自動再生制限で、クリック直後以外（誤答後の自動再開など）の再生が拒否されることがあるため。一時停止位置は`introOffset`で自前管理。
+- **早押しで自動停止**：その問題（phase）で最初の押下が届いた瞬間（`announceBuzzPress`→`introAutoStopOnPress`）に、曲を流している端末で一時停止する。ホスト判定に関係なく「流している端末」で止まるので、途中でホストが交代しても止まる。
+- **誤答で押し直しになったら続きから再生**：早押しで自動停止した場合だけ（`introPausedByBuzz`）、×の演出後に再開する。手動の一時停止では再開しない。誤答で次の人に回答権が移る場合は止めたまま。
+- 「次の問題へ」で次の曲を頭出し（再生はホストが▶）。「押し直し」では曲はそのまま。
+- 曲名は流している端末にだけ表示する。他の人には`buzzer/music/playing`で「♪ 曲が流れています」とだけ出す。
 
 ## 一括録画（廃止）
 
