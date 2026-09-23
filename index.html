@@ -2493,6 +2493,10 @@ let buzzLog = [];
 let buzzListenersReady = { state: false };
 let buzzLastAnswerer = null;   // 演出の二重発火防止（どの回答権に対して演出したか）
 let buzzLastJudgeId = null;
+// 押された瞬間の演出（ホストの回答者確定を待たずに全員へ即時に出す）。どの押下を演出済みかを覚えて二重に鳴らさない
+let buzzPressesReady = false;
+const buzzSeenPresses = new Set(); // `${phase}:${peerId}`
+let buzzAnnounced = { phase: null, id: null }; // そのphaseでピンポーン＋カットインを出した相手
 let buzzWindowTimers = {};     // phase -> { endsAt, timer }
 let buzzTimerInterval = null;
 let buzzTimeUpShownFor = null;
@@ -2583,10 +2587,12 @@ function listenBuzzer() {
     buzzListenersReady.state = true;
     handleBuzzStateEffects(first);
     if (prevPhase !== buzzState.phase) buzzWindowTimers = {};
+    if (!first) handleNewBuzzPresses(); // phase更新より先に届いていた新phaseの押下を拾う
     renderBuzzer();
   });
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/presses`), (snap) => {
     buzzPresses = snap.val() || {};
+    handleNewBuzzPresses();
     startBuzzWindowIfNeeded();
     renderBuzzer();
   });
@@ -2621,8 +2627,10 @@ async function pressBuzzer() {
   if (!canIPressBuzzer()) return;
   const at = buzzServerNow(); // 押した瞬間の時刻（ネットワーク遅延の影響を受けない）
   const phase = buzzState.phase;
-  playBuzzTones([{ f: 1500, d: 0.05, type: "square", g: 0.15 }]);
   buzzBtn.disabled = true;
+  // 押した本人にはネットワーク往復を待たずに即座に鳴らす
+  buzzSeenPresses.add(`${phase}:${myId}`);
+  announceBuzzPress(phase, myId);
   await set(ref(db, `rooms/${ROOM_ID}/buzzer/presses/${phase}/${myId}`), {
     at, recv: serverTimestamp(), name: myName, team: buzzTeamOf(myId)
   });
@@ -2726,6 +2734,53 @@ async function hostClearBuzzScores() {
 }
 
 // ---- 演出 ----
+// 新しく届いた押下に即座に反応する：そのphaseで最初の押下ならピンポーン＋カットイン、2着以降は短い音
+function handleNewBuzzPresses() {
+  const phase = buzzState.phase;
+  const firstLoad = !buzzPressesReady;
+  buzzPressesReady = true;
+  if (phase == null) return;
+  const fresh = [];
+  for (const [id] of buzzSortedPresses()) {
+    const key = `${phase}:${id}`;
+    if (buzzSeenPresses.has(key)) continue;
+    buzzSeenPresses.add(key);
+    fresh.push(id);
+  }
+  if (firstLoad || !fresh.length || !buzzConfig.enabled) return; // 入室時点で既にあった押下では鳴らさない
+  if (buzzState.status !== "open") return;
+  for (const id of fresh) announceBuzzPress(phase, id);
+  // ほぼ同時押しで、先に演出した人より早く押していた人の記録が受付窓の間に届いた場合は、音を鳴らし直さず表示だけ差し替える
+  // （窓が閉じた後に届いた押下は回答者の決定に使われないので差し替えない）
+  const first = buzzSortedPresses()[0]?.[0];
+  if (first && buzzAnnounced.phase === phase && buzzAnnounced.id !== first && !buzzWindowClosed()) {
+    buzzAnnounced = { phase, id: first };
+    showBuzzCutin(first, true);
+  }
+}
+
+function announceBuzzPress(phase, id) {
+  if (buzzAnnounced.phase !== phase) {
+    buzzAnnounced = { phase, id };
+    showBuzzCutin(id);
+  } else {
+    playBuzzTones([{ f: 1760, d: 0.08, type: "sine", g: 0.2 }]); // 2着以降
+  }
+  renderBuzzer();
+}
+
+// 回答権を光らせる相手：回答者が確定していればその人、確定前でも誰かが押していれば暫定1着
+function buzzHighlightId() {
+  if (!buzzConfig.enabled) return null;
+  if (buzzState.status === "answering") return buzzState.answererId || null;
+  if (buzzState.status === "open") {
+    const first = buzzSortedPresses()[0]?.[0];
+    if (first) return first;
+    if (buzzAnnounced.phase === buzzState.phase) return buzzAnnounced.id; // 自分が押した直後（まだ届いていない）
+  }
+  return null;
+}
+
 function handleBuzzStateEffects(isInitialSnapshot) {
   const answererId = buzzState.status === "answering" ? buzzState.answererId : null;
   const answerKey = answererId ? `${buzzState.phase}:${answererId}` : null;
@@ -2741,7 +2796,10 @@ function handleBuzzStateEffects(isInitialSnapshot) {
     buzzLastJudgeId = judgeId;
     showBuzzJudge(!!buzzState.judge.correct);
   }
-  if (answerKey && answerKey !== buzzLastAnswerer) {
+  const alreadyAnnounced = buzzAnnounced.phase === buzzState.phase && buzzAnnounced.id === answererId;
+  if (answerKey && answerKey !== buzzLastAnswerer && !(alreadyAnnounced && !judgeIsNew)) {
+    // 押した瞬間に出した演出と同じ人なら鳴らし直さない。遅延補正で1着が入れ替わった／誤答で次の人に移ったときだけ出す
+    buzzAnnounced = { phase: buzzState.phase, id: answererId };
     const delay = judgeIsNew && !buzzState.judge.correct ? BUZZ_JUDGE_MARK_MS : 0; // 誤答→次の人、は×を見せてから出す
     setTimeout(() => {
       if (buzzState.answererId === answererId && buzzState.status === "answering") showBuzzCutin(answererId);
@@ -2750,7 +2808,7 @@ function handleBuzzStateEffects(isInitialSnapshot) {
   buzzLastAnswerer = answerKey;
 }
 
-function showBuzzCutin(peerId) {
+function showBuzzCutin(peerId, silent = false) {
   const name = buzzNameOf(peerId);
   const team = buzzConfig.teamMode ? buzzTeamOf(peerId) : "";
   buzzCutinText = team ? `${name}（${team}）` : name;
@@ -2761,7 +2819,7 @@ function showBuzzCutin(peerId) {
   buzzCutinUntil = Date.now() + BUZZ_CUTIN_MS;
   setTimeout(() => { if (Date.now() >= buzzCutinUntil) buzzCutin.classList.remove("show"); }, BUZZ_CUTIN_MS);
   // ピンポーン
-  playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
+  if (!silent) playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
 }
 
 function showBuzzJudge(correct) {
@@ -2781,6 +2839,7 @@ function showBuzzJudge(correct) {
 function playBuzzTones(tones) {
   try {
     ensureAudioGraph();
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     let t = audioCtx.currentTime;
     for (const tone of tones) {
       const osc = audioCtx.createOscillator();
@@ -2802,7 +2861,8 @@ function playBuzzTones(tones) {
 function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
   if (!buzzConfig.enabled) return;
   const now = Date.now();
-  const answerTile = buzzState.status === "answering" && buzzState.answererId ? document.getElementById(`tile-${buzzState.answererId}`) : null;
+  const highlightId = buzzHighlightId();
+  const answerTile = highlightId ? document.getElementById(`tile-${highlightId}`) : null;
   if (answerTile && answerTile.offsetParent !== null) {
     const r = answerTile.getBoundingClientRect();
     ctx.save();
@@ -2894,11 +2954,10 @@ function renderBuzzer() {
   if (buzzConfig.teamMode) rules.push("チーム戦");
   buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
 
-  // タイルの強調（回答権のある人）
+  // タイルの強調（回答権のある人。押した瞬間から暫定1着を光らせる）
   videoGrid.querySelectorAll(".tile.buzzAnswer").forEach((t) => t.classList.remove("buzzAnswer"));
-  if (enabled && buzzState.status === "answering" && buzzState.answererId) {
-    document.getElementById(`tile-${buzzState.answererId}`)?.classList.add("buzzAnswer");
-  }
+  const highlightId = buzzHighlightId();
+  if (highlightId) document.getElementById(`tile-${highlightId}`)?.classList.add("buzzAnswer");
   if (!enabled) return;
 
   // ボタンと状態テキスト
@@ -2922,6 +2981,8 @@ function renderBuzzer() {
     status += "この問題は誤答済みのため押せません";
   } else if (buzzCurrentPresses()[myId]) {
     status += "押しました（判定待ち）";
+  } else if (buzzSortedPresses().length) {
+    status += `${buzzNameOf(buzzSortedPresses()[0][0])} さんが押しました！`;
   } else if (buzzWindowClosed()) {
     status += "ロック中";
   } else {
