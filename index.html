@@ -488,7 +488,10 @@ const BULK_SYNC_MARK_MANUAL_DELAY_MS = 1500; // 手動合図は押してから�
 const SYNC_FLASH_MS = 200;
 let serverTimeOffset = 0; // サーバー時刻 = Date.now() + serverTimeOffset
 let bulkSyncMarks = []; // 今回の録画セッションで出した合図のサーバー時刻（ms）
-const bulkScheduledSyncMarks = new Set();
+// 合図の種類（"auto"/"manual"）ごとの発火待ち。serverTimestamp()は書き込んだ本人の端末で
+// 「推定値→サーバー確定値」の順に2回通知されるため、同じ種類の未発火の合図は置き換えて二重発火を防ぐ
+let bulkPendingSyncMarks = {}; // kind -> { markAt, timer }
+const bulkFiredSyncMarks = new Set(); // `${kind}:${markAt}`
 let syncFlashUntil = 0; // 合成録画キャンバスにも白フレームを描くための期限（Date.now()基準）
 
 // レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
@@ -509,8 +512,7 @@ let customOrder = [];
 
 // ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
 const locallyMutedPeers = new Set();      // 個別に音声を消している相手
-const locallyHiddenVideoPeers = new Set(); // 個別に映像を隠している相手
-const hiddenTiles = new Set();             // グリッドから非表示にしたタイル（接続は維持）
+const locallyHiddenVideoPeers = new Set(); // 個別に映像をオフにしている相手（タイルごと隠す）
 
 // ---------- DOM ----------
 const entryScreen = document.getElementById("entryScreen");
@@ -852,7 +854,6 @@ controlsTable.addEventListener("click", (e) => {
   const { action, id, key } = btn.dataset;
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
-  else if (action === "hide") toggleHideFor(key);
   else if (action === "front") { if (!layoutInteractionLocked()) bringTileKeyToFront(key); }
   else if (action === "back") { if (!layoutInteractionLocked()) sendTileKeyToBack(key); }
 });
@@ -940,7 +941,7 @@ async function joinRoom(name) {
   outgoingAudioTrack = await setupNoiseGate(localStream, audioDest);
 
   const myMemberRef = ref(db, `rooms/${ROOM_ID}/members/${myId}`);
-  await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false });
+  await set(myMemberRef, { name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn() });
   onDisconnect(myMemberRef).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
@@ -1552,8 +1553,7 @@ async function publishLeaderLayout() {
       left: (pos.left || 0) / 100,
       top: (pos.top || 0) / 100,
       width: (pos.width || TILE_W_PCT) / 100,
-      z: pos.z || idx + 1,
-      hidden: hiddenTiles.has(s.key)
+      z: pos.z || idx + 1
     };
   });
   try {
@@ -1578,8 +1578,8 @@ function applySyncedLayout(layoutData) {
     tile.style.top = (pos.top * 100) + "%";
     tile.style.width = (pos.width * 100) + "%";
     tile.style.zIndex = String(pos.z || 1);
-    tile.style.display = pos.hidden ? "none" : "";
   }
+  applyCameraVisibility();
 }
 
 // 追従解除・リーダー消失時に、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）へ変換して引き継ぐ
@@ -1592,7 +1592,6 @@ function snapshotLayoutIntoLocal(layoutData) {
     const pos = tiles[s.key];
     if (pos) {
       newPositions[idx] = { left: pos.left * 100, top: pos.top * 100, width: pos.width * 100, z: pos.z || idx + 1 };
-      if (pos.hidden) hiddenTiles.add(s.key); else hiddenTiles.delete(s.key);
     } else if (tilePositions[idx]) {
       newPositions[idx] = tilePositions[idx];
     }
@@ -1698,6 +1697,25 @@ function renderGrid() {
   } else {
     syncVideoTiles(computeSlots());
   }
+  applyCameraVisibility();
+}
+
+// カメラがオフのタイルは真っ黒な枠を出さず、タイルごと非表示にする（音声は再生し続ける）。
+// 自分＝ローカルのカメラトラック、相手＝members/{id}/cameraOn（RTDB）＋この端末での個別オフ
+function isMyCameraOn() {
+  return localStream?.getVideoTracks()[0]?.enabled ?? false;
+}
+function isCameraOffFor(id) {
+  if (id === myId) return !isMyCameraOn();
+  return members[id]?.cameraOn === false || locallyHiddenVideoPeers.has(id);
+}
+function applyCameraVisibility() {
+  for (const id of Object.keys(members)) {
+    const tile = document.getElementById(`tile-${id}`);
+    if (tile) tile.style.display = isCameraOffFor(id) ? "none" : "";
+  }
+  const selfTile = document.getElementById(`tile-${myId}`);
+  if (selfTile) selfTile.style.display = isCameraOffFor(myId) ? "none" : "";
 }
 
 function positionTile(tile, idx) {
@@ -1853,7 +1871,6 @@ function removeVideoTile(peerId) {
   if (tile) tile.remove();
   locallyMutedPeers.delete(peerId);
   locallyHiddenVideoPeers.delete(peerId);
-  hiddenTiles.delete(peerId);
 }
 
 function attachStreamToTile(peerId, stream) {
@@ -1882,16 +1899,14 @@ function toggleGlobalMute() {
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
 // 行をドラッグして入れ替えると、対応する映像タイルの位置も入れ替わる
 function renderControls(slots) {
-  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>表示</th><th>重なり順</th></tr>";
+  let html = "<tr><th>参加者</th><th>マイク</th><th>カメラ</th><th>重なり順</th></tr>";
   for (const s of slots) {
     if (!s) continue;
     if (s.kind === "screen") {
-      const hidden = hiddenTiles.has(s.key);
       html += `<tr data-key="${s.key}">
         <td>${escapeHtml(s.name)}（画面共有）</td>
         <td class="ctrlCell">-</td>
         <td class="ctrlCell">-</td>
-        <td class="ctrlCell"><button class="small ctrlBtn" data-action="hide" data-key="${s.key}">${hidden ? "表示に戻す" : "非表示"}</button></td>
         <td class="ctrlCell">
           <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
           <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
@@ -1906,12 +1921,10 @@ function renderControls(slots) {
     const camOn = isSelf
       ? (localStream?.getVideoTracks()[0]?.enabled ?? true)
       : !locallyHiddenVideoPeers.has(s.id);
-    const hidden = hiddenTiles.has(s.key);
     html += `<tr draggable="true" data-id="${s.id}" data-key="${s.key}">
       <td><span class="dragHandle">⠿</span>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button></td>
-      <td class="ctrlCell">${isSelf ? "" : `<button class="small ctrlBtn" data-action="hide" data-key="${s.key}">${hidden ? "表示に戻す" : "非表示"}</button>`}</td>
       <td class="ctrlCell">
         <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
         <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
@@ -1957,21 +1970,12 @@ function toggleCamFor(id) {
   if (id === myId) {
     const track = localStream?.getVideoTracks()[0];
     if (track) track.enabled = !track.enabled;
+    update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { cameraOn: isMyCameraOn() });
   } else {
     if (locallyHiddenVideoPeers.has(id)) locallyHiddenVideoPeers.delete(id); else locallyHiddenVideoPeers.add(id);
-    const video = document.getElementById(`video-${id}`);
-    if (video) video.classList.toggle("videoHidden", locallyHiddenVideoPeers.has(id));
   }
+  applyCameraVisibility();
   renderControls(computeSlots());
-}
-
-function toggleHideFor(id) {
-  if (layoutInteractionLocked()) return;
-  if (hiddenTiles.has(id)) hiddenTiles.delete(id); else hiddenTiles.add(id);
-  const tile = document.getElementById(`tile-${id}`);
-  if (tile) tile.style.display = hiddenTiles.has(id) ? "none" : "";
-  renderControls(computeSlots());
-  if (isLayoutLeader()) publishLeaderLayout();
 }
 
 function stateIcon(state) {
@@ -2475,17 +2479,16 @@ function listenBulkRecording() {
     const startedAt = data?.startedAt;
     if (state === "recording" && startedAt !== bulkRecordingSessionStartedAt) {
       bulkRecordingSessionStartedAt = startedAt;
-      bulkSyncMarks = [];
-      bulkScheduledSyncMarks.clear();
+      resetSyncMarks();
       startBulkRecordingLocal(startedAt);
     } else if (state !== "recording" && bulkRecordingSessionStartedAt) {
       bulkRecordingSessionStartedAt = null;
       stopBulkRecordingLocal();
     }
     if (state === "recording" && typeof startedAt === "number") {
-      scheduleSyncMark(startedAt + BULK_SYNC_MARK_AFTER_START_MS);
+      scheduleSyncMark("auto", startedAt + BULK_SYNC_MARK_AFTER_START_MS);
       if (typeof data.syncMarkRequestedAt === "number" && data.syncMarkRequestedAt > startedAt) {
-        scheduleSyncMark(data.syncMarkRequestedAt + BULK_SYNC_MARK_MANUAL_DELAY_MS);
+        scheduleSyncMark("manual", data.syncMarkRequestedAt + BULK_SYNC_MARK_MANUAL_DELAY_MS);
       }
     }
     bulkHostStartBtn.style.display = state === "recording" ? "none" : "";
@@ -2573,16 +2576,32 @@ async function hostRequestSyncMark() {
 }
 
 // サーバー時刻markAtに合わせて全員同時に合図を出す（既に過ぎた合図は出さない＝途中参加・再読み込み時の誤発火防止）
-function scheduleSyncMark(markAt) {
-  if (bulkScheduledSyncMarks.has(markAt)) return;
-  bulkScheduledSyncMarks.add(markAt);
+function scheduleSyncMark(kind, markAt) {
+  if (bulkFiredSyncMarks.has(`${kind}:${markAt}`)) return;
+  const pending = bulkPendingSyncMarks[kind];
+  if (pending) {
+    if (pending.markAt === markAt) return;
+    clearTimeout(pending.timer);
+    bulkSyncMarks = bulkSyncMarks.filter((m) => m !== pending.markAt);
+    delete bulkPendingSyncMarks[kind];
+  }
   const delay = markAt - (Date.now() + serverTimeOffset);
   if (delay < -1000) return;
   bulkSyncMarks.push(markAt);
-  setTimeout(() => {
+  const timer = setTimeout(() => {
+    delete bulkPendingSyncMarks[kind];
+    bulkFiredSyncMarks.add(`${kind}:${markAt}`);
     if (!bulkRecordingSessionStartedAt) return; // 合図前に停止された
     fireSyncMark();
   }, Math.max(0, delay));
+  bulkPendingSyncMarks[kind] = { markAt, timer };
+}
+
+function resetSyncMarks() {
+  for (const p of Object.values(bulkPendingSyncMarks)) clearTimeout(p.timer);
+  bulkPendingSyncMarks = {};
+  bulkFiredSyncMarks.clear();
+  bulkSyncMarks = [];
 }
 
 function fireSyncMark() {

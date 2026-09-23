@@ -6,12 +6,12 @@ YouTube企画の撮影用WebRTCビデオ通話アプリ。単一HTMLファイル
 ## RTDB構造
 
 ```
-rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing }
+rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing, cameraOn }
 rooms/{ROOM_ID}/signals/{toId}/{fromId}/{pushId}: { type: "offer"|"answer"|"candidate", payload }
 rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
-rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z,hidden}(0〜1の相対値) }, updatedAt }
+rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/recording: { state: "recording"|"stopped", startedAt, syncMarkRequestedAt? }
 rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"saved"|"error", message?, updatedAt, startedAtMs?, startedAtServerMs? }
 ```
@@ -40,7 +40,7 @@ rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"s
 - MP4（`avc1,mp4a.40.2`）を優先し、`MediaRecorder.isTypeSupported()`で非対応の場合のみWebM(vp8,opus)にフォールバック（`pickBulkRecordMimeType`）。
 - 空き容量は`navigator.storage.estimate()`で概算表示する（オリジンのストレージクォータであり、`showSaveFilePicker`で選んだ実際の保存先ドライブの空き容量とは正確には一致しない前提の目安表示）。
 - 各自の録画開始時刻（ミリ秒, `startedAtMs`＝ローカル時計、`startedAtServerMs`＝`.info/serverTimeOffset`でサーバー時刻に換算した値）は`recordingStatus`に記録し、「結果をコピー」の出力にも含める（編集時のファイル間同期用）。
-- **同期合図（フラッシュ＋ビープ）**：録画開始（`recording/startedAt`）の3秒後に、全員の端末で同時に画面全体を200ms白く光らせ（`#syncFlashOverlay`）、1kHzのビープを鳴らす（`fireSyncMark`）。時刻はサーバー時刻基準で各端末が`setTimeout`で予約する（`scheduleSyncMark`）。ビープは`audioCtx.destination`（スピーカー＝システム音声として一括録画に入る）と`audioDest`（合成録画の音声）の両方に出し、合成録画キャンバスにも白フレームを描く。録画中はホストの「同期合図を出す」ボタンで`syncMarkRequestedAt`を書き込み、その1.5秒後に追加の合図を出せる。1秒以上過ぎた合図は発火しない（途中参加・再読み込み時の誤発火防止）。「結果をコピー」には各自の録画ファイル内での合図の位置（秒）を出力する。
+- **同期合図（フラッシュ＋ビープ）**：録画開始（`recording/startedAt`）の3秒後に、全員の端末で同時に画面全体を200ms白く光らせ（`#syncFlashOverlay`）、1kHzのビープを鳴らす（`fireSyncMark`）。時刻はサーバー時刻基準で各端末が`setTimeout`で予約する（`scheduleSyncMark`）。`serverTimestamp()`は書き込んだ本人の端末で「推定値→確定値」の2回通知されるため、合図は種類（auto/manual）ごとに未発火のものを置き換えて二重発火を防いでいる。ビープは`audioCtx.destination`（スピーカー＝システム音声として一括録画に入る）と`audioDest`（合成録画の音声）の両方に出し、合成録画キャンバスにも白フレームを描く。録画中はホストの「同期合図を出す」ボタンで`syncMarkRequestedAt`を書き込み、その1.5秒後に追加の合図を出せる。1秒以上過ぎた合図は発火しない（途中参加・再読み込み時の誤発火防止）。「結果をコピー」には各自の録画ファイル内での合図の位置（秒）を出力する。
 - 準備完了時に空き容量の目安を常に表示し、9GB未満またはWebMフォールバック時は黄色の警告色にする。
 
 ## 表示オプション（この端末のみ・localStorage保存）
@@ -51,6 +51,12 @@ rooms/{ROOM_ID}/recordingStatus/{peerId}: { state: "idle"|"ready"|"recording"|"s
 - **枠画像（PNG）**：各タイル内の`.frameOverlay`（z-index最上位・`pointer-events:none`）にdata URLを設定して重ねる（`applyFrameImageToTile`/`applyFrameImageToAllTiles`）。表示ON/OFFは`#videoGrid.showFrame`で制御。
 - **無音警告のレイアウト固定**：`#gateWarning`は常にDOMに存在させ、`display`ではなく`visibility`（`.show`クラス）で切り替える。これにより表示/非表示で他要素の行がずれない。
 - **タイルの重なり順（手動）**：操作テーブルの各行に「⬆最前面へ/⬇最背面へ」ボタンを持つ（画面共有タイルの行も含む）。`bringTileToFront`は現在の全タイルの最大z-indexを都度計算して+1する（固定カウンタ方式だと、スロット番号由来の既定z＝`idx+1`を追い抜けないバグがあったため修正済み）。`sendTileKeyToBack`は他タイルの最小z-index-1を設定する。
+
+## カメラオフ＝タイル非表示
+
+- 「表示/非表示」ボタンは廃止。カメラがオフの参加者はタイルごと非表示にし、真っ黒な枠を出さない（`applyCameraVisibility`、`renderGrid`の最後で毎回適用）。音声は再生し続ける。
+- 自分のカメラON/OFFは`members/{myId}/cameraOn`に書き込み、全員の画面で同じタイルが消える。相手の行の「📷 オフ」はこの端末だけでそのタイルを隠す（`locallyHiddenVideoPeers`）。
+- レイアウト同期のデータから`hidden`は削除した（表示/非表示は各端末がカメラ状態から決める）。
 
 ## 既知の制約
 
