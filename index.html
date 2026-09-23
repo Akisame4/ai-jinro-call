@@ -362,7 +362,8 @@
             <b>ホスト操作:</b>
             <button id="buzzCorrectBtn">○ 正解</button>
             <button id="buzzWrongBtn">× 不正解</button>
-            <button id="buzzResetBtn">▶ 次の問題へ（リセット）</button>
+            <button id="buzzRetryBtn" title="問題番号はそのままで、押した記録・回答権・誤答による押せない状態を消して全員押し直しにします（得点は変わりません）">↺ 押し直し（押した状況をリセット）</button>
+            <button id="buzzResetBtn">▶ 次の問題へ</button>
           </div>
           <div class="buzzHostRow buzzSettings">
             <label>正解 +<input type="number" id="buzzPtsCorrect" min="0" step="1">点</label>
@@ -611,6 +612,7 @@ const buzzHostControls = document.getElementById("buzzHostControls");
 const buzzCorrectBtn = document.getElementById("buzzCorrectBtn");
 const buzzWrongBtn = document.getElementById("buzzWrongBtn");
 const buzzResetBtn = document.getElementById("buzzResetBtn");
+const buzzRetryBtn = document.getElementById("buzzRetryBtn");
 const buzzClearScoresBtn = document.getElementById("buzzClearScoresBtn");
 const buzzTeamModeToggle = document.getElementById("buzzTeamMode");
 const buzzCutin = document.getElementById("buzzCutin");
@@ -682,7 +684,8 @@ for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
 }
 buzzCorrectBtn.addEventListener("click", () => hostJudgeBuzz(true));
 buzzWrongBtn.addEventListener("click", () => hostJudgeBuzz(false));
-buzzResetBtn.addEventListener("click", hostResetBuzzQuestion);
+buzzResetBtn.addEventListener("click", () => hostResetBuzzQuestion(true));
+buzzRetryBtn.addEventListener("click", () => hostResetBuzzQuestion(false));
 buzzClearScoresBtn.addEventListener("click", hostClearBuzzScores);
 buzzSpectatorToggle.addEventListener("change", () => {
   update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { buzzSpectator: buzzSpectatorToggle.checked });
@@ -2662,11 +2665,12 @@ async function hostJudgeBuzz(correct) {
   }
 }
 
-async function hostResetBuzzQuestion() {
+// nextQuestion=true: 次の問題へ（問題番号を進める）／false: 押し直し（同じ問題のまま押した状況だけ消す。得点はそのまま）
+async function hostResetBuzzQuestion(nextQuestion = true) {
   if (!isRoomHost()) return;
   await remove(ref(db, `rooms/${ROOM_ID}/buzzer/presses`));
   await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
-    question: (buzzState.question || 0) + 1, phase: (buzzState.phase || 0) + 1,
+    question: (buzzState.question || 0) + (nextQuestion ? 1 : 0), phase: (buzzState.phase || 0) + 1,
     status: "open", answererId: null, answerDeadline: null, lockedOut: null
   });
 }
