@@ -123,6 +123,13 @@
     margin-bottom: 8px; font-size: 12px; color: #999;
   }
   #displayOptionsBar label { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  #gridColsInput { width: 56px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 1px 4px; }
+  #gridLinesOverlay {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none; display: none;
+    background-image:
+      linear-gradient(to right, rgba(255,255,255,0.14) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.14) 1px, transparent 1px);
+  }
   #displayOptionsBar .optionGroup { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #templateSelect {
     background: #111; color: #fff; border: 1px solid #555; border-radius: 4px;
@@ -345,7 +352,11 @@
     </div>
     <div id="displayOptionsBar">
       <label><input type="checkbox" id="nameLabelToggle" checked> 名前表示</label>
-      <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
+      <span class="optionGroup">
+        <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
+        <label title="配置エリアの横幅を何マスに分けるか。マスは正方形になります">マス目 横<input type="number" id="gridColsInput" min="4" max="128" step="1">分割</label>
+        <label title="配置用の目安線です。録画には入りません"><input type="checkbox" id="gridLinesToggle"> 線を表示</label>
+      </span>
       <span class="optionGroup">
         <button class="small" id="bgImageSelectBtn">背景画像を設定</button>
         <button class="small" id="bgImageClearBtn">背景を削除</button>
@@ -360,7 +371,7 @@
     </div>
     <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
     <div id="popAudioContainer"></div>
-    <div id="videoGrid"><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div></div>
+    <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div></div>
 
     <section class="panel" id="buzzPanel">
       <h2>早押し</h2>
@@ -559,11 +570,24 @@ const COLS = 3;
 const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 100;
 let tilePositions = loadPositions();
-const GRID_SNAP_STEP_PCT = 5; // グリッドスナップの刻み幅（配置エリアに対する%）
+// グリッドは正方形のマス目。横をgridSnapCols等分し、縦も同じピクセル幅で刻む
+// （配置エリアは16:9なので、%で同じ刻みにすると縦長・横長の長方形になってしまうため縦横で刻みを変える）
+let gridSnapCols = Math.min(128, Math.max(4, parseInt(localStorage.getItem("aiJinroGridCols"), 10) || 32));
 let gridSnapEnabled = localStorage.getItem("aiJinroGridSnap") === "1";
+let gridLinesShown = localStorage.getItem("aiJinroGridLines") === "1";
 let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定はON
-function snapPct(v) {
-  return gridSnapEnabled ? Math.round(v / GRID_SNAP_STEP_PCT) * GRID_SNAP_STEP_PCT : v;
+function gridStepXPct() { return 100 / gridSnapCols; }
+function gridStepYPct() {
+  const w = videoGrid.clientWidth, h = videoGrid.clientHeight;
+  return gridStepXPct() * (w && h ? w / h : 16 / 9);
+}
+function snapX(v) { return gridSnapEnabled ? Math.round(v / gridStepXPct()) * gridStepXPct() : v; }
+function snapY(v) { return gridSnapEnabled ? Math.round(v / gridStepYPct()) * gridStepYPct() : v; }
+function applyGridLines() {
+  const overlay = gridEl("gridLinesOverlay");
+  if (!overlay) return;
+  overlay.style.display = gridLinesShown ? "block" : "none";
+  overlay.style.backgroundSize = `${gridStepXPct()}% ${gridStepYPct()}%`;
 }
 
 // レイアウト同期（申請・許可制）。leaderId が立っている間、他の参加者は個別に許可/拒否できる。
@@ -939,6 +963,24 @@ gridSnapToggle.addEventListener("change", () => {
   gridSnapEnabled = gridSnapToggle.checked;
   localStorage.setItem("aiJinroGridSnap", gridSnapEnabled ? "1" : "0");
 });
+const gridColsInput = document.getElementById("gridColsInput");
+const gridLinesToggle = document.getElementById("gridLinesToggle");
+gridColsInput.value = gridSnapCols;
+gridLinesToggle.checked = gridLinesShown;
+gridColsInput.addEventListener("change", () => {
+  gridSnapCols = Math.min(128, Math.max(4, parseInt(gridColsInput.value, 10) || 32));
+  gridColsInput.value = gridSnapCols;
+  localStorage.setItem("aiJinroGridCols", String(gridSnapCols));
+  applyGridLines();
+});
+gridLinesToggle.addEventListener("change", () => {
+  gridLinesShown = gridLinesToggle.checked;
+  localStorage.setItem("aiJinroGridLines", gridLinesShown ? "1" : "0");
+  applyGridLines();
+});
+applyGridLines();
+// 配置エリアの縦横比が変わる（ウィンドウサイズ・別ウィンドウ表示）と縦の刻みも変わるので線を引き直す
+new ResizeObserver(applyGridLines).observe(videoGrid);
 
 const BG_IMAGE_KEY = "aiJinroBgImage";
 // 背景画像。レイアウト同期で追従中はリーダーの背景（followingBg）を、それ以外はこの端末で設定した背景を表示する
@@ -2057,8 +2099,8 @@ function makeDraggable(tile) {
     const tileHPct = (tile.offsetHeight / containerH) * 100;
     let newLeft = Math.max(0, Math.min(100 - tileWPct, origLeftPct + dxPct));
     let newTop = Math.max(0, Math.min(100 - tileHPct, origTopPct + dyPct));
-    newLeft = Math.max(0, Math.min(100 - tileWPct, snapPct(newLeft)));
-    newTop = Math.max(0, Math.min(100 - tileHPct, snapPct(newTop)));
+    newLeft = Math.max(0, Math.min(100 - tileWPct, snapX(newLeft)));
+    newTop = Math.max(0, Math.min(100 - tileHPct, snapY(newTop)));
     tile.style.left = newLeft + "%";
     tile.style.top = newTop + "%";
     if (isLayoutLeader()) scheduleLayoutPublish();
@@ -2095,7 +2137,7 @@ function makeResizable(tile) {
     const leftPct = parseFloat(tile.style.left) || 0;
     const maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
     let newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
-    newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, snapPct(newW)));
+    newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, snapX(newW)));
     tile.style.width = newW + "%";
     if (isLayoutLeader()) scheduleLayoutPublish();
   });
