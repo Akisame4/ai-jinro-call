@@ -405,9 +405,9 @@
           <button id="introRewindBtn">⏮ 頭出し</button>
           <label>音量 <input type="range" id="introVolume" min="0" max="100" value="70"></label>
           <label><input type="checkbox" id="introAutoStop" checked> 早押しで自動停止</label>
-          <label><input type="checkbox" id="introAutoResume" checked> 誤答で押し直しになったら続きから再生</label>
+          <label><input type="checkbox" id="introAutoResume" checked> 不正解なら続きから再生</label>
           <span id="introStatus" class="hint"></span>
-          <div class="hint" style="flex-basis:100%;">曲はこの端末から通話の音声に混ぜて全員に流れます（ノイズ抑制はかかりません）。曲名は他の人には表示されません。「次の問題へ」で次の曲に切り替わります。</div>
+          <div class="hint" style="flex-basis:100%;">曲はこの端末から通話の音声に混ぜて全員に流れます（ノイズ抑制はかかりません）。曲名は他の人には表示されません。正解（または「次の問題へ」）で次の曲に切り替わります。</div>
         </div>
       </div>
     </section>
@@ -2572,7 +2572,7 @@ function isRoomHost() {
 
 // ---------- 早押し ----------
 // rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
-// rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"done", answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
+// rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"（"done"は旧仕様・現在は使わない）, answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
 // rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at(サーバー時刻換算ms), recv, name, team }
 // rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
 // rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, diffMs}] }
@@ -2781,33 +2781,27 @@ async function hostJudgeBuzz(correct) {
     order: sorted.map(([id, pr]) => ({ name: pr.name, diffMs: pr.at - firstAt }))
   });
   const judge = { id: Date.now() + "_" + Math.random().toString(36).slice(2, 6), correct, name };
+  // 正解・不正解のどちらでも、判定したらすぐに全員が押せる状態に戻す（2着以降へ回答権を回すことはしない）
   if (correct) {
     await addBuzzScore(answererId, { points: buzzConfig.ptsCorrect, correct: 1 });
-    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), { status: "done", answerDeadline: null, judge });
+    await hostResetBuzzQuestion(true, { judge }); // 正解 → そのまま次の問題へ
     return;
   }
   await addBuzzScore(answererId, { points: -buzzConfig.ptsWrong, wrong: 1 });
   const lockedOut = { ...(buzzState.lockedOut || {}), [buzzEntityOf(answererId).key]: true };
-  buzzState.lockedOut = lockedOut; // 次の回答者の計算に即反映する
-  const next = buzzAnswerOrder()[0];
-  if (next) {
-    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
-      status: "answering", answererId: next, answerDeadline: buzzAnswerDeadline(), lockedOut, judge
-    });
-  } else {
-    // 押していた人が残っていなければ、誤答した人以外で押し直し
-    await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
-      status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut, judge
-    });
-    // イントロクイズ：×の演出が終わってから曲を続きから再開する
-    if (introAutoResume.checked && introPausedByBuzz && !introPlaying && !introEnded) {
-      setTimeout(() => { if (buzzState.status === "open") playIntro(); }, BUZZ_JUDGE_MARK_MS);
-    }
+  // 不正解 → 同じ問題のまま、誤答した人（チーム）以外で押し直し
+  await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
+    status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut, judge
+  });
+  // イントロクイズ：×の演出が終わってから曲を続きから再開する
+  if (introAutoResume.checked && introPausedByBuzz && !introPlaying && !introEnded) {
+    setTimeout(() => { if (buzzState.status === "open") playIntro(); }, BUZZ_JUDGE_MARK_MS);
   }
 }
 
 // nextQuestion=true: 次の問題へ（問題番号を進める）／false: 押し直し（同じ問題のまま押した状況だけ消す。得点はそのまま）
-async function hostResetBuzzQuestion(nextQuestion = true) {
+// extra: 同時に書き込む項目（正解判定のjudgeなど）
+async function hostResetBuzzQuestion(nextQuestion = true, extra = {}) {
   if (!isRoomHost()) return;
   if (nextQuestion && introTracks.length) { // イントロクイズ：次の問題では次の曲を頭から（再生はホストが▶で開始）
     const nextIdx = Math.min(introCurrentIndex + 1, introTracks.length - 1);
@@ -2816,7 +2810,7 @@ async function hostResetBuzzQuestion(nextQuestion = true) {
   await remove(ref(db, `rooms/${ROOM_ID}/buzzer/presses`));
   await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
     question: (buzzState.question || 0) + (nextQuestion ? 1 : 0), phase: (buzzState.phase || 0) + 1,
-    status: "open", answererId: null, answerDeadline: null, lockedOut: null
+    status: "open", answererId: null, answerDeadline: null, lockedOut: null, ...extra
   });
 }
 
