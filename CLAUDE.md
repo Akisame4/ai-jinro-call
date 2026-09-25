@@ -62,6 +62,8 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 ## カメラオフ＝タイル非表示
 
+- 入室画面の「カメラOFFで入室」「マイクをミュートして入室」（localStorage `joinCamOff`/`joinMicMuted`に保存）。デバイスは取得したまま、members登録前にトラックを`enabled=false`にする（入室後の📷/🎤ボタンと同じ仕組みなので、後からONにしても再交渉不要）。
+
 - 「表示/非表示」ボタンは廃止。カメラがオフの参加者はタイルごと非表示にし、真っ黒な枠を出さない（`applyCameraVisibility`、`renderGrid`の最後で毎回適用）。音声は再生し続ける。
 - 自分のカメラON/OFFは`members/{myId}/cameraOn`に書き込み、全員の画面で同じタイルが消える。相手の行の「📷 オフ」はこの端末だけでそのタイルを隠す（`locallyHiddenVideoPeers`）。
 - レイアウト同期のデータから`hidden`は削除した（表示/非表示は各端末がカメラ状態から決める）。

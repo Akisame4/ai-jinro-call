@@ -107,6 +107,7 @@
   }
   #micSelectRow, #camSelectRow { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 13px; color: #ccc; }
   #micSelectRow label, #camSelectRow label { white-space: nowrap; }
+  #joinOptionsRow { display: flex; gap: 16px; flex-wrap: wrap; margin: 4px 0 12px; font-size: 13px; color: #ccc; }
   #micDeviceSelect, #camDeviceSelect {
     flex: 1; padding: 8px; background: #111; color: #fff;
     border: 1px solid #555; border-radius: 4px; font-size: 13px; min-width: 0;
@@ -279,6 +280,10 @@
   <div id="camSelectRow">
     <label for="camDeviceSelect">カメラ（任意）</label>
     <select id="camDeviceSelect"><option value="">既定のカメラ</option></select>
+  </div>
+  <div id="joinOptionsRow">
+    <label><input type="checkbox" id="joinCamOffCheckbox"> カメラOFFで入室</label>
+    <label><input type="checkbox" id="joinMicMutedCheckbox"> マイクをミュートして入室</label>
   </div>
   <div><button id="joinBtn">入室</button></div>
   <div id="entryError"></div>
@@ -586,6 +591,8 @@ const callScreen = document.getElementById("callScreen");
 const nameInput = document.getElementById("nameInput");
 const micDeviceSelect = document.getElementById("micDeviceSelect");
 const camDeviceSelect = document.getElementById("camDeviceSelect");
+const joinCamOffCheckbox = document.getElementById("joinCamOffCheckbox");
+const joinMicMutedCheckbox = document.getElementById("joinMicMutedCheckbox");
 const joinBtn = document.getElementById("joinBtn");
 const entryError = document.getElementById("entryError");
 const joinError = document.getElementById("joinError");
@@ -706,6 +713,13 @@ micDeviceSelect.addEventListener("focus", refreshMicDeviceOptions);
 micDeviceSelect.addEventListener("change", () => {
   localStorage.setItem(SAVED_MIC_KEY, micDeviceSelect.value);
 });
+// 入室時のカメラOFF／ミュートは次回も同じ状態で始められるよう保存する
+try {
+  joinCamOffCheckbox.checked = localStorage.getItem("joinCamOff") === "1";
+  joinMicMutedCheckbox.checked = localStorage.getItem("joinMicMuted") === "1";
+} catch (e) {}
+joinCamOffCheckbox.addEventListener("change", () => { try { localStorage.setItem("joinCamOff", joinCamOffCheckbox.checked ? "1" : "0"); } catch (e) {} });
+joinMicMutedCheckbox.addEventListener("change", () => { try { localStorage.setItem("joinMicMuted", joinMicMutedCheckbox.checked ? "1" : "0"); } catch (e) {} });
 camDeviceSelect.addEventListener("focus", refreshCamDeviceOptions);
 camDeviceSelect.addEventListener("change", () => {
   localStorage.setItem(SAVED_CAM_KEY, camDeviceSelect.value);
@@ -1086,6 +1100,11 @@ async function joinRoom(name) {
   }
   refreshMicDeviceOptions(); // 許可後はデバイス名（ラベル）が取得できるようになる
   refreshCamDeviceOptions();
+
+  // カメラOFF・ミュートで入室：デバイスは取得したままトラックを無効化する（入室後の📷/🎤ボタンと同じ仕組み。
+  // 後からONにしても再接続・再交渉が要らない）。members登録前に反映するので、最初からタイルは非表示・音声は無音
+  if (joinCamOffCheckbox.checked) localStream.getVideoTracks().forEach((t) => { t.enabled = false; });
+  if (joinMicMutedCheckbox.checked) localStream.getAudioTracks().forEach((t) => { t.enabled = false; });
 
   myName = name;
   entryScreen.style.display = "none";
