@@ -941,8 +941,12 @@ gridSnapToggle.addEventListener("change", () => {
 });
 
 const BG_IMAGE_KEY = "aiJinroBgImage";
+// 背景画像。レイアウト同期で追従中はリーダーの背景（followingBg）を、それ以外はこの端末で設定した背景を表示する
+let followingBg;           // undefined=追従していない / null=リーダーは背景なし / 文字列=リーダーの背景
+const bgImageEl = new Image(); // 合成録画に背景を描くための画像
 function applyBgImage() {
-  const dataUrl = localStorage.getItem(BG_IMAGE_KEY);
+  const dataUrl = followingBg !== undefined ? followingBg : localStorage.getItem(BG_IMAGE_KEY);
+  if (dataUrl) { if (bgImageEl.src !== dataUrl) bgImageEl.src = dataUrl; } else bgImageEl.removeAttribute("src");
   if (dataUrl) {
     videoGrid.style.backgroundImage = `url(${dataUrl})`;
     videoGrid.style.backgroundSize = "cover";
@@ -962,6 +966,7 @@ bgImageInput.addEventListener("change", () => {
     try {
       localStorage.setItem(BG_IMAGE_KEY, reader.result);
       applyBgImage();
+      if (isLayoutLeader()) publishLeaderBg();
     } catch (e) {
       alert("画像の保存に失敗しました（サイズが大きすぎる可能性があります）");
     }
@@ -971,6 +976,7 @@ bgImageInput.addEventListener("change", () => {
 bgImageClearBtn.addEventListener("click", () => {
   localStorage.removeItem(BG_IMAGE_KEY);
   applyBgImage();
+  if (isLayoutLeader()) publishLeaderBg();
 });
 
 const FRAME_IMAGE_KEY = "aiJinroFrameImage";
@@ -1687,6 +1693,7 @@ function listenLayoutSync() {
 // syncLeaderId・myFollowState・myManualUnfollow の現在値から「追従すべきか」を判定し、
 // layouts/{leaderId}の購読を必要に応じて張り替える。追従が終わったときは直前のレイアウトを
 // この端末のローカル配置として引き継いでから自由操作に戻す
+let layoutBgUnsub = null;
 function updateFollowingSubscription() {
   const shouldFollow = !!syncLeaderId && syncLeaderId !== myId && myFollowState === "accepted" && !myManualUnfollow;
 
@@ -1698,9 +1705,16 @@ function updateFollowingSubscription() {
         followingLayout = snap.val();
         renderGrid();
       });
+      if (layoutBgUnsub) layoutBgUnsub();
+      layoutBgUnsub = onValue(ref(db, `rooms/${ROOM_ID}/layoutBg/${syncLeaderId}`), (snap) => {
+        followingBg = snap.val()?.dataUrl || null;
+        applyBgImage();
+      });
     }
   } else {
     if (layoutDataUnsub) { layoutDataUnsub(); layoutDataUnsub = null; followingLeaderId = null; }
+    if (layoutBgUnsub) { layoutBgUnsub(); layoutBgUnsub = null; }
+    if (followingBg !== undefined) { followingBg = undefined; applyBgImage(); } // 追従をやめたら自分の背景に戻す
     if (followingLayout) {
       snapshotLayoutIntoLocal(followingLayout);
       followingLayout = null;
@@ -1732,7 +1746,41 @@ async function requestLayoutSync() {
   onDisconnect(leaderRef).remove(); // 申請者が切断したら自動で同期解除される
   await remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers`)); // 前回セッションの応答を持ち越さない
   await publishLeaderLayout();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`)).remove();
+  publishLeaderBg();
   renderLayoutSyncPanel();
+}
+
+// リーダーの背景画像を追従者へ配る。位置の同期（100msごと）とは別ノードにして、大きな画像を毎回送らないようにする。
+// localStorageの元画像はサイズが大きいことがあるので、最大1920×1080のJPEGに縮めてから送る
+async function publishLeaderBg() {
+  if (!isLayoutLeader()) return;
+  const bgRef = ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`);
+  const src = localStorage.getItem(BG_IMAGE_KEY);
+  if (!src) { await set(bgRef, { dataUrl: null, updatedAt: serverTimestamp() }); return; }
+  try {
+    const dataUrl = await shrinkImageDataUrl(src, 1920, 1080, 0.85);
+    await set(bgRef, { dataUrl, updatedAt: serverTimestamp() });
+  } catch (e) {
+    console.warn("publishLeaderBg failed", e);
+    showLayoutSyncMessage("背景画像を共有できませんでした（画像が大きすぎる可能性があります）");
+  }
+}
+
+function shrinkImageDataUrl(src, maxW, maxH, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
 }
 
 async function stopLeadingLayoutSync() {
@@ -1741,6 +1789,8 @@ async function stopLeadingLayoutSync() {
   await remove(leaderRef);
   await remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers`));
   await remove(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`));
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`)).cancel();
+  await remove(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`));
   renderLayoutSyncPanel();
 }
 
@@ -2483,6 +2533,14 @@ function drawRecordFrame() {
   const ctx = recordCanvas.getContext("2d");
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+
+  // 配置エリアの背景画像（object-fit: cover相当）も録画に入れる
+  if (bgImageEl.src && bgImageEl.complete && bgImageEl.naturalWidth) {
+    const W = recordCanvas.width, H = recordCanvas.height;
+    const sc = Math.max(W / bgImageEl.naturalWidth, H / bgImageEl.naturalHeight);
+    const dw = bgImageEl.naturalWidth * sc, dh = bgImageEl.naturalHeight * sc;
+    ctx.drawImage(bgImageEl, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  }
 
   const gridRect = videoGrid.getBoundingClientRect();
   const scaleX = recordCanvas.width / gridRect.width;

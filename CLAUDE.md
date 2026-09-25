@@ -11,6 +11,7 @@ rooms/{ROOM_ID}/signals/{toId}/{fromId}/{pushId}: { type: "offer"|"answer"|"cand
 rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
+rooms/{ROOM_ID}/layoutBg/{leaderId}: { dataUrl|null, updatedAt }   // リーダーの背景画像（JPEG・最大1920×1080に縮小）
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/scoreboard: { on }   // スコアボードタイルを全員に表示するか（誰でもON/OFF可）
 rooms/{ROOM_ID}/buzzer/host: { name, at }
@@ -36,6 +37,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 各参加者は個別に`layoutSync/followers/{peerId}`へ"accepted"/"rejected"を書き込む。許可した人だけがリーダーの`layouts/{leaderId}`を購読して追従する。
 - タイルの識別は表示スロットではなく`peerId`または`` `${peerId}-screen` ``（画面共有タイルも同期対象）。座標は0〜1の相対値。ドラッグ・リサイズ中はリーダー側で100ms間隔にスロットルして`layouts/{leaderId}`へ書き込む（`scheduleLayoutPublish`）。
 - 追従中（`followingLayout`が非nullかつ自分がリーダーでない）はこの端末のドラッグ・リサイズ・非表示操作をロックする（`layoutInteractionLocked()`）。
+- **背景画像も同期**：リーダーは同期開始時と背景の変更・削除時に、自分の背景を最大1920×1080のJPEGに縮めて`layoutBg/{leaderId}`へ書く（`publishLeaderBg`。位置の同期ノードとは分けて、大きな画像を毎回送らない）。追従中の端末は`followingBg`としてそれを表示し（リーダーが背景なしなら背景なし）、追従をやめると自分の背景（localStorage）に戻す（`applyBgImage`）。合成録画にも背景画像を描く（cover相当）。
 - 追従解除（同期解除ボタン、リーダー消失、リーダーからの拒否状態変化）の際は、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）に変換して引き継ぐ（`snapshotLayoutIntoLocal`）。手動解除は`myManualUnfollow`フラグで管理し、「再度追従する」で同じリーダーへ許可を取り直さず復帰できる。
 
 ## イントロクイズ（早押しの追加機能）
