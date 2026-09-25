@@ -12,6 +12,7 @@ rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
+rooms/{ROOM_ID}/scoreboard: { on }   // スコアボードタイルを全員に表示するか（誰でもON/OFF可）
 rooms/{ROOM_ID}/buzzer/host: { name, at }
 rooms/{ROOM_ID}/buzzer/music: { playing }   // イントロクイズの曲が流れているか（曲名は送らない）
 rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
@@ -45,6 +46,20 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - **不正解なら続きから再生**：早押しで自動停止した場合だけ（`introPausedByBuzz`）、×の演出後に再開する。手動の一時停止では再開しない。
 - 正解（または「次の問題へ」）で次の曲を頭出し（再生はホストが▶）。「押し直し」では曲はそのまま。
 - 曲名は流している端末にだけ表示する。他の人には`buzzer/music/playing`で「♪ 曲が流れています」とだけ出す。
+
+## 配置エリアの別ウィンドウ表示（配信用）
+
+- 「🗗 配置エリアを別ウィンドウで表示」で`#videoGrid`の要素そのものを`window.open`したウィンドウへ移す（配置・枠・背景・名前表示・ドラッグ操作がそのまま使える）。メイン画面には`#gridPlaceholder`（元に戻すボタン）を出す。ウィンドウを閉じる（pagehide）か「元に戻す」で戻す。
+- 別ウィンドウに移すとタイル関連要素はそちらの文書に入るため、タイル・映像要素の取得はすべて`gridEl(id)`（両方の文書を探す）を使うこと。`document.getElementById`でタイルを取らない。
+- 音声：別ウィンドウでは音声付き再生が自動再生制限で止められることがあるため、移している間はタイルの`<video>`をミュートにし、同じストリームをメイン画面の`#popAudioContainer`内の`<audio>`（`popAudio-<videoのid>`）で鳴らす（`syncPopAudio`）。ミュート・音量は`peerAudioEl(id)`経由で、表示中の方の要素に効かせる（`applyPeerMute`/`applyPeerVolume`）。
+- 要素を別文書へ移すと`<video>`は一時停止するので`resumeGridVideos()`で再生し直す。合成録画の描画ループ（rAF）は配置エリアを表示しているウィンドウのものを使う（`recordLoopWin`）。スペースキーの早押しは別ウィンドウにも登録（`onBuzzHotkey`）。
+- ボタンのクリックから開くのでポップアップはブロックされない想定。ブロックされた場合はテンプレート欄にメッセージを出す。
+
+## スコアボードタイル
+
+- ヘッダーの「📊 スコアボード」で`rooms/{ROOM_ID}/scoreboard/on`を切り替え、全員の配置エリアにスコアボードをタイルとして出す（画面共有と同じ扱い）。
+- 各端末がRTDBの早押しスコアから1280×720のcanvasに描き（`drawScoreboard`、`renderBuzzer`のたびに再描画）、`canvas.captureStream()`をタイルの`<video>`に流す。既存の映像タイルと同じ仕組みなので、移動・サイズ変更・重なり順・レイアウト同期・合成録画にそのまま乗る。タイルのキーは`scoreboard`（`SCOREBOARD_KEY`）、スロットは`kind: "scoreboard"`。
+- カメラ枠（MAX_PEERS個・2段）より後ろのスロット（画面共有・スコアボード）の既定位置は、3段目だとエリア外に出てしまうため、エリア中央付近に少しずつずらして重ねる（`defaultPos`）。
 
 ## 一括録画（廃止）
 

@@ -228,6 +228,13 @@
   #introRow { border-top: 1px dashed #3a3a3a; margin-top: 10px; padding-top: 8px; }
   #introTrackSelect { max-width: 260px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
   #introIndicator { font-size: 14px; font-weight: bold; color: #8dc4ff; }
+  #gridPlaceholder {
+    display: none; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;
+    aspect-ratio: 16 / 9; width: 100%; margin-bottom: 20px; background: #151515; border: 1px dashed #444;
+    color: #aaa; font-size: 14px;
+  }
+  #gridPlaceholder.show { display: flex; }
+  #popAudioContainer { display: none; }
   #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
   #buzzHostInfo b { color: #ffd54f; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
@@ -294,6 +301,7 @@
     <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
+    <button id="scoreboardBtn" title="早押しのスコアを、画面共有と同じように全員の配置エリアへタイルとして表示します">📊 スコアボード</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
     <button id="layoutSyncBtn">🔗 レイアウト同期を申請</button>
   </header>
@@ -332,6 +340,7 @@
         <span id="templateStatus"></span>
         <button class="small" id="resetLayoutBtn">配置をリセット</button>
         <button class="small" id="fullscreenGridBtn">⛶ 配置エリアをフルスクリーン</button>
+        <button class="small" id="popoutGridBtn" title="配置エリアを別ウィンドウに出します（配信ソフトのウィンドウキャプチャ用）">🗗 配置エリアを別ウィンドウで表示</button>
       </span>
     </div>
     <div id="displayOptionsBar">
@@ -349,6 +358,8 @@
         <input type="file" id="frameImageInput" accept="image/png" style="display:none;">
       </span>
     </div>
+    <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
+    <div id="popAudioContainer"></div>
     <div id="videoGrid"><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div></div>
 
     <section class="panel" id="buzzPanel">
@@ -488,6 +499,12 @@ let audioDest = null;
 const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
 let recordCanvas = null;
 let recordLoopId = null;
+let recordLoopWin = window;
+// 配置エリアの別ウィンドウ表示とスコアボードタイル（関数より先に宣言しておく。読み込み中に呼ばれても参照できるように）
+let gridPopupWin = null;
+let gridPopped = false;
+const SCOREBOARD_KEY = "scoreboard";
+let scoreboardOn = false;
 
 // マイクのノイズ抑制（RNNoise）。声とタイピング音を波形の特徴から区別して、
 // 発話中でもタイピング音だけを抑えられる（単純な音量ゲートでは発話中は抑制できないため）
@@ -617,6 +634,11 @@ const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
 const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
+const popoutGridBtn = document.getElementById("popoutGridBtn");
+const popinGridBtn = document.getElementById("popinGridBtn");
+const gridPlaceholder = document.getElementById("gridPlaceholder");
+const popAudioContainer = document.getElementById("popAudioContainer");
+const scoreboardBtn = document.getElementById("scoreboardBtn");
 const nameLabelToggle = document.getElementById("nameLabelToggle");
 const gridSnapToggle = document.getElementById("gridSnapToggle");
 const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
@@ -774,15 +796,16 @@ buzzScoreTable.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-buzz-adjust]");
   if (btn) hostAdjustBuzzScore(btn.dataset.key, parseInt(btn.dataset.buzzAdjust, 10));
 });
-// スペースキーで早押し（入力欄にフォーカスがあるときは文字入力を優先する）
-document.addEventListener("keydown", (e) => {
+// スペースキーで早押し（入力欄にフォーカスがあるときは文字入力を優先する）。別ウィンドウの配置エリアでも使えるよう関数にしておく
+document.addEventListener("keydown", onBuzzHotkey);
+function onBuzzHotkey(e) {
   if (e.code !== "Space" || e.repeat) return;
   const t = e.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
   if (!buzzConfig.enabled || callScreen.style.display === "none") return;
   e.preventDefault(); // フォーカス中のボタンがスペースで押されたり、ページがスクロールしたりするのを防ぐ
   pressBuzzer();
-});
+}
 
 let gateThresholdDebounce = null;
 gateThresholdSlider.addEventListener("input", () => {
@@ -896,6 +919,11 @@ function drawEqSpectrum() {
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
+popoutGridBtn.addEventListener("click", popOutGrid);
+popinGridBtn.addEventListener("click", popInGrid);
+scoreboardBtn.addEventListener("click", () => {
+  set(ref(db, `rooms/${ROOM_ID}/scoreboard`), { on: !scoreboardOn });
+});
 
 // ---------- 表示オプション: 名前表示・グリッドスナップ・背景画像・枠画像 ----------
 nameLabelToggle.checked = showNameLabels;
@@ -1135,6 +1163,7 @@ async function joinRoom(name) {
     serverTimeOffset = snap.val() || 0;
   });
   listenBuzzer();
+  listenScoreboard();
 }
 
 window.addEventListener("beforeunload", () => {
@@ -1484,7 +1513,7 @@ async function toggleScreenShare() {
   shareBtn.classList.add("active");
 
   createVideoTile(`${myId}-screen`, `${myName}（画面共有）`, false);
-  const selfScreenVideo = document.getElementById(`video-${myId}-screen`);
+  const selfScreenVideo = gridEl(`video-${myId}-screen`);
   if (selfScreenVideo) selfScreenVideo.srcObject = screenStream;
 
   for (const [peerId, entry] of Object.entries(peers)) {
@@ -1519,8 +1548,9 @@ function stopScreenShare() {
 function attachScreenStreamToTile(peerId, stream) {
   const name = members[peerId]?.name || "";
   createVideoTile(`${peerId}-screen`, `${name}（画面共有）`, false);
-  const video = document.getElementById(`video-${peerId}-screen`);
+  const video = gridEl(`video-${peerId}-screen`);
   if (video) video.srcObject = stream;
+  if (gridPopped) syncPopAudio(`video-${peerId}-screen`);
   renderGrid();
 }
 
@@ -1539,6 +1569,12 @@ function savePositions() {
   localStorage.setItem("aiJinroTilePositionsPct", JSON.stringify(tilePositions));
 }
 function defaultPos(index) {
+  // カメラ枠（MAX_PEERS個・2段）より後ろの画面共有・スコアボードは、3段目だと配置エリアの外に出てしまうので
+  // エリア中央付近に少しずつずらして重ねて置く（z-indexはスロット順で手前になる）
+  if (index >= MAX_PEERS) {
+    const k = (index - MAX_PEERS) % 4;
+    return { left: 35 + k * 5, top: 20 + k * 5, width: TILE_W_PCT };
+  }
   const col = index % COLS, row = Math.floor(index / COLS);
   return { left: col * (TILE_W_PCT + COL_GAP_PCT), top: row * ROW_TOP_PCT, width: TILE_W_PCT };
 }
@@ -1761,7 +1797,7 @@ function scheduleLayoutPublish() {
 function applySyncedLayout(layoutData) {
   const tiles = layoutData?.tiles || {};
   for (const [key, pos] of Object.entries(tiles)) {
-    const tile = document.getElementById(`tile-${key}`);
+    const tile = gridEl(`tile-${key}`);
     if (!tile) continue; // まだ生成されていないタイル（相手の接続確立待ち等）。生成時に改めて反映される
     tile.style.left = (pos.left * 100) + "%";
     tile.style.top = (pos.top * 100) + "%";
@@ -1851,8 +1887,9 @@ function computeSlots() {
 
   const sharingIds = presentIds.filter((id) => members[id]?.sharing).sort();
   const screenSlots = sharingIds.map((id) => ({ id, key: `${id}-screen`, kind: "screen", name: members[id]?.name, sharing: true }));
+  const extraSlots = scoreboardOn ? [{ id: SCOREBOARD_KEY, key: SCOREBOARD_KEY, kind: "scoreboard", name: "スコアボード" }] : [];
 
-  return [...camSlots, ...screenSlots];
+  return [...camSlots, ...screenSlots, ...extraSlots];
 }
 
 function swapOrder(idA, idB) {
@@ -1873,7 +1910,7 @@ function swapOrder(idA, idB) {
 function syncVideoTiles(slots) {
   slots.forEach((s, idx) => {
     if (!s) return;
-    const tile = document.getElementById(`tile-${s.key}`);
+    const tile = gridEl(`tile-${s.key}`);
     if (tile) positionTile(tile, idx);
   });
 }
@@ -1900,10 +1937,10 @@ function isCameraOffFor(id) {
 }
 function applyCameraVisibility() {
   for (const id of Object.keys(members)) {
-    const tile = document.getElementById(`tile-${id}`);
+    const tile = gridEl(`tile-${id}`);
     if (tile) tile.style.display = isCameraOffFor(id) ? "none" : "";
   }
-  const selfTile = document.getElementById(`tile-${myId}`);
+  const selfTile = gridEl(`tile-${myId}`);
   if (selfTile) selfTile.style.display = isCameraOffFor(myId) ? "none" : "";
 }
 
@@ -2023,7 +2060,7 @@ function makeResizable(tile) {
 }
 
 function createVideoTile(peerId, name, isSelf) {
-  if (document.getElementById(`tile-${peerId}`)) return;
+  if (gridEl(`tile-${peerId}`)) return;
   const tile = document.createElement("div");
   tile.className = "tile" + (isSelf ? " mirror" : "");
   tile.id = `tile-${peerId}`;
@@ -2042,7 +2079,7 @@ function createVideoTile(peerId, name, isSelf) {
 }
 
 function updateNameLabel(key, name) {
-  const el = document.getElementById(`name-${key}`);
+  const el = gridEl(`name-${key}`);
   if (el) el.textContent = name;
 }
 
@@ -2056,19 +2093,33 @@ function refreshNameLabels() {
 }
 
 function removeVideoTile(peerId) {
-  const tile = document.getElementById(`tile-${peerId}`);
+  const tile = gridEl(`tile-${peerId}`);
   if (tile) tile.remove();
   locallyMutedPeers.delete(peerId);
   locallyHiddenVideoPeers.delete(peerId);
 }
 
 function attachStreamToTile(peerId, stream) {
-  const video = document.getElementById(`video-${peerId}`);
+  const video = gridEl(`video-${peerId}`);
   if (video) {
     video.srcObject = stream;
-    if (peerId !== myId) video.muted = globalMuted || locallyMutedPeers.has(peerId);
+  }
+  if (peerId !== myId) {
+    if (gridPopped) syncPopAudio(`video-${peerId}`);
+    applyPeerMute(peerId);
   }
   applyPeerVolume(peerId);
+}
+
+// 相手の音声を鳴らしている要素。通常はタイルの<video>、配置エリアを別ウィンドウに出している間はメイン画面側の<audio>
+// （別ウィンドウでは音声付き再生がブラウザの自動再生制限で止められることがあるため、映像はミュートで出し音声はメイン画面で鳴らす）
+function peerAudioEl(id) {
+  if (gridPopped) return document.getElementById(`popAudio-video-${id}`);
+  return gridEl(`video-${id}`);
+}
+function applyPeerMute(id) {
+  const el = peerAudioEl(id);
+  if (el) el.muted = globalMuted || locallyMutedPeers.has(id);
 }
 
 function getPeerVolume(id) {
@@ -2077,12 +2128,12 @@ function getPeerVolume(id) {
 }
 function applyPeerVolume(id) {
   if (id === myId) return;
-  const video = document.getElementById(`video-${id}`);
-  if (video) video.volume = Math.max(0, Math.min(1, getPeerVolume(id) / 100));
+  const el = peerAudioEl(id);
+  if (el) el.volume = Math.max(0, Math.min(1, getPeerVolume(id) / 100));
 }
 
 function updateStatsDisplay(peerId, s) {
-  const el = document.getElementById(`stats-${peerId}`);
+  const el = gridEl(`stats-${peerId}`);
   if (!el) return;
   el.textContent = `経路:${s.routeType} / ${s.kbps}kbps / RTT:${s.rttMs ?? "-"}ms / Loss:${s.lossPct}%`;
 }
@@ -2090,10 +2141,7 @@ function updateStatsDisplay(peerId, s) {
 function toggleGlobalMute() {
   globalMuted = !globalMuted;
   muteBtn.textContent = globalMuted ? "🔇 ミュート解除" : "🔊 全体ミュート";
-  for (const id of Object.keys(peers)) {
-    const video = document.getElementById(`video-${id}`);
-    if (video) video.muted = globalMuted || locallyMutedPeers.has(id);
-  }
+  for (const id of Object.keys(peers)) applyPeerMute(id);
 }
 
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
@@ -2102,9 +2150,9 @@ function renderControls(slots) {
   let html = "<tr><th>参加者</th><th>マイク</th><th class=\"volCol\">聞こえる音量</th><th>カメラ</th><th>重なり順</th></tr>";
   for (const s of slots) {
     if (!s) continue;
-    if (s.kind === "screen") {
+    if (s.kind === "screen" || s.kind === "scoreboard") {
       html += `<tr data-key="${s.key}">
-        <td>${escapeHtml(s.name)}（画面共有）</td>
+        <td>${s.kind === "scoreboard" ? "📊 スコアボード" : escapeHtml(s.name) + "（画面共有）"}</td>
         <td class="ctrlCell">-</td>
         <td class="ctrlCell volCol">-</td>
         <td class="ctrlCell">-</td>
@@ -2138,13 +2186,13 @@ function renderControls(slots) {
 }
 
 function bringTileKeyToFront(key) {
-  const tile = document.getElementById(`tile-${key}`);
+  const tile = gridEl(`tile-${key}`);
   if (!tile) return;
   bringTileToFront(tile);
   saveTileRect(tile);
 }
 function sendTileKeyToBack(key) {
-  const tile = document.getElementById(`tile-${key}`);
+  const tile = gridEl(`tile-${key}`);
   if (!tile) return;
   let minZ = Infinity;
   videoGrid.querySelectorAll(".tile").forEach((t) => {
@@ -2163,8 +2211,7 @@ function toggleMicFor(id) {
     if (track) track.enabled = !track.enabled;
   } else {
     if (locallyMutedPeers.has(id)) locallyMutedPeers.delete(id); else locallyMutedPeers.add(id);
-    const video = document.getElementById(`video-${id}`);
-    if (video) video.muted = globalMuted || locallyMutedPeers.has(id);
+    applyPeerMute(id);
   }
   renderControls(computeSlots());
 }
@@ -2464,7 +2511,8 @@ function drawRecordFrame() {
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
 
-  recordLoopId = requestAnimationFrame(drawRecordFrame);
+  recordLoopWin = gridWin(); // 配置エリアを表示しているウィンドウのrAFで回す（メイン画面が裏に隠れても止まらないように）
+  recordLoopId = recordLoopWin.requestAnimationFrame(drawRecordFrame);
 }
 
 function pickMimeType() {
@@ -2510,7 +2558,7 @@ async function startRecording() {
   let audioTracks;
   if (useSystemAudio) {
     const sysTrack = await captureSystemAudioTrack();
-    if (!sysTrack) { if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
+    if (!sysTrack) { if (recordLoopId) { recordLoopWin.cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
     // システム音声（Discord等が再生する相手の声）には自分の声は含まれない
     // （自分のマイクは通常、自分のスピーカー出力にループバックされないため）。
     // このアプリ自身のマイク（ノイズ抑制後）を別トラックとして合成し、両方を録音に含める。
@@ -2537,7 +2585,7 @@ async function startRecording() {
   mediaRecorder = new MediaRecorder(stream, { mimeType: pickMimeType() });
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
   mediaRecorder.onstop = () => {
-    if (recordLoopId) { cancelAnimationFrame(recordLoopId); recordLoopId = null; }
+    if (recordLoopId) { recordLoopWin.cancelAnimationFrame(recordLoopId); recordLoopId = null; }
     if (systemAudioStream) { systemAudioStream.getTracks().forEach((t) => t.stop()); systemAudioStream = null; }
     const blob = new Blob(recordedChunks, { type: "video/webm" });
     const url = URL.createObjectURL(blob);
@@ -2994,7 +3042,7 @@ function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
   if (!buzzConfig.enabled) return;
   const now = Date.now();
   const highlightId = buzzHighlightId();
-  const answerTile = highlightId ? document.getElementById(`tile-${highlightId}`) : null;
+  const answerTile = highlightId ? gridEl(`tile-${highlightId}`) : null;
   if (answerTile && answerTile.offsetParent !== null) {
     const r = answerTile.getBoundingClientRect();
     ctx.save();
@@ -3056,6 +3104,7 @@ function updateBuzzTimer() {
 let buzzInitRequested = false;
 function renderBuzzer() {
   if (!buzzListenersReady.state) return;
+  drawScoreboard();
   const host = isRoomHost();
   if (host && buzzState.phase == null && !buzzInitRequested) { // 部屋で初めて使うときだけ初期化
     buzzInitRequested = true;
@@ -3093,7 +3142,7 @@ function renderBuzzer() {
   // タイルの強調（回答権のある人。押した瞬間から暫定1着を光らせる）
   videoGrid.querySelectorAll(".tile.buzzAnswer").forEach((t) => t.classList.remove("buzzAnswer"));
   const highlightId = buzzHighlightId();
-  if (highlightId) document.getElementById(`tile-${highlightId}`)?.classList.add("buzzAnswer");
+  if (highlightId) gridEl(`tile-${highlightId}`)?.classList.add("buzzAnswer");
   if (!enabled) return;
 
   // ボタンと状態テキスト
@@ -3346,6 +3395,194 @@ function updateIntroStatus() {
   if (!t.buffer) { introStatus.textContent = "読み込み中…"; return; }
   const state = introEnded ? "終了" : introPlaying ? "再生中" : "停止中";
   introStatus.textContent = `${state} ${fmtTime(Math.min(introCurrentTime(), t.buffer.duration))} / ${fmtTime(t.buffer.duration)}`;
+}
+
+// ---------- 配置エリアを別ウィンドウで表示 ----------
+// 配置エリア(#videoGrid)の要素そのものを別ウィンドウへ移す（配信ソフトのウィンドウキャプチャ用）。
+// 配置・枠・背景・名前表示・ドラッグ操作がそのまま使える。ウィンドウを閉じると元の場所に戻す。
+function gridWin() {
+  return gridPopped && gridPopupWin && !gridPopupWin.closed ? gridPopupWin : window;
+}
+// タイル関連の要素は、別ウィンドウに出している間はそちらの文書にある
+function gridEl(id) {
+  return document.getElementById(id) || (gridPopped && gridPopupWin && !gridPopupWin.closed ? gridPopupWin.document.getElementById(id) : null);
+}
+
+function popOutGrid() {
+  if (gridPopped && gridPopupWin && !gridPopupWin.closed) { gridPopupWin.focus(); return; }
+  const win = window.open("", "gridPopup", "popup,width=1280,height=720");
+  if (!win) { templateStatus.textContent = "ポップアップがブロックされました。ブラウザの設定で許可してください"; return; }
+  const doc = win.document;
+  doc.open();
+  doc.write("<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"UTF-8\"><title>配置エリア - 遊ぶところ撮影ツール</title></head><body></body></html>");
+  doc.close();
+  for (const st of document.querySelectorAll("style")) doc.head.appendChild(st.cloneNode(true));
+  const extra = doc.createElement("style");
+  extra.textContent = `html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    body { display: flex; align-items: center; justify-content: center; }
+    #videoGrid { width: min(100vw, calc(100vh * 16 / 9)) !important; margin: 0 !important; }`;
+  doc.head.appendChild(extra);
+  gridPopupWin = win;
+  gridPopped = true;
+  // 音声はメイン画面で鳴らし続ける（先にミラーを用意してから映像側をミュートにする）
+  videoGrid.querySelectorAll("video").forEach((v) => syncPopAudio(v.id));
+  doc.body.appendChild(videoGrid);
+  resumeGridVideos();
+  gridPlaceholder.classList.add("show");
+  doc.addEventListener("keydown", onBuzzHotkey);
+  win.addEventListener("pagehide", () => { if (gridPopupWin === win) popInGrid(); });
+  if (recordLoopId) { // 録画中なら描画ループを新しいウィンドウ側に付け替える
+    recordLoopWin.cancelAnimationFrame(recordLoopId);
+    recordLoopWin = win;
+    recordLoopId = win.requestAnimationFrame(drawRecordFrame);
+  }
+  renderGrid();
+}
+
+function popInGrid() {
+  if (!gridPopped) return;
+  const win = gridPopupWin;
+  const wasRecording = !!recordLoopId;
+  if (wasRecording) { try { recordLoopWin.cancelAnimationFrame(recordLoopId); } catch (e) {} }
+  gridPlaceholder.after(videoGrid);
+  gridPlaceholder.classList.remove("show");
+  gridPopped = false;
+  gridPopupWin = null;
+  popAudioContainer.innerHTML = "";
+  resumeGridVideos();
+  for (const id of Object.keys(peers)) { applyPeerMute(id); applyPeerVolume(id); }
+  videoGrid.querySelectorAll("video").forEach((v) => {
+    if (v.id.endsWith("-screen")) v.muted = false; // 画面共有の音声を元どおりタイルから鳴らす
+  });
+  if (wasRecording) { recordLoopWin = window; recordLoopId = requestAnimationFrame(drawRecordFrame); }
+  if (win && !win.closed) win.close();
+  renderGrid();
+}
+
+// 要素を別の文書へ移すと<video>は一時停止するので再生し直す
+function resumeGridVideos() {
+  videoGrid.querySelectorAll("video").forEach((v) => { if (v.srcObject) v.play().catch(() => {}); });
+}
+
+// 別ウィンドウ表示中：タイルの<video>はミュートにし、その音声をメイン画面の<audio>で鳴らす
+function syncPopAudio(videoId) {
+  const video = gridEl(videoId);
+  if (!video || !video.srcObject || video.id === `video-${myId}` || video.id === `video-${SCOREBOARD_KEY}`) return;
+  video.muted = true;
+  if (!video.srcObject.getAudioTracks().length) return;
+  let audio = document.getElementById(`popAudio-${videoId}`);
+  if (!audio) {
+    audio = document.createElement("audio");
+    audio.id = `popAudio-${videoId}`;
+    audio.autoplay = true;
+    popAudioContainer.appendChild(audio);
+  }
+  if (audio.srcObject !== video.srcObject) audio.srcObject = video.srcObject;
+  audio.play().catch(() => {});
+  const peerId = videoId.replace(/^video-/, "");
+  if (peers[peerId]) { applyPeerMute(peerId); applyPeerVolume(peerId); }
+}
+
+window.addEventListener("beforeunload", () => { if (gridPopupWin && !gridPopupWin.closed) gridPopupWin.close(); });
+
+// ---------- スコアボード（早押しのスコアを配置エリアのタイルとして表示） ----------
+// rooms/{ROOM_ID}/scoreboard: { on }（誰でもON/OFFでき、全員の配置エリアに出る。画面共有と同じ扱い）
+// 各端末がRTDBのスコアからcanvasに描き、canvas.captureStream()を映像タイルとして表示する
+// （既存の映像タイルと同じ仕組みで、移動・サイズ変更・重なり順・レイアウト同期・合成録画にそのまま乗る）。
+const scoreboardCanvas = document.createElement("canvas");
+scoreboardCanvas.width = 1280;
+scoreboardCanvas.height = 720;
+let scoreboardStream = null;
+
+function listenScoreboard() {
+  onValue(ref(db, `rooms/${ROOM_ID}/scoreboard`), (snap) => {
+    scoreboardOn = !!snap.val()?.on;
+    scoreboardBtn.textContent = scoreboardOn ? "📊 スコアボードを消す" : "📊 スコアボード";
+    scoreboardBtn.classList.toggle("active", scoreboardOn);
+    if (scoreboardOn) {
+      if (!scoreboardStream) scoreboardStream = scoreboardCanvas.captureStream();
+      if (!gridEl(`tile-${SCOREBOARD_KEY}`)) {
+        createVideoTile(SCOREBOARD_KEY, "スコアボード", false);
+        const tile = gridEl(`tile-${SCOREBOARD_KEY}`);
+        tile.querySelector(".nameLabel").style.display = "none";
+        tile.querySelector(".statsLine").style.display = "none";
+        const video = gridEl(`video-${SCOREBOARD_KEY}`);
+        video.muted = true;
+        video.srcObject = scoreboardStream;
+        video.play().catch(() => {});
+      }
+      drawScoreboard();
+    } else {
+      removeVideoTile(SCOREBOARD_KEY);
+    }
+    renderGrid();
+    renderControls(computeSlots());
+    if (isLayoutLeader()) publishLeaderLayout();
+  });
+}
+
+function drawScoreboard() {
+  if (!scoreboardOn) return;
+  const ctx = scoreboardCanvas.getContext("2d");
+  const W = scoreboardCanvas.width, H = scoreboardCanvas.height;
+  ctx.fillStyle = "#101820";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#ffd54f";
+  ctx.fillRect(0, 0, W, 110);
+  ctx.fillStyle = "#1c1c1c";
+  ctx.textBaseline = "middle";
+  ctx.font = "bold 60px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("SCORE", 50, 57);
+  ctx.textAlign = "right";
+  ctx.font = "bold 44px system-ui, sans-serif";
+  ctx.fillText(`第${buzzState.question || 1}問`, W - 50, 57);
+
+  // チーム戦ならチーム合計、そうでなければ個人の点数（多い順）
+  let rows;
+  if (buzzConfig.teamMode) {
+    const teams = {};
+    for (const r of Object.values(buzzScores)) {
+      const key = r.team || r.name;
+      teams[key] = (teams[key] || 0) + (r.points || 0);
+    }
+    rows = Object.entries(teams).map(([name, points]) => ({ name, points }));
+  } else {
+    rows = Object.values(buzzScores).map((r) => ({ name: r.name, points: r.points || 0 }));
+  }
+  rows.sort((a, b) => b.points - a.points);
+  if (!rows.length) {
+    ctx.fillStyle = "#8899aa";
+    ctx.textAlign = "center";
+    ctx.font = "40px system-ui, sans-serif";
+    ctx.fillText("まだ得点はありません", W / 2, (H + 110) / 2);
+  } else {
+    const shown = rows.slice(0, 8);
+    const rowH = Math.min(110, (H - 150) / shown.length); // 人数が少ないときは大きく表示
+    const fontPx = Math.round(rowH * 0.55);
+    shown.forEach((r, i) => {
+      const y = 140 + rowH * i + rowH / 2;
+      ctx.fillStyle = i % 2 ? "#15202b" : "#1b2733";
+      ctx.fillRect(30, y - rowH / 2 + 4, W - 60, rowH - 8);
+      const rank = i === 0 || r.points !== shown[i - 1].points ? i + 1 : null;
+      ctx.fillStyle = "#ffd54f";
+      ctx.textAlign = "center";
+      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+      if (rank) ctx.fillText(String(rank), 90, y);
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "left";
+      ctx.fillText(fitText(ctx, r.name, W - 520), 160, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#8dffb0";
+      ctx.fillText(`${r.points}点`, W - 60, y);
+    });
+  }
+}
+function fitText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+  return t + "…";
 }
 
 // ---------- 結果コピー ----------
