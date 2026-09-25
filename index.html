@@ -1311,6 +1311,13 @@ function createPeerConnection(peerId, isInitiator) {
   if (audioTrackToSend) entry.audioSender = pc.addTrack(audioTrackToSend, localStream);
   // 既に画面共有中に参加してきた相手にも、最初から画面共有トラックを追加しておく
   if (isSharing && screenStream) addScreenTrackToPeer(peerId, entry);
+  // 早押しの押下を相手へ直接（P2Pで）届けるデータチャネル。Firebase（サーバーはシンガポール）経由より速い。
+  // 両側が同じidで作るnegotiatedチャネルなので、最初のSDPに含まれ追加の再交渉は要らない。
+  // 遅れて届く再送は意味がないので順序保証なし・再送は少なめ（届かなくてもFirebase経由で必ず届く）
+  try {
+    entry.buzzChannel = pc.createDataChannel("buzz", { negotiated: true, id: 0, ordered: false, maxRetransmits: 2 });
+    entry.buzzChannel.onmessage = (e) => onBuzzDataMessage(peerId, e.data);
+  } catch (e) { console.warn("buzz data channel failed", e); }
 
   pc.onicecandidate = (e) => {
     if (e.candidate) sendSignal(peerId, "candidate", e.candidate.toJSON());
@@ -2635,8 +2642,9 @@ function buzzEligible(id) {
   const st = buzzEntityStats(entity);
   return !st.won && !st.out;
 }
+let buzzFastPresses = {}; // phase -> { peerId: press }（データチャネルで先に届いた押下。Firebaseの記録が届いたら上書きされる）
 function buzzCurrentPresses() {
-  return buzzPresses[buzzState.phase] || {};
+  return { ...(buzzFastPresses[buzzState.phase] || {}), ...(buzzPresses[buzzState.phase] || {}) };
 }
 // 現在のphaseの押下を時刻順に並べ、1チーム1枠にまとめ、回答できない人を除いた回答順
 function buzzAnswerOrder() {
@@ -2688,7 +2696,7 @@ function listenBuzzer() {
     const first = !buzzListenersReady.state;
     buzzListenersReady.state = true;
     handleBuzzStateEffects(first);
-    if (prevPhase !== buzzState.phase) buzzWindowTimers = {};
+    if (prevPhase !== buzzState.phase) { buzzWindowTimers = {}; buzzFastPresses = {}; }
     if (!first) handleNewBuzzPresses(); // phase更新より先に届いていた新phaseの押下を拾う
     renderBuzzer();
   });
@@ -2733,6 +2741,12 @@ async function pressBuzzer() {
   // 押した本人にはネットワーク往復を待たずに即座に鳴らす
   buzzSeenPresses.add(`${phase}:${myId}`);
   announceBuzzPress(phase, myId);
+  const press = { at, name: myName, team: buzzTeamOf(myId) };
+  // 他の人へはP2Pで即座に知らせる（Firebaseへの書き込みも並行して行い、そちらが正式な記録）
+  const msg = JSON.stringify({ t: "press", phase, ...press });
+  for (const entry of Object.values(peers)) {
+    if (entry.buzzChannel?.readyState === "open") { try { entry.buzzChannel.send(msg); } catch (e) {} }
+  }
   await set(ref(db, `rooms/${ROOM_ID}/buzzer/presses/${phase}/${myId}`), {
     at, recv: serverTimestamp(), name: myName, team: buzzTeamOf(myId)
   });
@@ -2839,6 +2853,19 @@ async function hostClearBuzzScores() {
 
 // ---- 演出 ----
 // 新しく届いた押下に即座に反応する：そのphaseで最初の押下ならピンポーン＋カットイン、2着以降は短い音
+function onBuzzDataMessage(fromId, raw) {
+  let msg;
+  try { msg = JSON.parse(raw); } catch (e) { return; }
+  if (msg?.t !== "press" || msg.phase !== buzzState.phase || typeof msg.at !== "number") return;
+  if (buzzCurrentPresses()[fromId]) return; // Firebase経由で既に届いている
+  (buzzFastPresses[msg.phase] = buzzFastPresses[msg.phase] || {})[fromId] = {
+    at: msg.at, name: String(msg.name || members[fromId]?.name || ""), team: String(msg.team || "")
+  };
+  handleNewBuzzPresses();
+  startBuzzWindowIfNeeded();
+  renderBuzzer();
+}
+
 function handleNewBuzzPresses() {
   const phase = buzzState.phase;
   const firstLoad = !buzzPressesReady;
