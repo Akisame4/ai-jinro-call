@@ -308,6 +308,7 @@
     <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
+    <select id="screenQualitySelect" title="画面共有の画質（共有中に変えてもすぐ反映されます）"></select>
     <button id="scoreboardBtn" title="早押しのスコアを、画面共有と同じように全員の配置エリアへタイルとして表示します">📊 スコアボード</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
     <button id="layoutSyncBtn">🔗 レイアウト同期を申請</button>
@@ -474,7 +475,16 @@ const ROOM_ID = "test1";
 const MAX_PEERS = 6;
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const VIDEO_MAX_BITRATE = 400000;  // bps（通常のカメラ映像）
-const SCREEN_MAX_BITRATE = 2000000; // bps（画面共有中）
+// 画面共有の画質。contentHint="detail"は解像度を保って（必要ならfpsを落として）文字をくっきりさせ、
+// "motion"はfpsを保つ（ゲーム等の動き向け）。メッシュ接続なので送信量は「ビットレート×相手の人数」になる点に注意
+const SCREEN_QUALITY_PRESETS = {
+  text:   { label: "文字くっきり（資料・ブラウザ向け）", hint: "detail", fps: 15, bitrate: 2500000, degradation: "maintain-resolution" },
+  motion: { label: "動き優先（ゲーム向け）",             hint: "motion", fps: 30, bitrate: 4000000, degradation: "maintain-framerate" },
+  high:   { label: "高画質（回線に余裕があるとき）",     hint: "detail", fps: 30, bitrate: 6000000, degradation: "maintain-resolution" }
+};
+let screenQualityKey = (() => { try { return localStorage.getItem("screenQuality"); } catch (e) { return null; } })();
+if (!SCREEN_QUALITY_PRESETS[screenQualityKey]) screenQualityKey = "text";
+function screenQuality() { return SCREEN_QUALITY_PRESETS[screenQualityKey]; }
 
 const firebaseConfig = {
   apiKey: "AIzaSyAGBKE64LcAcZpdfeqcRNka60qeQ7EjmSM",
@@ -642,6 +652,7 @@ const videoGrid = document.getElementById("videoGrid");
 const controlsTable = document.getElementById("controlsTable");
 const muteBtn = document.getElementById("muteBtn");
 const shareBtn = document.getElementById("shareBtn");
+const screenQualitySelect = document.getElementById("screenQualitySelect");
 const gateBtn = document.getElementById("gateBtn");
 const layoutSyncBtn = document.getElementById("layoutSyncBtn");
 const layoutSyncPanel = document.getElementById("layoutSyncPanel");
@@ -780,6 +791,15 @@ joinBtn.addEventListener("click", () => {
 });
 muteBtn.addEventListener("click", toggleGlobalMute);
 shareBtn.addEventListener("click", toggleScreenShare);
+screenQualitySelect.innerHTML = Object.entries(SCREEN_QUALITY_PRESETS)
+  .map(([k, q]) => `<option value="${k}">画面共有: ${q.label}</option>`).join("");
+screenQualitySelect.value = screenQualityKey;
+screenQualitySelect.addEventListener("change", () => {
+  screenQualityKey = screenQualitySelect.value;
+  try { localStorage.setItem("screenQuality", screenQualityKey); } catch (e) {}
+  applyScreenQualityToTrack();
+  for (const entry of Object.values(peers)) if (entry.screenSender) applyScreenSenderParams(entry.screenSender);
+});
 gateBtn.addEventListener("click", () => {
   gateWarning.classList.remove("show");
   toggleNoiseGate();
@@ -1468,7 +1488,20 @@ function addScreenTrackToPeer(peerId, entry) {
   const track = screenStream.getVideoTracks()[0];
   if (!track) return;
   entry.screenSender = entry.pc.addTrack(track, screenStream);
-  applyBitrate(entry.screenSender, SCREEN_MAX_BITRATE);
+  applyScreenSenderParams(entry.screenSender);
+}
+
+function applyScreenQualityToTrack() {
+  const track = screenStream?.getVideoTracks()[0];
+  if (!track) return;
+  const q = screenQuality();
+  try { track.contentHint = q.hint; } catch (e) {}
+  track.applyConstraints({ frameRate: { ideal: q.fps, max: q.fps } }).catch(() => {});
+}
+
+function applyScreenSenderParams(sender) {
+  const q = screenQuality();
+  applyBitrate(sender, q.bitrate, q.degradation);
 }
 
 function removeScreenTrackFromPeer(entry) {
@@ -1477,11 +1510,14 @@ function removeScreenTrackFromPeer(entry) {
   entry.screenSender = null;
 }
 
-function applyBitrate(sender, bitrate) {
+function applyBitrate(sender, bitrate, degradationPreference) {
   try {
     const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    // 接続確立前はencodingsが空で設定できないことがある（その場合は統計取得のたびにかけ直す：updateStats）
+    if (!params.encodings || params.encodings.length === 0) return;
+    if (params.encodings[0].maxBitrate === bitrate && (!degradationPreference || params.degradationPreference === degradationPreference)) return;
     params.encodings[0].maxBitrate = bitrate;
+    if (degradationPreference) params.degradationPreference = degradationPreference;
     sender.setParameters(params).catch(() => {});
   } catch (e) { /* ブラウザによっては初期状態で失敗することがある */ }
 }
@@ -1505,6 +1541,9 @@ function closePeerConnection(peerId) {
 async function updateStats(peerId) {
   const entry = peers[peerId];
   if (!entry || entry.pc.connectionState !== "connected") return;
+  // 送信側の上限は接続確立後でないと効かないことがあるので、ここで毎回（変化がなければ何もしない）かけ直す
+  if (entry.videoSender) applyBitrate(entry.videoSender, VIDEO_MAX_BITRATE);
+  if (entry.screenSender) applyScreenSenderParams(entry.screenSender);
   const stats = await entry.pc.getStats();
 
   let routeType = "-", rttMs = null;
@@ -1558,12 +1597,17 @@ async function toggleScreenShare() {
 
   let stream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 10 }, audio: false });
+    const q = screenQuality();
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: q.fps, max: q.fps } },
+      audio: false
+    });
   } catch (e) {
     return; // ユーザーがキャンセルした等
   }
   screenStream = stream;
   isSharing = true;
+  applyScreenQualityToTrack();
   shareBtn.textContent = "🖥 共有を終了";
   shareBtn.classList.add("active");
 
@@ -2632,6 +2676,10 @@ function pickMimeType() {
 // 選んでもらうことで、システム全体の音声トラックだけを取り出す（映像は使わないのですぐ止める）。
 let systemAudioStream = null;
 
+const REC_GRID_WIDTH = 1920, REC_GRID_HEIGHT = 1080;
+// ブラウザ既定のビットレートは低く画質が落ちるので明示する
+const REC_VIDEO_BPS = { grid: 8000000, self: 4000000, screen: 8000000 };
+const REC_AUDIO_BPS = 128000;
 const REC_KIND_LABELS = { grid: "レイアウト全体", self: "自分のカメラ", screen: "自分のPC画面" };
 
 // チェックした対象（レイアウト全体／自分のカメラ／自分のPC画面）を同時に録画し、停止時にそれぞれ別ファイルにする
@@ -2650,7 +2698,9 @@ async function startRecording() {
   let displayStream = null;
   if (kinds.includes("screen") || useSystemAudio) {
     try {
-      displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: true
+      });
     } catch (e) {
       return; // キャンセル
     }
@@ -2675,10 +2725,10 @@ async function startRecording() {
   for (const kind of kinds) {
     let videoTracks, audioTracks;
     if (kind === "grid") {
-      const gridRect = videoGrid.getBoundingClientRect();
+      // 画面上の表示サイズではなく、常に1920×1080で描く（配置エリアは16:9。小さく表示していても録画は高解像度）
       recordCanvas = document.createElement("canvas");
-      recordCanvas.width = Math.max(2, Math.round(gridRect.width));
-      recordCanvas.height = Math.max(2, Math.round(gridRect.height));
+      recordCanvas.width = REC_GRID_WIDTH;
+      recordCanvas.height = REC_GRID_HEIGHT;
       drawRecordFrame();
       videoTracks = recordCanvas.captureStream(30).getVideoTracks();
       // システム音声（Discord等の相手の声）には自分の声は含まれないので、自分のマイクを合成する
@@ -2688,6 +2738,7 @@ async function startRecording() {
       audioTracks = useSystemAudio ? mix([sysTrack, micTrack]) : [micTrack].filter(Boolean);
     } else {
       videoTracks = displayStream.getVideoTracks();
+      try { videoTracks[0].contentHint = "detail"; } catch (e) {}
       audioTracks = mix([sysTrack, micTrack]); // 選んだ画面の音（共有した場合）＋自分の声
     }
     streams[kind] = new MediaStream([...videoTracks, ...audioTracks]);
@@ -2695,7 +2746,12 @@ async function startRecording() {
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   activeRecorders = kinds.map((kind) => {
-    const rec = { recorder: new MediaRecorder(streams[kind], { mimeType: pickMimeType() }), chunks: [], kind };
+    const rec = {
+      recorder: new MediaRecorder(streams[kind], {
+        mimeType: pickMimeType(), videoBitsPerSecond: REC_VIDEO_BPS[kind], audioBitsPerSecond: REC_AUDIO_BPS
+      }),
+      chunks: [], kind
+    };
     rec.recorder.ondataavailable = (e) => { if (e.data.size > 0) rec.chunks.push(e.data); };
     rec.recorder.onstop = () => {
       const blob = new Blob(rec.chunks, { type: "video/webm" });

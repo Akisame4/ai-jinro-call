@@ -28,6 +28,8 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - カメラ映像と画面共有映像は別々の `RTCRtpSender`（`addTrack`/`removeTrack`）で送信する。`replaceTrack`は使わない。
 - 通話中のトラック追加・削除は再交渉(renegotiation)を伴うため、`onnegotiationneeded` + Perfect Negotiation パターンで衝突を解決する（`peers[id].polite`/`makingOffer`/`ignoreOffer`）。polite側は「後から接続してきた側（`isInitiator=false`）」に固定。
 - ストリーム種別（camera/screen）の判別は、**RTDBの別ノードではなく、offer/answerのシグナルpayloadに`streamKinds: { [MediaStream.id]: "camera"|"screen" }`を同梱**して伝える方式にしている（mid はPCペアごとに採番されるため、共有ノードで持つと整合性が壊れるのを避けるため）。受信側は`entry.remoteStreamKinds`にマージして保持し、`pc.ontrack`の`e.streams[0].id`で参照する。
+- **画面共有の画質**：ヘッダーの選択（`SCREEN_QUALITY_PRESETS`、localStorage `screenQuality`）で、文字くっきり（contentHint=detail・15fps・2.5Mbps・maintain-resolution）／動き優先（motion・30fps・4Mbps・maintain-framerate）／高画質（detail・30fps・6Mbps）。共有中に変えても`applyScreenQualityToTrack`と`applyScreenSenderParams`で即反映。メッシュなので送信量は「ビットレート×相手の人数」。
+- 送信側の`maxBitrate`等は接続確立前だと`encodings`が空で設定できないため、`updateStats`（2秒ごと）で毎回かけ直す（値が同じなら何もしない）。
 - 画面共有の開始・終了は自分の`members/{myId}/sharing`フラグに反映し、受信側はこのフラグを正として画面共有タイルの表示/削除を同期する（`removeTrack`後の相手側track状態イベントには依存しない）。
 - タイルのDOM要素キーは、カメラ＝`peerId`、画面共有＝`` `${peerId}-screen` `` で区別する（`computeSlots()`が返すスロットに`kind: "camera"|"screen"`と`key`を持つ）。
 
@@ -71,6 +73,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
   - 自分のPC画面：録画開始時に画面を選択（getDisplayMedia）。その画面の音（共有した場合）＋自分のマイク
 - 「システム音声を使う」とPC画面の録画は、どちらも画面共有ダイアログから取るので**1回の選択で両方に使う**。システム音声使用時は各録画の音声を「システム音声＋自分のマイク」にする。
 - 選んだ画面の共有を停止すると録画全体を止める。全部のonstopが終わったら描画ループと画面共有を片付ける（`finishRecordingSession`）。
+- 画質：レイアウト全体は表示サイズに関係なく常に1920×1080のキャンバスに描く。ビットレートは明示（レイアウト8Mbps・カメラ4Mbps・PC画面8Mbps、音声128kbps。ブラウザ既定だと低い）。
 - 録画データはメモリに溜める方式のまま（同時録画はメモリ使用量が増える）。
 
 ## 一括録画（廃止）
