@@ -442,14 +442,16 @@
     <section class="panel">
       <h2>録画</h2>
       <div id="recControls">
-        <span>
-          <label><input type="radio" name="recMode" value="grid" checked> レイアウト全体（合成映像＋全員の音声）</label>
-          <label><input type="radio" name="recMode" value="self"> 自分のカメラのみ</label>
+        <span title="チェックしたものを同時に録画し、それぞれ別のファイルとして保存します">
+          <label><input type="checkbox" id="recTargetGrid" checked> レイアウト全体（合成映像＋全員の音声）</label>
+          <label><input type="checkbox" id="recTargetSelf"> 自分のカメラ</label>
+          <label><input type="checkbox" id="recTargetScreen"> 自分のPC画面（録画開始時に画面を選択）</label>
         </span>
         <label><input type="checkbox" id="recSystemAudioCheckbox"> 音声はシステム音声（Discord通話など）を使う</label>
         <button id="recBtn">● 録画開始</button>
         <span id="recIndicator">● 録画中</span>
       </div>
+      <span class="hint" style="font-size:11px; color:#888;">チェックしたものを同時に録画し、停止するとそれぞれ別のファイルになります（複数同時だとPCの負荷とメモリ使用量が増えます）。</span>
       <span class="hint" id="recSystemAudioHint" style="display:none; font-size:11px; color:#888;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音＋自分のマイク（ノイズ抑制後）を両方録音します）</span>
       <div id="recDownloads"></div>
     </section>
@@ -503,8 +505,7 @@ let isSharing = false;
 let screenStream = null;
 
 // 録画
-let mediaRecorder = null;
-let recordedChunks = [];
+let activeRecorders = []; // 同時に回している録画 { recorder, chunks, kind }
 let audioCtx = null;
 let audioDest = null;
 const audioSourceNodes = new Map(); // id -> MediaStreamAudioSourceNode
@@ -1071,9 +1072,15 @@ saveTemplateBtn.addEventListener("click", saveCurrentAsTemplate);
 deleteTemplateBtn.addEventListener("click", deleteSelectedTemplate);
 renderTemplateOptions();
 recBtn.addEventListener("click", () => {
-  if (!mediaRecorder || mediaRecorder.state === "inactive") startRecording();
+  if (!activeRecorders.length) startRecording();
   else stopRecording();
 });
+// 録画対象のチェックは次回も同じにする
+for (const [id, def] of [["recTargetGrid", true], ["recTargetSelf", false], ["recTargetScreen", false]]) {
+  const cb = document.getElementById(id);
+  try { const v = localStorage.getItem(id); cb.checked = v == null ? def : v === "1"; } catch (e) {}
+  cb.addEventListener("change", () => { try { localStorage.setItem(id, cb.checked ? "1" : "0"); } catch (e) {} });
+}
 recSystemAudioCheckbox.addEventListener("change", () => {
   recSystemAudioHint.style.display = recSystemAudioCheckbox.checked ? "block" : "none";
 });
@@ -2624,85 +2631,103 @@ function pickMimeType() {
 // getDisplayMediaで画面共有ダイアログを出し、「画面全体」＋「システムの音声を共有」を
 // 選んでもらうことで、システム全体の音声トラックだけを取り出す（映像は使わないのですぐ止める）。
 let systemAudioStream = null;
-async function captureSystemAudioTrack() {
-  const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-  displayStream.getVideoTracks().forEach((t) => t.stop());
-  const audioTrack = displayStream.getAudioTracks()[0];
-  if (!audioTrack) {
-    displayStream.getTracks().forEach((t) => t.stop());
-    alert("システム音声を取得できませんでした。画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください");
-    return null;
-  }
-  systemAudioStream = displayStream;
-  return audioTrack;
-}
 
+const REC_KIND_LABELS = { grid: "レイアウト全体", self: "自分のカメラ", screen: "自分のPC画面" };
+
+// チェックした対象（レイアウト全体／自分のカメラ／自分のPC画面）を同時に録画し、停止時にそれぞれ別ファイルにする
 async function startRecording() {
-  const mode = document.querySelector('input[name="recMode"]:checked').value;
+  const kinds = [
+    document.getElementById("recTargetGrid").checked && "grid",
+    document.getElementById("recTargetSelf").checked && "self",
+    document.getElementById("recTargetScreen").checked && "screen"
+  ].filter(Boolean);
+  if (!kinds.length) { alert("録画する対象を1つ以上チェックしてください"); return; }
   const useSystemAudio = recSystemAudioCheckbox.checked;
-  let videoTracks;
+  ensureAudioGraph();
+  if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
 
-  if (mode === "self") {
-    videoTracks = [localStream.getVideoTracks()[0]].filter(Boolean);
-  } else {
-    ensureAudioGraph();
-    if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
-    const gridRect = videoGrid.getBoundingClientRect();
-    recordCanvas = document.createElement("canvas");
-    recordCanvas.width = Math.max(2, Math.round(gridRect.width));
-    recordCanvas.height = Math.max(2, Math.round(gridRect.height));
-    drawRecordFrame();
-    videoTracks = recordCanvas.captureStream(30).getVideoTracks();
+  // PC画面の録画・システム音声はどちらも画面共有ダイアログから取るので、1回の選択で両方に使う
+  let displayStream = null;
+  if (kinds.includes("screen") || useSystemAudio) {
+    try {
+      displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    } catch (e) {
+      return; // キャンセル
+    }
+    if (useSystemAudio && !displayStream.getAudioTracks().length) {
+      alert("システム音声を取得できませんでした。画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください");
+      displayStream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    if (!kinds.includes("screen")) displayStream.getVideoTracks().forEach((t) => t.stop()); // 音声だけ使う
+    systemAudioStream = displayStream;
   }
-
-  let audioTracks;
-  if (useSystemAudio) {
-    const sysTrack = await captureSystemAudioTrack();
-    if (!sysTrack) { if (recordLoopId) { recordLoopWin.cancelAnimationFrame(recordLoopId); recordLoopId = null; } return; }
-    // システム音声（Discord等が再生する相手の声）には自分の声は含まれない
-    // （自分のマイクは通常、自分のスピーカー出力にループバックされないため）。
-    // このアプリ自身のマイク（ノイズ抑制後）を別トラックとして合成し、両方を録音に含める。
-    ensureAudioGraph();
-    if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
-    const localMicTrack = outgoingAudioTrack || (localStream && localStream.getAudioTracks()[0]);
-    const mixDest = audioCtx.createMediaStreamDestination();
-    [sysTrack, localMicTrack].filter(Boolean).forEach((t) => {
-      audioCtx.createMediaStreamSource(new MediaStream([t])).connect(mixDest);
-    });
-    audioTracks = mixDest.stream.getAudioTracks();
-  } else if (mode === "self") {
-    // ノイズ抑制後の音声を使う（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
-    const audioTrack = outgoingAudioTrack || localStream.getAudioTracks()[0];
-    audioTracks = [audioTrack].filter(Boolean);
-  } else {
-    ensureAudioGraph();
-    audioTracks = audioDest.stream.getAudioTracks();
-  }
-
-  const stream = new MediaStream([...videoTracks, ...audioTracks]);
-
-  recordedChunks = [];
-  mediaRecorder = new MediaRecorder(stream, { mimeType: pickMimeType() });
-  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = () => {
-    if (recordLoopId) { recordLoopWin.cancelAnimationFrame(recordLoopId); recordLoopId = null; }
-    if (systemAudioStream) { systemAudioStream.getTracks().forEach((t) => t.stop()); systemAudioStream = null; }
-    const blob = new Blob(recordedChunks, { type: "video/webm" });
-    const url = URL.createObjectURL(blob);
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `asobudokoro_rec_${mode}_${ts}.webm`;
-    a.textContent = `📥 録画ファイル (${mode === "self" ? "自分のカメラ" : "レイアウト全体"} / ${ts})`;
-    recDownloads.prepend(a);
+  const sysTrack = displayStream?.getAudioTracks()[0] || null;
+  // ノイズ抑制後の自分のマイク（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
+  const micTrack = outgoingAudioTrack || localStream.getAudioTracks()[0] || null;
+  const mix = (tracks) => {
+    const dest = audioCtx.createMediaStreamDestination();
+    tracks.filter(Boolean).forEach((t) => audioCtx.createMediaStreamSource(new MediaStream([t])).connect(dest));
+    return dest.stream.getAudioTracks();
   };
-  mediaRecorder.start();
+
+  const streams = {};
+  for (const kind of kinds) {
+    let videoTracks, audioTracks;
+    if (kind === "grid") {
+      const gridRect = videoGrid.getBoundingClientRect();
+      recordCanvas = document.createElement("canvas");
+      recordCanvas.width = Math.max(2, Math.round(gridRect.width));
+      recordCanvas.height = Math.max(2, Math.round(gridRect.height));
+      drawRecordFrame();
+      videoTracks = recordCanvas.captureStream(30).getVideoTracks();
+      // システム音声（Discord等の相手の声）には自分の声は含まれないので、自分のマイクを合成する
+      audioTracks = useSystemAudio ? mix([sysTrack, micTrack]) : audioDest.stream.getAudioTracks();
+    } else if (kind === "self") {
+      videoTracks = [localStream.getVideoTracks()[0]].filter(Boolean);
+      audioTracks = useSystemAudio ? mix([sysTrack, micTrack]) : [micTrack].filter(Boolean);
+    } else {
+      videoTracks = displayStream.getVideoTracks();
+      audioTracks = mix([sysTrack, micTrack]); // 選んだ画面の音（共有した場合）＋自分の声
+    }
+    streams[kind] = new MediaStream([...videoTracks, ...audioTracks]);
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  activeRecorders = kinds.map((kind) => {
+    const rec = { recorder: new MediaRecorder(streams[kind], { mimeType: pickMimeType() }), chunks: [], kind };
+    rec.recorder.ondataavailable = (e) => { if (e.data.size > 0) rec.chunks.push(e.data); };
+    rec.recorder.onstop = () => {
+      const blob = new Blob(rec.chunks, { type: "video/webm" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `asobudokoro_rec_${kind}_${ts}.webm`;
+      a.textContent = `📥 録画ファイル (${REC_KIND_LABELS[kind]} / ${ts})`;
+      recDownloads.prepend(a);
+      rec.done = true;
+      if (activeRecorders.every((r) => r.done)) finishRecordingSession();
+    };
+    return rec;
+  });
+  // 全部同時に開始する（編集で並べたときに頭が揃うように）
+  activeRecorders.forEach((r) => r.recorder.start());
+  // 画面の選択を「共有を停止」で終えたら、録画全体も止める
+  displayStream?.getVideoTracks()[0]?.addEventListener("ended", () => { if (activeRecorders.length) stopRecording(); });
   recBtn.textContent = "■ 録画停止";
+  recIndicator.textContent = `● 録画中（${kinds.map((k) => REC_KIND_LABELS[k]).join("・")}）`;
   recIndicator.style.display = "inline";
 }
 
+function finishRecordingSession() {
+  if (recordLoopId) { recordLoopWin.cancelAnimationFrame(recordLoopId); recordLoopId = null; }
+  if (systemAudioStream) { systemAudioStream.getTracks().forEach((t) => t.stop()); systemAudioStream = null; }
+  activeRecorders = [];
+}
+
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+  for (const r of activeRecorders) {
+    if (r.recorder.state !== "inactive") r.recorder.stop(); // 後片付けは全部のonstopが終わったところで行う
+  }
   recBtn.textContent = "● 録画開始";
   recIndicator.style.display = "none";
 }

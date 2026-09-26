@@ -63,6 +63,16 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 各端末がRTDBの早押しスコアから1280×720のcanvasに描き（`drawScoreboard`、`renderBuzzer`のたびに再描画）、`canvas.captureStream()`をタイルの`<video>`に流す。既存の映像タイルと同じ仕組みなので、移動・サイズ変更・重なり順・レイアウト同期・合成録画にそのまま乗る。タイルのキーは`scoreboard`（`SCOREBOARD_KEY`）、スロットは`kind: "scoreboard"`。
 - カメラ枠（MAX_PEERS個・2段）より後ろのスロット（画面共有・スコアボード）の既定位置は、3段目だとエリア外に出てしまうため、エリア中央付近に少しずつずらして重ねる（`defaultPos`）。
 
+## 録画（同時録画）
+
+- 録画対象はチェックボックスで複数選べる（`recTargetGrid`/`recTargetSelf`/`recTargetScreen`、localStorageに保存）。「録画開始」でチェックしたものを**同時に**開始し（`activeRecorders`）、停止するとそれぞれ別ファイル（`asobudokoro_rec_{grid|self|screen}_{時刻}.webm`、同じ時刻）になる。
+  - レイアウト全体：配置エリアの合成キャンバス＋全員の音声（`audioDest`）
+  - 自分のカメラ：自分のカメラ映像＋ノイズ抑制後の自分のマイク
+  - 自分のPC画面：録画開始時に画面を選択（getDisplayMedia）。その画面の音（共有した場合）＋自分のマイク
+- 「システム音声を使う」とPC画面の録画は、どちらも画面共有ダイアログから取るので**1回の選択で両方に使う**。システム音声使用時は各録画の音声を「システム音声＋自分のマイク」にする。
+- 選んだ画面の共有を停止すると録画全体を止める。全部のonstopが終わったら描画ループと画面共有を片付ける（`finishRecordingSession`）。
+- 録画データはメモリに溜める方式のまま（同時録画はメモリ使用量が増える）。
+
 ## 一括録画（廃止）
 
 - 2026-09-23にUCの判断で一括録画（各自ローカル録画・同期合図）は削除した。ホスト判定は`isRoomHost()`（最初に入室した人）として早押しで引き続き使用。
