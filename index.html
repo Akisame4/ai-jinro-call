@@ -1144,8 +1144,15 @@ function applyFrameImageToTile(tile) {
     overlay.classList.remove("hasImage");
   }
 }
+const frameImageEl = new Image(); // 合成録画に枠を描くための画像
+function syncFrameImageEl() {
+  const dataUrl = effectiveFrameSettings().url;
+  if (dataUrl) { if (frameImageEl.src !== dataUrl) frameImageEl.src = dataUrl; } else frameImageEl.removeAttribute("src");
+}
+syncFrameImageEl();
 function applyFrameImageToAllTiles() {
   videoGrid.querySelectorAll(".tile").forEach(applyFrameImageToTile);
+  syncFrameImageEl();
 }
 frameToggle.addEventListener("change", () => {
   frameShowEnabled = frameToggle.checked;
@@ -2963,6 +2970,8 @@ function drawRecordFrame() {
   const scaleX = recordCanvas.width / gridRect.width;
   const scaleY = recordCanvas.height / gridRect.height;
 
+  // 枠：画面と同じ条件（枠を表示ON・画像あり・そのタイルの枠がOFFでない）でタイル全体に重ねる
+  const drawFrames = videoGrid.classList.contains("showFrame") && frameImageEl.src && frameImageEl.complete && frameImageEl.naturalWidth;
   videoGrid.querySelectorAll(".tile").forEach((tile) => {
     if (tile.offsetParent === null) return; // 非表示にしたタイルは描画しない
     const video = tile.querySelector("video");
@@ -2974,6 +2983,12 @@ function drawRecordFrame() {
     const vh = vRect.height * scaleY;
 
     ctx.drawImage(video, vx, vy, vw, vh);
+
+    const overlay = drawFrames && !tile.classList.contains("frameOff") && tile.querySelector(".frameOverlay.hasImage");
+    if (overlay) {
+      const r = overlay.getBoundingClientRect();
+      ctx.drawImage(frameImageEl, (r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
+    }
   });
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
