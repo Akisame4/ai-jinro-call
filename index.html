@@ -178,7 +178,7 @@
     position: absolute; inset: 0; z-index: 7; pointer-events: none;
     background-size: 100% 100%; background-repeat: no-repeat; display: none;
   }
-  #videoGrid.showFrame .frameOverlay.hasImage { display: block; }
+  #videoGrid.showFrame .tile:not(.frameOff) .frameOverlay.hasImage { display: block; }
   .tile .resizeHandle {
     position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
     cursor: nwse-resize; background: rgba(255,255,255,0.18);
@@ -196,9 +196,10 @@
     border: 1px solid #444; padding: 6px 8px; text-align: left; overflow: hidden; text-overflow: ellipsis;
   }
   table#controlsTable th { background: #2c2c2c; }
-  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 24%; }
+  table#controlsTable th:first-child, table#controlsTable td:first-child { width: 20%; }
   table#controlsTable th:not(:first-child), table#controlsTable td:not(:first-child) { width: 15%; }
   table#controlsTable th.volCol, table#controlsTable td.volCol { width: 22%; }
+  table#controlsTable th.frameCol, table#controlsTable td.frameCol { width: 8%; }
   table#controlsTable th:last-child, table#controlsTable td:last-child { width: 20%; }
   table#controlsTable td:last-child .ctrlBtn { width: calc(50% - 3px); } /* ⬆⬇の2つを並べる */
   table#controlsTable .volSlider { width: calc(100% - 44px); vertical-align: middle; }
@@ -1090,11 +1091,49 @@ bgImageClearBtn.addEventListener("click", () => {
 
 const FRAME_IMAGE_KEY = "aiJinroFrameImage";
 const FRAME_SHOW_KEY = "aiJinroFrameShow";
+const FRAME_OFF_KEY = "aiJinroFrameOffTiles";
 let frameShowEnabled = localStorage.getItem(FRAME_SHOW_KEY) === "1";
+let frameImageUrl = localStorage.getItem(FRAME_IMAGE_KEY); // 描画のたびに大きな画像をlocalStorageから読まないようにキャッシュ
+// タイルごとの枠OFF。再入室でpeerIdが変わっても残るよう「名前＋画面共有の番号」（frameTileId）で持つ
+let frameOffTiles = (() => {
+  try { return new Set(JSON.parse(localStorage.getItem(FRAME_OFF_KEY) || "[]")); } catch (e) { return new Set(); }
+})();
+// レイアウト同期で追従中はリーダーの枠（画像・表示ON/OFF・タイルごとのOFF）を使う
+let followingFrameImage;   // undefined=追従していない / null=リーダーは枠なし / 文字列=リーダーの枠画像
 frameToggle.checked = frameShowEnabled;
 videoGrid.classList.toggle("showFrame", frameShowEnabled);
+function frameTileId(s) { return s.name + s.key.slice(s.id.length); } // カメラ＝名前、画面共有＝名前-screen(n)
+function effectiveFrameSettings() {
+  if (followingFrameImage !== undefined) {
+    const f = followingLayout?.frame;
+    return { url: followingFrameImage, show: !!f?.show, off: new Set(Object.values(f?.off || {})) }; // RTDBは配列をオブジェクトで返すことがある
+  }
+  return { url: frameImageUrl, show: frameShowEnabled, off: frameOffTiles };
+}
+function applyFrameState() {
+  const { show, off } = effectiveFrameSettings();
+  videoGrid.classList.toggle("showFrame", show);
+  for (const s of computeSlots()) {
+    if (!s || (s.kind !== "camera" && s.kind !== "screen")) continue;
+    const tile = gridEl(`tile-${s.key}`);
+    if (tile) tile.classList.toggle("frameOff", off.has(frameTileId(s)));
+    // 操作パネルのボタン表示も合わせる（追従中はリーダーの変更で変わる。表を作り直すと音量スライダー操作が切れるので文字だけ更新）
+    const btn = controlsTable.querySelector(`[data-action="frame"][data-key="${s.key}"]`);
+    if (btn) btn.textContent = off.has(frameTileId(s)) ? "OFF" : "ON";
+  }
+}
+function toggleTileFrame(slotKey) {
+  const s = computeSlots().find((x) => x && x.key === slotKey);
+  if (!s) return;
+  const id = frameTileId(s);
+  if (frameOffTiles.has(id)) frameOffTiles.delete(id); else frameOffTiles.add(id);
+  try { localStorage.setItem(FRAME_OFF_KEY, JSON.stringify([...frameOffTiles])); } catch (e) {}
+  applyFrameState();
+  renderControls(computeSlots());
+  if (isLayoutLeader()) publishLeaderLayout();
+}
 function applyFrameImageToTile(tile) {
-  const dataUrl = localStorage.getItem(FRAME_IMAGE_KEY);
+  const dataUrl = effectiveFrameSettings().url;
   const overlay = tile.querySelector(".frameOverlay");
   if (!overlay) return;
   if (dataUrl) {
@@ -1111,7 +1150,8 @@ function applyFrameImageToAllTiles() {
 frameToggle.addEventListener("change", () => {
   frameShowEnabled = frameToggle.checked;
   localStorage.setItem(FRAME_SHOW_KEY, frameShowEnabled ? "1" : "0");
-  videoGrid.classList.toggle("showFrame", frameShowEnabled);
+  applyFrameState();
+  if (isLayoutLeader()) publishLeaderLayout();
 });
 frameImageSelectBtn.addEventListener("click", () => frameImageInput.click());
 frameImageInput.addEventListener("change", () => {
@@ -1122,7 +1162,9 @@ frameImageInput.addEventListener("change", () => {
   reader.onload = () => {
     try {
       localStorage.setItem(FRAME_IMAGE_KEY, reader.result);
+      frameImageUrl = reader.result;
       applyFrameImageToAllTiles();
+      if (isLayoutLeader()) publishLeaderFrame();
     } catch (e) {
       alert("画像の保存に失敗しました（サイズが大きすぎる可能性があります）");
     }
@@ -1131,7 +1173,9 @@ frameImageInput.addEventListener("change", () => {
 });
 frameImageClearBtn.addEventListener("click", () => {
   localStorage.removeItem(FRAME_IMAGE_KEY);
+  frameImageUrl = null;
   applyFrameImageToAllTiles();
+  if (isLayoutLeader()) publishLeaderFrame();
 });
 templateSelect.addEventListener("change", applySelectedTemplate);
 saveTemplateBtn.addEventListener("click", saveCurrentAsTemplate);
@@ -1161,6 +1205,7 @@ controlsTable.addEventListener("click", (e) => {
   }
   if (action === "zoomReset") { setCamZoom({ z: 1, cx: 0.5, cy: 0.5 }); return; }
   if (action === "camMirror") { setCamMirror(!camMirror); return; }
+  if (action === "frame") { if (followingFrameImage === undefined) toggleTileFrame(key); return; }
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
   else if (action === "front") { if (!layoutInteractionLocked()) bringTileKeyToFront(key); }
@@ -2015,6 +2060,7 @@ function listenLayoutSync() {
 // layouts/{leaderId}の購読を必要に応じて張り替える。追従が終わったときは直前のレイアウトを
 // この端末のローカル配置として引き継いでから自由操作に戻す
 let layoutBgUnsub = null;
+let layoutFrameUnsub = null;
 function updateFollowingSubscription() {
   const shouldFollow = !!syncLeaderId && syncLeaderId !== myId && myFollowState === "accepted" && !myManualUnfollow;
 
@@ -2031,11 +2077,20 @@ function updateFollowingSubscription() {
         followingBg = snap.val()?.dataUrl || null;
         applyBgImage();
       });
+      if (layoutFrameUnsub) layoutFrameUnsub();
+      layoutFrameUnsub = onValue(ref(db, `rooms/${ROOM_ID}/layoutFrame/${syncLeaderId}`), (snap) => {
+        followingFrameImage = snap.val()?.dataUrl || null;
+        applyFrameImageToAllTiles();
+        applyFrameState();
+        renderControls(computeSlots());
+      });
     }
   } else {
     if (layoutDataUnsub) { layoutDataUnsub(); layoutDataUnsub = null; followingLeaderId = null; }
     if (layoutBgUnsub) { layoutBgUnsub(); layoutBgUnsub = null; }
     if (followingBg !== undefined) { followingBg = undefined; applyBgImage(); } // 追従をやめたら自分の背景に戻す
+    if (layoutFrameUnsub) { layoutFrameUnsub(); layoutFrameUnsub = null; }
+    if (followingFrameImage !== undefined) { followingFrameImage = undefined; applyFrameImageToAllTiles(); applyFrameState(); } // 枠も自分の設定に戻す
     if (followingLayout) {
       snapshotLayoutIntoLocal(followingLayout);
       followingLayout = null;
@@ -2043,6 +2098,7 @@ function updateFollowingSubscription() {
     }
   }
   renderLayoutSyncPanel();
+  renderControls(computeSlots()); // 追従中はタイルごとの枠ボタンを押せなくする
 }
 
 function onLayoutSyncBtnClick() {
@@ -2069,6 +2125,8 @@ async function requestLayoutSync() {
   await publishLeaderLayout();
   onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`)).remove();
   publishLeaderBg();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutFrame/${myId}`)).remove();
+  publishLeaderFrame();
   renderLayoutSyncPanel();
 }
 
@@ -2088,7 +2146,21 @@ async function publishLeaderBg() {
   }
 }
 
-function shrinkImageDataUrl(src, maxW, maxH, quality) {
+// リーダーの枠画像を追従者へ配る（背景と同じく別ノード。透過を残すためPNGのまま最大1920×1080に縮める）
+async function publishLeaderFrame() {
+  if (!isLayoutLeader()) return;
+  const frameRef = ref(db, `rooms/${ROOM_ID}/layoutFrame/${myId}`);
+  if (!frameImageUrl) { await set(frameRef, { dataUrl: null, updatedAt: serverTimestamp() }); return; }
+  try {
+    const dataUrl = await shrinkImageDataUrl(frameImageUrl, 1920, 1080, undefined, "image/png");
+    await set(frameRef, { dataUrl, updatedAt: serverTimestamp() });
+  } catch (e) {
+    console.warn("publishLeaderFrame failed", e);
+    showLayoutSyncMessage("枠画像を共有できませんでした（画像が大きすぎる可能性があります）");
+  }
+}
+
+function shrinkImageDataUrl(src, maxW, maxH, quality, type = "image/jpeg") {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -2097,7 +2169,7 @@ function shrinkImageDataUrl(src, maxW, maxH, quality) {
       c.width = Math.round(img.naturalWidth * scale);
       c.height = Math.round(img.naturalHeight * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      resolve(c.toDataURL("image/jpeg", quality));
+      resolve(c.toDataURL(type, quality));
     };
     img.onerror = reject;
     img.src = src;
@@ -2112,6 +2184,8 @@ async function stopLeadingLayoutSync() {
   await remove(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`));
   onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`)).cancel();
   await remove(ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`));
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutFrame/${myId}`)).cancel();
+  await remove(ref(db, `rooms/${ROOM_ID}/layoutFrame/${myId}`));
   renderLayoutSyncPanel();
 }
 
@@ -2153,7 +2227,8 @@ async function publishLeaderLayout() {
     };
   });
   try {
-    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, updatedAt: serverTimestamp() });
+    const frame = { show: frameShowEnabled, off: [...frameOffTiles] };
+    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, updatedAt: serverTimestamp() });
   } catch (e) { console.warn("publishLeaderLayout failed", e); }
 }
 
@@ -2297,6 +2372,7 @@ function renderGrid() {
     syncVideoTiles(computeSlots());
   }
   applyCameraVisibility();
+  applyFrameState();
 }
 
 // カメラがオフのタイルは真っ黒な枠を出さず、タイルごと非表示にする（音声は再生し続ける）。
@@ -2524,7 +2600,11 @@ function toggleGlobalMute() {
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
 // 行をドラッグして入れ替えると、対応する映像タイルの位置も入れ替わる
 function renderControls(slots) {
-  let html = "<tr><th>参加者</th><th>マイク</th><th class=\"volCol\">聞こえる音量</th><th>カメラ</th><th>重なり順</th></tr>";
+  let html = "<tr><th>参加者</th><th>マイク</th><th class=\"volCol\">聞こえる音量</th><th>カメラ</th><th class=\"frameCol\">枠</th><th>重なり順</th></tr>";
+  const frameOff = effectiveFrameSettings().off;
+  const frameLocked = followingFrameImage !== undefined;
+  const frameCell = (s) => s.kind === "scoreboard" ? `<td class="ctrlCell frameCol">-</td>`
+    : `<td class="ctrlCell frameCol"><button class="small ctrlBtn" data-action="frame" data-key="${s.key}"${frameLocked ? " disabled" : ""} title="${frameLocked ? "レイアウト同期中はリーダーの設定に従います" : "このタイルの枠を表示/非表示"}">${frameOff.has(frameTileId(s)) ? "OFF" : "ON"}</button></td>`;
   for (const s of slots) {
     if (!s) continue;
     if (s.kind === "screen" || s.kind === "scoreboard") {
@@ -2533,6 +2613,7 @@ function renderControls(slots) {
         <td class="ctrlCell">-</td>
         <td class="ctrlCell volCol">-</td>
         <td class="ctrlCell">${s.kind === "screen" && s.id === myId ? `<button class="small ctrlBtn" data-action="stopShare" data-num="${s.screenNum}" title="この画面の共有を終了">■ 終了</button>` : "-"}</td>
+        ${frameCell(s)}
         <td class="ctrlCell">
           <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
           <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
@@ -2554,6 +2635,7 @@ function renderControls(slots) {
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button>${isSelf && camZoomSupported() ? `
         <span class="camZoomCtrl" title="配信画面の自分のカメラのズーム（タイル上のホイールでも可、Shift＋ドラッグで位置調整）"><button class="small ctrlBtn" data-action="zoomOut">－</button><span id="camZoomLabel">${Math.round(camZoom.z * 100)}%</span><button class="small ctrlBtn" data-action="zoomIn">＋</button><button class="small ctrlBtn" data-action="zoomReset" title="等倍に戻す">↺</button></span>
         <button class="small ctrlBtn${camMirror ? " active" : ""}" id="camMirrorBtn" data-action="camMirror" title="送るカメラ映像を左右反転する（相手の画面・配信画面・レイアウト録画にも反映）">${camMirrorLabel()}</button>` : ""}</td>
+      ${frameCell(s)}
       <td class="ctrlCell">
         <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
         <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
