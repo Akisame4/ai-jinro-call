@@ -77,7 +77,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 「システム音声を使う」とPC画面の録画は、どちらも画面共有ダイアログから取るので**1回の選択で両方に使う**。システム音声はレイアウト全体の録画にだけ使い、「システム音声＋自分のマイク」にする。
 - 選んだ画面の共有を停止すると録画全体を止める。全部のonstopが終わったら描画ループと画面共有を片付ける（`finishRecordingSession`）。
 - 画質：カメラは1920×1080・30fps（ideal）で取り込み、通話へは`applyCameraSenderParams`で`scaleResolutionDownBy`（取り込み高さ/360）・`maxFramerate`24・400kbpsに縮めて送る（通話の送信量は以前の640×360取り込みと同じ。自分のカメラの録画だけ高画質になる）。レイアウト全体は表示サイズに関係なく常に1920×1080のキャンバスに描く。ビットレートは明示（レイアウト8Mbps・カメラ4Mbps・PC画面8Mbps、音声128kbps。ブラウザ既定だと低い）。
-- 形式はMP4（H.264 High@L4.0 `avc1.640028`＋AAC `mp4a.40.2`、`pickMimeType`）。編集ソフトで読めるようにするためのUC要望（2026-09-27）。MP4非対応ブラウザではWebMにフォールバックし、拡張子も`recorder.mimeType`に合わせる。
+- 形式はMP4（H.264 High@L4.0 `avc1.640028`＋AAC `mp4a.40.2`、`pickMimeType`）。編集ソフトで読めるようにするためのUC要望（2026-09-27）。ChromeのMediaRecorderが書くMP4は**フラグメント形式**（moof/mdatの繰り返し）でDaVinci Resolve（無料版）が読み込めないため、停止時に`remuxFragmentedMp4`で通常のMP4（ftyp→moov→mdat、moovにstts/ctts/stss/stsc/stsz/co64、1チャンク＝1サンプル、トラックの開始差はelstの空編集）へ並べ替えてから保存する。再エンコードなし・元Blobを`slice()`で参照するのでメモリはほぼ増えない。変換に失敗したら元のBlobを保存。PyAV（FFmpeg）で元ファイルと同じフレーム数・PTSでデコードできることを確認済み。MP4非対応ブラウザではWebMにフォールバックし、拡張子も`recorder.mimeType`に合わせる。
 - 停止すると各ファイルを自動でダウンロードする（`onstop`でリンクを`click()`）。リンクは取り直し用に一覧へ残す。同時録画で複数ファイルになるとき、Chromeは初回だけ「複数ファイルのダウンロード」の許可を求める。
 - 録画データはメモリに溜める方式のまま（同時録画はメモリ使用量が増える）。
 
