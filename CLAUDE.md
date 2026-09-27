@@ -126,3 +126,9 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 ## ノイズ抑制の設定の保存
 
 - ノイズ抑制のON/OFF・強さ（%）・EQのON/OFFとバンドごとのゲインは、端末ごとにlocalStorage `noiseSettings`（JSON）へ保存し、次回の読み込み時に復元する（`saveNoiseSettings`）。変更のたびに保存。以前は毎回既定値（ON・20%・EQ OFF）に戻っていた（UCの要望、2026-09-27）。
+
+## 自分のカメラのズーム（配信画面用）
+
+- 自分のカメラのタイル上でホイール＝ズーム（カーソル位置を中心、100〜400%）、Shift＋ドラッグ＝映す位置の調整（タイル移動より優先。`attachCamZoomHandlers`を`makeDraggable`より先に登録し`stopImmediatePropagation`）。操作パネルの自分の行にも－/＋/↺。設定はlocalStorage `camZoom`（`{z, cx, cy}`、cx/cyは切り抜き中心の0〜1）。UC要望（2026-09-27）。
+- 実装は**送信するカメラ映像そのものを切り抜く**（`setupCameraZoom`：MediaStreamTrackProcessor→`new VideoFrame(frame, {visibleRect})`→MediaStreamTrackGenerator。座標・サイズは偶数に丸める）。この`camSendTrack`を送信と自分のタイルに使うので、相手の画面・レイアウト録画にもそのまま反映される。1080p取り込みから切り抜いてから`applyCameraSenderParams`で360pに縮める（縮小率は切り抜き後の高さ`camCropHeight`基準）ので、ズームしても画質が落ちにくい。
+- 「自分のカメラ」の個人録画は`localStream`の元トラックなので**ズームしない**。自分のタイルは左右反転表示なので、ホイール・ドラッグの座標は反転を戻して計算する。非対応ブラウザ（Processor/Generatorが無い）ではズームUIを出さず元トラックを送る。
