@@ -67,7 +67,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 ## 録画（同時録画）
 
-- 録画対象はチェックボックスで複数選べる（`recTargetGrid`/`recTargetSelf`/`recTargetScreen`、localStorageに保存）。「録画開始」でチェックしたものを**同時に**開始し（`activeRecorders`）、停止するとそれぞれ別ファイル（`asobudokoro_rec_{grid|self|screen}_{時刻}.webm`、同じ時刻）になる。
+- 録画対象はチェックボックスで複数選べる（`recTargetGrid`/`recTargetSelf`/`recTargetScreen`、localStorageに保存）。「録画開始」でチェックしたものを**同時に**開始し（`activeRecorders`）、停止するとそれぞれ別ファイルになる。ファイル名はUC指定のルール（2026-09-27）で`YYYYMMDD_all_HH-MM.webm`（レイアウト全体）／`YYYYMMDD_{名前}_HH-MM.webm`（自分のカメラ）／`YYYYMMDD_{名前}(PC画面)_HH-MM.webm`（自分のPC画面）。時刻は録画終了時刻（ローカル、`stopRecording`で`recordingEndedAt`に記録し全ファイル共通）。UCの指定は「00:00」だがWindowsは「:」不可なので「-」。名前のファイル名禁止文字は「_」に置換（`recordingFileName`）。
   - レイアウト全体：配置エリアの合成キャンバス＋全員の音声（`audioDest`）
   - 自分のカメラ：自分のカメラ映像＋**自分の声だけ**
   - 自分のPC画面：録画開始時に画面を選択（getDisplayMedia）。映像＋**自分の声だけ**（画面の音は取らない）
