@@ -475,6 +475,8 @@ const ROOM_ID = "test1";
 const MAX_PEERS = 6;
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const VIDEO_MAX_BITRATE = 400000;  // bps（通常のカメラ映像）
+// カメラは個人録画用に高解像度で取り込み、通話にはこの高さ・fpsまで縮めて送る（送信量を増やさないため）
+const CAMERA_SEND_HEIGHT = 360, CAMERA_SEND_FPS = 24;
 // 画面共有の画質。contentHint="detail"は解像度を保って（必要ならfpsを落として）文字をくっきりさせ、
 // "motion"はfpsを保つ（ゲーム等の動き向け）。メッシュ接続なので送信量は「ビットレート×相手の人数」になる点に注意
 const SCREEN_QUALITY_PRESETS = {
@@ -1189,7 +1191,8 @@ async function joinRoom(name) {
   if (selectedMicId) audioConstraints.deviceId = { exact: selectedMicId };
 
   const selectedCamId = camDeviceSelect.value;
-  const videoConstraints = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } };
+  // 個人録画（自分のカメラ）の画質のため高解像度で取る。通話へは applyCameraSenderParams で縮めて送る
+  const videoConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
   if (selectedCamId) videoConstraints.deviceId = { exact: selectedCamId };
 
   try {
@@ -1409,7 +1412,7 @@ function createPeerConnection(peerId, isInitiator) {
   if (videoTrack) {
     const videoSender = pc.addTrack(videoTrack, localStream);
     entry.videoSender = videoSender;
-    applyBitrate(videoSender, VIDEO_MAX_BITRATE);
+    applyCameraSenderParams(videoSender);
   }
   // マイクはノイズゲート後の音声を送信する（未対応時は生のマイク音声にフォールバック）
   const audioTrackToSend = outgoingAudioTrack || localStream.getAudioTracks()[0];
@@ -1523,6 +1526,22 @@ function applyBitrate(sender, bitrate, degradationPreference) {
   } catch (e) { /* ブラウザによっては初期状態で失敗することがある */ }
 }
 
+// カメラ送信：ビットレート上限に加えて、取り込み解像度・fpsから通話用（360p・24fps）に縮める
+function applyCameraSenderParams(sender) {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) return;
+    const enc = params.encodings[0];
+    const h = sender.track?.getSettings().height || CAMERA_SEND_HEIGHT;
+    const scale = Math.max(1, h / CAMERA_SEND_HEIGHT);
+    if (enc.maxBitrate === VIDEO_MAX_BITRATE && enc.scaleResolutionDownBy === scale && enc.maxFramerate === CAMERA_SEND_FPS) return;
+    enc.maxBitrate = VIDEO_MAX_BITRATE;
+    enc.scaleResolutionDownBy = scale;
+    enc.maxFramerate = CAMERA_SEND_FPS;
+    sender.setParameters(params).catch(() => {});
+  } catch (e) { /* ブラウザによっては初期状態で失敗することがある */ }
+}
+
 function writeMyStatus(peerId, state) {
   update(ref(db, `rooms/${ROOM_ID}/status/${myId}/${peerId}`), {
     state, updatedAt: serverTimestamp()
@@ -1543,7 +1562,7 @@ async function updateStats(peerId) {
   const entry = peers[peerId];
   if (!entry || entry.pc.connectionState !== "connected") return;
   // 送信側の上限は接続確立後でないと効かないことがあるので、ここで毎回（変化がなければ何もしない）かけ直す
-  if (entry.videoSender) applyBitrate(entry.videoSender, VIDEO_MAX_BITRATE);
+  if (entry.videoSender) applyCameraSenderParams(entry.videoSender);
   if (entry.screenSender) applyScreenSenderParams(entry.screenSender);
   const stats = await entry.pc.getStats();
 
