@@ -2772,8 +2772,14 @@ function drawRecordFrame() {
   recordLoopId = recordLoopWin.requestAnimationFrame(drawRecordFrame);
 }
 
+// 編集ソフトでそのまま読めるよう、MP4（H.264 High@L4.0＝1080p30まで＋AAC）を優先する。
+// MP4で録れないブラウザ（古いChrome等）はWebMにフォールバック
 function pickMimeType() {
-  const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const candidates = [
+    "video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4;codecs=avc1.4D0028,mp4a.40.2",
+    "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4",
+    "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"
+  ];
   return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "video/webm";
 }
 
@@ -2862,10 +2868,11 @@ async function startRecording() {
     };
     rec.recorder.ondataavailable = (e) => { if (e.data.size > 0) rec.chunks.push(e.data); };
     rec.recorder.onstop = () => {
-      const blob = new Blob(rec.chunks, { type: "video/webm" });
+      const isMp4 = rec.recorder.mimeType.startsWith("video/mp4");
+      const blob = new Blob(rec.chunks, { type: isMp4 ? "video/mp4" : "video/webm" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = recordingFileName(kind, recordingEndedAt || new Date());
+      a.download = recordingFileName(kind, recordingEndedAt || new Date(), isMp4 ? "mp4" : "webm");
       a.textContent = `📥 ${a.download}（${REC_KIND_LABELS[kind]}）`;
       recDownloads.prepend(a);
       a.click(); // 停止したら自動でダウンロードする（リンクは取り直し用に残す）
@@ -2893,13 +2900,13 @@ function finishRecordingSession() {
 // YYYYMMDD_名前(PC画面)_HH-MM（自分のPC画面。同時録画でカメラと同名にならないように区別）。
 // 時刻は録画終了時刻（ローカル時刻）。Windowsではファイル名に「:」を使えないので「-」で区切る
 let recordingEndedAt = null;
-function recordingFileName(kind, date) {
+function recordingFileName(kind, date, ext) {
   const p2 = (n) => String(n).padStart(2, "0");
   const ymd = `${date.getFullYear()}${p2(date.getMonth() + 1)}${p2(date.getDate())}`;
   const hm = `${p2(date.getHours())}-${p2(date.getMinutes())}`;
   const name = (myName || "名前なし").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim() || "名前なし";
   const who = kind === "grid" ? "all" : kind === "screen" ? `${name}(PC画面)` : name;
-  return `${ymd}_${who}_${hm}.webm`;
+  return `${ymd}_${who}_${hm}.${ext}`;
 }
 
 function stopRecording() {
