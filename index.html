@@ -2972,7 +2972,11 @@ function drawRecordFrame() {
 
   // 枠：画面と同じ条件（枠を表示ON・画像あり・そのタイルの枠がOFFでない）でタイル全体に重ねる
   const drawFrames = videoGrid.classList.contains("showFrame") && frameImageEl.src && frameImageEl.complete && frameImageEl.naturalWidth;
-  videoGrid.querySelectorAll(".tile").forEach((tile) => {
+  // 画面の重なり順（z-index）どおりに奥から描く。早押しの回答者強調（CSSでz-index: 50 !important）も含めるため計算後の値を使う。
+  // 同じz-indexは画面と同じくDOMの順（sortは安定ソート）
+  const zOf = (t) => parseInt(gridWin().getComputedStyle(t).zIndex, 10) || 0;
+  const tiles = [...videoGrid.querySelectorAll(".tile")].map((t) => [t, zOf(t)]).sort((a, b) => a[1] - b[1]).map(([t]) => t);
+  tiles.forEach((tile) => {
     if (tile.offsetParent === null) return; // 非表示にしたタイルは描画しない
     const video = tile.querySelector("video");
     if (!video || video.readyState < 2 || video.classList.contains("videoHidden")) return;
