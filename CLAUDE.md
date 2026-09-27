@@ -131,4 +131,6 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 - 自分のカメラのタイル上でホイール＝ズーム（カーソル位置を中心、100〜400%）、Shift＋ドラッグ＝映す位置の調整（タイル移動より優先。`attachCamZoomHandlers`を`makeDraggable`より先に登録し`stopImmediatePropagation`）。操作パネルの自分の行にも－/＋/↺。設定はlocalStorage `camZoom`（`{z, cx, cy}`、cx/cyは切り抜き中心の0〜1）。UC要望（2026-09-27）。
 - 実装は**送信するカメラ映像そのものを切り抜く**（`setupCameraZoom`：MediaStreamTrackProcessor→`new VideoFrame(frame, {visibleRect})`→MediaStreamTrackGenerator。座標・サイズは偶数に丸める）。この`camSendTrack`を送信と自分のタイルに使うので、相手の画面・レイアウト録画にもそのまま反映される。1080p取り込みから切り抜いてから`applyCameraSenderParams`で360pに縮める（縮小率は切り抜き後の高さ`camCropHeight`基準）ので、ズームしても画質が落ちにくい。
-- 「自分のカメラ」の個人録画は`localStream`の元トラックなので**ズームしない**。自分のタイルは左右反転表示なので、ホイール・ドラッグの座標は反転を戻して計算する。非対応ブラウザ（Processor/Generatorが無い）ではズームUIを出さず元トラックを送る。
+- 「自分のカメラ」の個人録画は`localStream`の元トラックなので**ズームも左右反転もしない**。非対応ブラウザ（Processor/Generatorが無い）ではズーム・反転UIを出さず元トラックを送る。
+- **左右反転ON/OFF**（UC要望、2026-09-28）：操作パネルの自分の行の「↔ 反転ON/OFF」。**送るカメラ映像そのもの**を反転する（`setupCameraZoom`内で、切り抜いた範囲をOffscreenCanvasに`setTransform(-1,0,0,1,w,0)`で描き直して`new VideoFrame(canvas, {timestamp})`。VideoFrameだけでは反転できないため）。相手の画面・配信画面・レイアウト録画すべて同じ向きになる。設定はlocalStorage `camMirror`（"1"/"0"、既定OFF）。
+- 以前は自分のタイルだけCSS（`.tile.mirror`）で常に左右反転表示していたが廃止し、自分のタイルも送る映像と同じ向きで表示する。ホイール・Shift＋ドラッグの座標は`camMirror`がONのとき反転を戻して計算する。
