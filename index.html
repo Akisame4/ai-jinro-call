@@ -2820,6 +2820,7 @@ async function startRecording() {
       a.download = `asobudokoro_rec_${kind}_${ts}.webm`;
       a.textContent = `📥 録画ファイル (${REC_KIND_LABELS[kind]} / ${ts})`;
       recDownloads.prepend(a);
+      a.click(); // 停止したら自動でダウンロードする（リンクは取り直し用に残す）
       rec.done = true;
       if (activeRecorders.every((r) => r.done)) finishRecordingSession();
     };
