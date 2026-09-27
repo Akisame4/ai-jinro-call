@@ -445,10 +445,10 @@
       <div id="recControls">
         <span title="チェックしたものを同時に録画し、それぞれ別のファイルとして保存します">
           <label><input type="checkbox" id="recTargetGrid" checked> レイアウト全体（合成映像＋全員の音声）</label>
-          <label><input type="checkbox" id="recTargetSelf"> 自分のカメラ</label>
-          <label><input type="checkbox" id="recTargetScreen"> 自分のPC画面（録画開始時に画面を選択）</label>
+          <label><input type="checkbox" id="recTargetSelf"> 自分のカメラ（音声は自分の声のみ）</label>
+          <label><input type="checkbox" id="recTargetScreen"> 自分のPC画面（録画開始時に画面を選択・音声は自分の声のみ）</label>
         </span>
-        <label><input type="checkbox" id="recSystemAudioCheckbox"> 音声はシステム音声（Discord通話など）を使う</label>
+        <label><input type="checkbox" id="recSystemAudioCheckbox"> レイアウト全体の音声はシステム音声（Discord通話など）を使う</label>
         <button id="recBtn">● 録画開始</button>
         <span id="recIndicator">● 録画中</span>
       </div>
@@ -538,6 +538,7 @@ let NoiseGateWorkletNodeClass = null;
 let passthroughGain = null;
 let suppressedGain = null;
 let outgoingAudioTrack = null; // 送信・録画用（ノイズ抑制後）の音声トラック
+let ownVoiceTrack = null;      // 個人録画用：ノイズ抑制・EQ後の自分の声だけ（イントロクイズの曲などは混ぜない）
 let gateEnabled = true;
 // スライダーは0〜100%の「強さ」で操作する（0%＝ほぼ無効、100%＝最強）。
 // 内部的にはこれをゲートが開く音量のしきい値（dB）に変換して使う。
@@ -2468,12 +2469,17 @@ async function setupNoiseGate(originalStream, recordingDest) {
     const sendDest = audioCtx.createMediaStreamDestination();
     eqOut.connect(sendDest);
     connectIntroBusToSend(sendDest); // イントロクイズの曲はノイズ抑制・ゲート・EQの後で混ぜる（通すと音楽が削られるため）
+    // 個人録画（自分のカメラ／PC画面）用に、曲を混ぜる前の自分の声だけのトラックも作っておく
+    const ownVoiceDest = audioCtx.createMediaStreamDestination();
+    eqOut.connect(ownVoiceDest);
+    ownVoiceTrack = ownVoiceDest.stream.getAudioTracks()[0];
     if (recordingDest) {
       eqOut.connect(recordingDest);
     }
     return sendDest.stream.getAudioTracks()[0];
   } catch (e) {
     console.warn("ノイズ抑制(RNNoise)の初期化に失敗したため、通常のマイク音声を使用します", e);
+    ownVoiceTrack = rawTrack;
     return rawTrack;
   }
 }
@@ -2690,7 +2696,8 @@ async function startRecording() {
     document.getElementById("recTargetScreen").checked && "screen"
   ].filter(Boolean);
   if (!kinds.length) { alert("録画する対象を1つ以上チェックしてください"); return; }
-  const useSystemAudio = recSystemAudioCheckbox.checked;
+  // システム音声はレイアウト全体の録画にだけ使う（個人録画は自分の声だけ）
+  const useSystemAudio = recSystemAudioCheckbox.checked && kinds.includes("grid");
   ensureAudioGraph();
   if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
 
@@ -2699,7 +2706,7 @@ async function startRecording() {
   if (kinds.includes("screen") || useSystemAudio) {
     try {
       displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: true
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: useSystemAudio
       });
     } catch (e) {
       return; // キャンセル
@@ -2715,6 +2722,8 @@ async function startRecording() {
   const sysTrack = displayStream?.getAudioTracks()[0] || null;
   // ノイズ抑制後の自分のマイク（生のマイク音声だと、実際に相手に届く音と違うものを録ってしまうため）
   const micTrack = outgoingAudioTrack || localStream.getAudioTracks()[0] || null;
+  // 個人録画（自分のカメラ／PC画面）は通話音声を入れず、自分の声だけにする（曲・システム音声も混ぜない）
+  const ownVoice = ownVoiceTrack || localStream.getAudioTracks()[0] || null;
   const mix = (tracks) => {
     const dest = audioCtx.createMediaStreamDestination();
     tracks.filter(Boolean).forEach((t) => audioCtx.createMediaStreamSource(new MediaStream([t])).connect(dest));
@@ -2735,11 +2744,11 @@ async function startRecording() {
       audioTracks = useSystemAudio ? mix([sysTrack, micTrack]) : audioDest.stream.getAudioTracks();
     } else if (kind === "self") {
       videoTracks = [localStream.getVideoTracks()[0]].filter(Boolean);
-      audioTracks = useSystemAudio ? mix([sysTrack, micTrack]) : [micTrack].filter(Boolean);
+      audioTracks = [ownVoice].filter(Boolean);
     } else {
       videoTracks = displayStream.getVideoTracks();
       try { videoTracks[0].contentHint = "detail"; } catch (e) {}
-      audioTracks = mix([sysTrack, micTrack]); // 選んだ画面の音（共有した場合）＋自分の声
+      audioTracks = [ownVoice].filter(Boolean);
     }
     streams[kind] = new MediaStream([...videoTracks, ...audioTracks]);
   }
