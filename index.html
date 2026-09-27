@@ -574,6 +574,27 @@ const EQ_BAND_Q = 4.3; // 1/3オクターブ幅に相当するQ値（中間バ�
 const EQ_COL_WIDTH = 24, EQ_COL_GAP = 3; // スライダー列幅・間隔（スペクトラム描画のx座標と揃える）
 let eqEnabled = false;
 let eqGainsDb = EQ_BANDS.map(() => 0); // バンドごとのゲイン（dB）。スライダーで調整
+
+// ノイズ抑制ON/OFF・強さ・EQはこの端末に保存し、次回も同じ設定で始める
+const NOISE_SETTINGS_KEY = "noiseSettings";
+let gateStrength = 20;
+try {
+  const saved = JSON.parse(localStorage.getItem(NOISE_SETTINGS_KEY) || "null");
+  if (saved) {
+    if (typeof saved.gateEnabled === "boolean") gateEnabled = saved.gateEnabled;
+    if (Number.isFinite(saved.gateStrength)) gateStrength = Math.min(100, Math.max(0, saved.gateStrength));
+    if (typeof saved.eqEnabled === "boolean") eqEnabled = saved.eqEnabled;
+    if (Array.isArray(saved.eqGainsDb) && saved.eqGainsDb.length === EQ_BANDS.length) {
+      eqGainsDb = saved.eqGainsDb.map((v) => (Number.isFinite(v) ? Math.min(12, Math.max(-60, v)) : 0));
+    }
+  }
+} catch (e) {}
+gateThresholdDb = gateStrengthToDb(gateStrength);
+function saveNoiseSettings() {
+  try {
+    localStorage.setItem(NOISE_SETTINGS_KEY, JSON.stringify({ gateEnabled, gateStrength, eqEnabled, eqGainsDb }));
+  } catch (e) {}
+}
 const eqBandSliders = [];
 const eqBandGainLabels = [];
 
@@ -856,9 +877,16 @@ function onBuzzHotkey(e) {
 }
 
 let gateThresholdDebounce = null;
+// 保存しておいた設定を画面に反映
+gateThresholdSlider.value = String(gateStrength);
+gateThresholdValue.textContent = gateStrength + "%";
+gateBtn.textContent = gateEnabled ? "🔇 ノイズ抑制: ON" : "🔇 ノイズ抑制: OFF";
+eqEnabledCheckbox.checked = eqEnabled;
 gateThresholdSlider.addEventListener("input", () => {
   const strength = parseInt(gateThresholdSlider.value, 10);
   const db = gateStrengthToDb(strength);
+  gateStrength = strength;
+  saveNoiseSettings();
   gateThresholdValue.textContent = strength + "%";
   updateThresholdMarker(db);
   clearTimeout(gateThresholdDebounce);
@@ -869,12 +897,14 @@ updateThresholdMarker(gateThresholdDb);
 buildEqBandsUi();
 eqEnabledCheckbox.addEventListener("change", () => {
   eqEnabled = eqEnabledCheckbox.checked;
+  saveNoiseSettings();
   applyEqLive();
 });
 eqResetBtn.addEventListener("click", () => {
   eqGainsDb = EQ_BANDS.map(() => 0);
   eqBandSliders.forEach(s => { s.value = "0"; });
   eqBandGainLabels.forEach(l => { l.textContent = "0dB"; });
+  saveNoiseSettings();
   applyEqLive();
 });
 
@@ -888,7 +918,7 @@ function buildEqBandsUi() {
 
     const gainLabel = document.createElement("span");
     gainLabel.className = "eqBandGainLabel";
-    gainLabel.textContent = "0dB";
+    gainLabel.textContent = (eqGainsDb[i] > 0 ? "+" : "") + eqGainsDb[i] + "dB";
 
     const slider = document.createElement("input");
     slider.type = "range";
@@ -896,9 +926,10 @@ function buildEqBandsUi() {
     slider.min = "-60";
     slider.max = "12";
     slider.step = "1";
-    slider.value = "0";
+    slider.value = String(eqGainsDb[i]);
     slider.addEventListener("input", () => {
       eqGainsDb[i] = parseInt(slider.value, 10);
+      saveNoiseSettings();
       gainLabel.textContent = (eqGainsDb[i] > 0 ? "+" : "") + eqGainsDb[i] + "dB";
       applyEqBandLive(i);
     });
@@ -2505,6 +2536,7 @@ async function setupNoiseGate(originalStream, recordingDest) {
 
 function toggleNoiseGate() {
   gateEnabled = !gateEnabled;
+  saveNoiseSettings();
   if (passthroughGain && suppressedGain && audioCtx) {
     const now = audioCtx.currentTime;
     passthroughGain.gain.setTargetAtTime(gateEnabled ? 0 : 1, now, 0.05);

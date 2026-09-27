@@ -118,3 +118,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 ## 既知の制約
 
 - 実カメラ・実マイク・画面共有ピッカーはブラウザのネイティブ許可ダイアログを伴うため、ブラウザ自動操作だけでは動作確認が完結しない。コード変更後は実機（複数タブ/複数人）での確認が必要。
+
+## ノイズ抑制の設定の保存
+
+- ノイズ抑制のON/OFF・強さ（%）・EQのON/OFFとバンドごとのゲインは、端末ごとにlocalStorage `noiseSettings`（JSON）へ保存し、次回の読み込み時に復元する（`saveNoiseSettings`）。変更のたびに保存。以前は毎回既定値（ON・20%・EQ OFF）に戻っていた（UCの要望、2026-09-27）。
