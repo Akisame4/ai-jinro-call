@@ -513,8 +513,19 @@ let globalMuted = false;
 
 // 画面共有（カメラとは別トラックとして追加送信する。別タイルとして表示するため、
 // 参加者ごとの「カメラ枠」とは別に「画面共有枠」をグリッドに追加する）
-let isSharing = false;
-let screenStream = null;
+// 1人で複数の画面を共有できる。各共有に番号（1,2,...、空いている最小の番号）を振り、
+// タイルのキーは1つ目＝`${id}-screen`（旧バージョンと互換）、2つ目以降＝`${id}-screen2`…とする
+const MAX_SCREENS_PER_PERSON = 4;
+const myScreens = new Map(); // 番号 -> MediaStream（自分が共有中の画面）
+function screenKey(peerId, n) { return n === 1 ? `${peerId}-screen` : `${peerId}-screen${n}`; }
+function screenLabel(name, n) { return n === 1 ? `${name}（画面共有）` : `${name}（画面共有${n}）`; }
+// members/{id} から共有中の画面番号の一覧を得る（旧バージョンはsharingフラグだけなので1つとみなす）
+function memberScreenNums(m) {
+  if (!m?.sharing) return [];
+  const nums = m.screens ? Object.keys(m.screens).map((k) => parseInt(k.slice(1), 10)).filter((n) => n > 0) : [];
+  return nums.length ? nums.sort((a, b) => a - b) : [1];
+}
+function isScreenVideoId(videoId) { return /-screen\d*$/.test(videoId); }
 
 // 録画
 let activeRecorders = []; // 同時に回している録画 { recorder, chunks, kind }
@@ -814,15 +825,15 @@ joinBtn.addEventListener("click", () => {
   joinRoom(name);
 });
 muteBtn.addEventListener("click", toggleGlobalMute);
-shareBtn.addEventListener("click", toggleScreenShare);
+shareBtn.addEventListener("click", addScreenShare);
 screenQualitySelect.innerHTML = Object.entries(SCREEN_QUALITY_PRESETS)
   .map(([k, q]) => `<option value="${k}">画面共有: ${q.label}</option>`).join("");
 screenQualitySelect.value = screenQualityKey;
 screenQualitySelect.addEventListener("change", () => {
   screenQualityKey = screenQualitySelect.value;
   try { localStorage.setItem("screenQuality", screenQualityKey); } catch (e) {}
-  applyScreenQualityToTrack();
-  for (const entry of Object.values(peers)) if (entry.screenSender) applyScreenSenderParams(entry.screenSender);
+  for (const st of myScreens.values()) applyScreenQualityToTrack(st);
+  for (const entry of Object.values(peers)) for (const sender of Object.values(entry.screenSenders)) applyScreenSenderParams(sender);
 });
 gateBtn.addEventListener("click", () => {
   gateWarning.classList.remove("show");
@@ -1141,7 +1152,8 @@ recSystemAudioCheckbox.addEventListener("change", () => {
 controlsTable.addEventListener("click", (e) => {
   const btn = e.target.closest(".ctrlBtn");
   if (!btn) return;
-  const { action, id, key } = btn.dataset;
+  const { action, id, key, num } = btn.dataset;
+  if (action === "stopShare") { stopScreenShare(parseInt(num, 10)); return; }
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
   else if (action === "front") { if (!layoutInteractionLocked()) bringTileKeyToFront(key); }
@@ -1297,7 +1309,7 @@ function listenMembers() {
       if (!currentIds.has(id) && id !== myId) {
         closePeerConnection(id);
         removeVideoTile(id);
-        removeVideoTile(`${id}-screen`);
+        removeRemoteScreenTiles(id, []);
       }
     }
 
@@ -1315,7 +1327,7 @@ function listenMembers() {
     // members/{id}/sharing フラグ（RTDB）を正として画面共有タイルの有無を揃える
     for (const id of currentIds) {
       if (id === myId) continue;
-      if (!members[id]?.sharing) removeRemoteScreenTile(id);
+      removeRemoteScreenTiles(id, memberScreenNums(members[id]));
     }
 
     const slots = computeSlots();
@@ -1379,6 +1391,7 @@ async function handleDescription(fromId, type, payload) {
   // streamKinds は setRemoteDescription より先にマージする。ontrackはsetRemoteDescriptionの処理中に
   // 発火するため、後でマージすると種別判定が間に合わずcameraにフォールバックしてしまう
   if (payload.streamKinds) Object.assign(entry.remoteStreamKinds, payload.streamKinds);
+  if (payload.screenNums) Object.assign(entry.remoteScreenNums, payload.screenNums);
   await pc.setRemoteDescription(new RTCSessionDescription({ type, sdp: payload.sdp }));
   await flushPendingCandidates(fromId);
 
@@ -1388,7 +1401,8 @@ async function handleDescription(fromId, type, payload) {
     await sendSignal(fromId, "answer", {
       type: answer.type,
       sdp: answer.sdp,
-      streamKinds: localStreamKindsFor(entry)
+      streamKinds: localStreamKindsFor(entry),
+      screenNums: localScreenNumsFor(entry)
     });
   }
 }
@@ -1425,17 +1439,18 @@ function createPeerConnection(peerId, isInitiator) {
     pc,
     videoSender: null,
     audioSender: null,
-    screenSender: null,
+    screenSenders: {}, // 画面番号 -> RTCRtpSender
     polite: !isInitiator,
     makingOffer: false,
     ignoreOffer: false,
     remoteStreamKinds: {}, // MediaStream.id -> "camera" | "screen"
+    remoteScreenNums: {},  // MediaStream.id -> 画面番号（旧バージョンの相手は送ってこないので1とみなす）
     pendingCandidates: [],
     statsInterval: null,
     prevStats: { bytesReceived: 0, packetsLost: 0, packetsReceived: 0, timestamp: 0 },
     lastStats: null,
     remoteStream: null,
-    remoteScreenStream: null
+    remoteScreenStreams: {} // 画面番号 -> MediaStream
   };
   peers[peerId] = entry;
 
@@ -1449,7 +1464,7 @@ function createPeerConnection(peerId, isInitiator) {
   const audioTrackToSend = outgoingAudioTrack || localStream.getAudioTracks()[0];
   if (audioTrackToSend) entry.audioSender = pc.addTrack(audioTrackToSend, localStream);
   // 既に画面共有中に参加してきた相手にも、最初から画面共有トラックを追加しておく
-  if (isSharing && screenStream) addScreenTrackToPeer(peerId, entry);
+  for (const n of myScreens.keys()) addScreenTrackToPeer(entry, n);
   // 早押しの押下を相手へ直接（P2Pで）届けるデータチャネル。Firebase（サーバーはシンガポール）経由より速い。
   // 両側が同じidで作るnegotiatedチャネルなので、最初のSDPに含まれ追加の再交渉は要らない。
   // 遅れて届く再送は意味がないので順序保証なし・再送は少なめ（届かなくてもFirebase経由で必ず届く）
@@ -1466,8 +1481,9 @@ function createPeerConnection(peerId, isInitiator) {
     const streamId = e.streams[0]?.id;
     const kind = entry.remoteStreamKinds[streamId] || "camera";
     if (kind === "screen") {
-      entry.remoteScreenStream = e.streams[0];
-      attachScreenStreamToTile(peerId, e.streams[0]);
+      const n = entry.remoteScreenNums[streamId] || 1;
+      entry.remoteScreenStreams[n] = e.streams[0];
+      attachScreenStreamToTile(peerId, n, e.streams[0]);
     } else {
       entry.remoteStream = e.streams[0];
       attachStreamToTile(peerId, e.streams[0]);
@@ -1483,7 +1499,8 @@ function createPeerConnection(peerId, isInitiator) {
       await sendSignal(peerId, "offer", {
         type: pc.localDescription.type,
         sdp: pc.localDescription.sdp,
-        streamKinds: localStreamKindsFor(entry)
+        streamKinds: localStreamKindsFor(entry),
+        screenNums: localScreenNumsFor(entry)
       });
     } catch (e) {
       console.warn("negotiationneeded failed", e);
@@ -1514,20 +1531,33 @@ function createPeerConnection(peerId, isInitiator) {
 function localStreamKindsFor(entry) {
   const kinds = {};
   if (localStream) kinds[localStream.id] = "camera";
-  if (entry.screenSender && screenStream) kinds[screenStream.id] = "screen";
+  for (const n of Object.keys(entry.screenSenders)) {
+    const st = myScreens.get(+n);
+    if (st) kinds[st.id] = "screen";
+  }
   return kinds;
 }
-
-function addScreenTrackToPeer(peerId, entry) {
-  if (!screenStream || entry.screenSender) return;
-  const track = screenStream.getVideoTracks()[0];
-  if (!track) return;
-  entry.screenSender = entry.pc.addTrack(track, screenStream);
-  applyScreenSenderParams(entry.screenSender);
+// 画面共有の各MediaStream.idと画面番号の対応表（streamKindsと一緒に送る。旧バージョンは無視する）
+function localScreenNumsFor(entry) {
+  const nums = {};
+  for (const n of Object.keys(entry.screenSenders)) {
+    const st = myScreens.get(+n);
+    if (st) nums[st.id] = +n;
+  }
+  return nums;
 }
 
-function applyScreenQualityToTrack() {
-  const track = screenStream?.getVideoTracks()[0];
+function addScreenTrackToPeer(entry, n) {
+  const stream = myScreens.get(n);
+  if (!stream || entry.screenSenders[n]) return;
+  const track = stream.getVideoTracks()[0];
+  if (!track) return;
+  entry.screenSenders[n] = entry.pc.addTrack(track, stream);
+  applyScreenSenderParams(entry.screenSenders[n]);
+}
+
+function applyScreenQualityToTrack(stream) {
+  const track = stream?.getVideoTracks()[0];
   if (!track) return;
   const q = screenQuality();
   try { track.contentHint = q.hint; } catch (e) {}
@@ -1539,10 +1569,11 @@ function applyScreenSenderParams(sender) {
   applyBitrate(sender, q.bitrate, q.degradation);
 }
 
-function removeScreenTrackFromPeer(entry) {
-  if (!entry.screenSender) return;
-  try { entry.pc.removeTrack(entry.screenSender); } catch (e) {}
-  entry.screenSender = null;
+function removeScreenTrackFromPeer(entry, n) {
+  const sender = entry.screenSenders[n];
+  if (!sender) return;
+  try { entry.pc.removeTrack(sender); } catch (e) {}
+  delete entry.screenSenders[n];
 }
 
 function applyBitrate(sender, bitrate, degradationPreference) {
@@ -1594,7 +1625,7 @@ async function updateStats(peerId) {
   if (!entry || entry.pc.connectionState !== "connected") return;
   // 送信側の上限は接続確立後でないと効かないことがあるので、ここで毎回（変化がなければ何もしない）かけ直す
   if (entry.videoSender) applyCameraSenderParams(entry.videoSender);
-  if (entry.screenSender) applyScreenSenderParams(entry.screenSender);
+  for (const sender of Object.values(entry.screenSenders)) applyScreenSenderParams(sender);
   const stats = await entry.pc.getStats();
 
   let routeType = "-", rttMs = null;
@@ -1643,9 +1674,13 @@ async function updateStats(peerId) {
 }
 
 // ---------- 画面共有（カメラとは別トラックとして追加送信し、別タイル表示にする） ----------
-async function toggleScreenShare() {
-  if (isSharing) { stopScreenShare(); return; }
-
+// ボタンを押すたびに画面を1つ追加で共有する（最大MAX_SCREENS_PER_PERSON個）。
+// 個別の終了は操作パネルの画面共有行の「■ 終了」か、ブラウザの「共有を停止」で行う
+async function addScreenShare() {
+  if (myScreens.size >= MAX_SCREENS_PER_PERSON) {
+    alert(`画面共有は1人${MAX_SCREENS_PER_PERSON}つまでです`);
+    return;
+  }
   let stream;
   try {
     const q = screenQuality();
@@ -1656,58 +1691,70 @@ async function toggleScreenShare() {
   } catch (e) {
     return; // ユーザーがキャンセルした等
   }
-  screenStream = stream;
-  isSharing = true;
-  applyScreenQualityToTrack();
-  shareBtn.textContent = "🖥 共有を終了";
-  shareBtn.classList.add("active");
+  let n = 1;
+  while (myScreens.has(n)) n++;
+  myScreens.set(n, stream);
+  applyScreenQualityToTrack(stream);
 
-  createVideoTile(`${myId}-screen`, `${myName}（画面共有）`, false);
-  const selfScreenVideo = gridEl(`video-${myId}-screen`);
-  if (selfScreenVideo) selfScreenVideo.srcObject = screenStream;
+  const key = screenKey(myId, n);
+  createVideoTile(key, screenLabel(myName, n), false);
+  const selfScreenVideo = gridEl(`video-${key}`);
+  if (selfScreenVideo) selfScreenVideo.srcObject = stream;
 
-  for (const [peerId, entry] of Object.entries(peers)) {
-    addScreenTrackToPeer(peerId, entry);
-  }
+  for (const entry of Object.values(peers)) addScreenTrackToPeer(entry, n);
 
-  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: true });
-
-  screenStream.getVideoTracks()[0].onended = () => { if (isSharing) stopScreenShare(); };
+  stream.getVideoTracks()[0].onended = () => { if (myScreens.get(n) === stream) stopScreenShare(n); };
+  publishMyScreens();
+  updateShareBtn();
   renderGrid();
 }
 
-function stopScreenShare() {
-  isSharing = false;
-  shareBtn.textContent = "🖥 画面共有";
-  shareBtn.classList.remove("active");
-
-  for (const entry of Object.values(peers)) {
-    removeScreenTrackFromPeer(entry);
-  }
-
-  if (screenStream) {
-    screenStream.getTracks().forEach((t) => t.stop());
-    screenStream = null;
-  }
-  removeVideoTile(`${myId}-screen`);
+function stopScreenShare(n) {
+  const stream = myScreens.get(n);
+  if (!stream) return;
+  myScreens.delete(n);
+  for (const entry of Object.values(peers)) removeScreenTrackFromPeer(entry, n);
+  stream.getTracks().forEach((t) => t.stop());
+  removeVideoTile(screenKey(myId, n));
+  publishMyScreens();
+  updateShareBtn();
   renderGrid();
-
-  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { sharing: false });
 }
 
-function attachScreenStreamToTile(peerId, stream) {
+// sharing（旧バージョン互換の「何か共有中か」）と screens（共有中の番号 { s1: true, s3: true }）を書く
+function publishMyScreens() {
+  const screens = {};
+  for (const n of myScreens.keys()) screens[`s${n}`] = true;
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), {
+    sharing: myScreens.size > 0,
+    screens: myScreens.size ? screens : null
+  });
+}
+
+function updateShareBtn() {
+  shareBtn.textContent = myScreens.size ? `🖥 画面を追加（共有中${myScreens.size}）` : "🖥 画面共有";
+  shareBtn.classList.toggle("active", myScreens.size > 0);
+  shareBtn.disabled = myScreens.size >= MAX_SCREENS_PER_PERSON;
+}
+
+function attachScreenStreamToTile(peerId, n, stream) {
   const name = members[peerId]?.name || "";
-  createVideoTile(`${peerId}-screen`, `${name}（画面共有）`, false);
-  const video = gridEl(`video-${peerId}-screen`);
+  const key = screenKey(peerId, n);
+  createVideoTile(key, screenLabel(name, n), false);
+  const video = gridEl(`video-${key}`);
   if (video) video.srcObject = stream;
-  if (gridPopped) syncPopAudio(`video-${peerId}-screen`);
+  if (gridPopped) syncPopAudio(`video-${key}`);
   renderGrid();
 }
 
-function removeRemoteScreenTile(peerId) {
+// 相手の画面共有タイルのうち、keepNums（members上で共有中の番号）にないものを消す
+function removeRemoteScreenTiles(peerId, keepNums) {
   const entry = peers[peerId];
-  if (entry) entry.remoteScreenStream = null;
-  removeVideoTile(`${peerId}-screen`);
+  for (let n = 1; n <= MAX_SCREENS_PER_PERSON; n++) {
+    if (keepNums.includes(n)) continue;
+    if (entry) delete entry.remoteScreenStreams[n];
+    removeVideoTile(screenKey(peerId, n));
+  }
 }
 
 // ---------- UI: 映像グリッド（自由配置） ----------
@@ -2080,7 +2127,9 @@ function computeSlots() {
   while (camSlots.length < MAX_PEERS) camSlots.push(null);
 
   const sharingIds = presentIds.filter((id) => members[id]?.sharing).sort();
-  const screenSlots = sharingIds.map((id) => ({ id, key: `${id}-screen`, kind: "screen", name: members[id]?.name, sharing: true }));
+  const screenSlots = sharingIds.flatMap((id) => memberScreenNums(members[id]).map((n) => (
+    { id, key: screenKey(id, n), kind: "screen", screenNum: n, name: members[id]?.name, sharing: true }
+  )));
   const extraSlots = scoreboardOn ? [{ id: SCOREBOARD_KEY, key: SCOREBOARD_KEY, kind: "scoreboard", name: "スコアボード" }] : [];
 
   return [...camSlots, ...screenSlots, ...extraSlots];
@@ -2282,7 +2331,7 @@ function updateNameLabel(key, name) {
 function refreshNameLabels() {
   for (const id of Object.keys(members)) {
     updateNameLabel(id, members[id].name);
-    if (members[id].sharing) updateNameLabel(`${id}-screen`, `${members[id].name}（画面共有）`);
+    for (const n of memberScreenNums(members[id])) updateNameLabel(screenKey(id, n), screenLabel(members[id].name, n));
   }
 }
 
@@ -2346,10 +2395,10 @@ function renderControls(slots) {
     if (!s) continue;
     if (s.kind === "screen" || s.kind === "scoreboard") {
       html += `<tr data-key="${s.key}">
-        <td>${s.kind === "scoreboard" ? "📊 スコアボード" : escapeHtml(s.name) + "（画面共有）"}</td>
+        <td>${s.kind === "scoreboard" ? "📊 スコアボード" : escapeHtml(screenLabel(s.name, s.screenNum))}</td>
         <td class="ctrlCell">-</td>
         <td class="ctrlCell volCol">-</td>
-        <td class="ctrlCell">-</td>
+        <td class="ctrlCell">${s.kind === "screen" && s.id === myId ? `<button class="small ctrlBtn" data-action="stopShare" data-num="${s.screenNum}" title="この画面の共有を終了">■ 終了</button>` : "-"}</td>
         <td class="ctrlCell">
           <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
           <button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇</button>
@@ -3707,7 +3756,7 @@ function popInGrid() {
   resumeGridVideos();
   for (const id of Object.keys(peers)) { applyPeerMute(id); applyPeerVolume(id); }
   videoGrid.querySelectorAll("video").forEach((v) => {
-    if (v.id.endsWith("-screen")) v.muted = false; // 画面共有の音声を元どおりタイルから鳴らす
+    if (isScreenVideoId(v.id)) v.muted = false; // 画面共有の音声を元どおりタイルから鳴らす
   });
   if (wasRecording) { recordLoopWin = window; recordLoopId = requestAnimationFrame(drawRecordFrame); }
   if (win && !win.closed) win.close();

@@ -6,7 +6,7 @@ YouTube企画の撮影用WebRTCビデオ通話アプリ。単一HTMLファイル
 ## RTDB構造
 
 ```
-rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing, cameraOn, buzzSpectator, buzzTeam }
+rooms/{ROOM_ID}/members/{peerId}: { name, joinedAt, sharing, screens, cameraOn, buzzSpectator, buzzTeam }
 rooms/{ROOM_ID}/signals/{toId}/{fromId}/{pushId}: { type: "offer"|"answer"|"candidate", payload }
 rooms/{ROOM_ID}/status/{fromId}/{toId}: { state, updatedAt }
 rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同期の現在のリーダー（先着優先、runTransactionで排他制御）
@@ -30,14 +30,16 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - ストリーム種別（camera/screen）の判別は、**RTDBの別ノードではなく、offer/answerのシグナルpayloadに`streamKinds: { [MediaStream.id]: "camera"|"screen" }`を同梱**して伝える方式にしている（mid はPCペアごとに採番されるため、共有ノードで持つと整合性が壊れるのを避けるため）。受信側は`entry.remoteStreamKinds`にマージして保持し、`pc.ontrack`の`e.streams[0].id`で参照する。
 - **画面共有の画質**：ヘッダーの選択（`SCREEN_QUALITY_PRESETS`、localStorage `screenQuality`）で、文字くっきり（contentHint=detail・15fps・2.5Mbps・maintain-resolution）／動き優先（motion・30fps・4Mbps・maintain-framerate）／高画質（detail・30fps・6Mbps）。共有中に変えても`applyScreenQualityToTrack`と`applyScreenSenderParams`で即反映。メッシュなので送信量は「ビットレート×相手の人数」。
 - 送信側の`maxBitrate`等は接続確立前だと`encodings`が空で設定できないため、`updateStats`（2秒ごと）で毎回かけ直す（値が同じなら何もしない）。
-- 画面共有の開始・終了は自分の`members/{myId}/sharing`フラグに反映し、受信側はこのフラグを正として画面共有タイルの表示/削除を同期する（`removeTrack`後の相手側track状態イベントには依存しない）。
-- タイルのDOM要素キーは、カメラ＝`peerId`、画面共有＝`` `${peerId}-screen` `` で区別する（`computeSlots()`が返すスロットに`kind: "camera"|"screen"`と`key`を持つ）。
+- **1人で複数の画面を共有できる（最大`MAX_SCREENS_PER_PERSON`=4、2026-09-27〜）**。「🖥 画面共有」ボタンを押すたびに1画面追加（`addScreenShare`）。各共有に空いている最小の番号nを振り（`myScreens`: n→MediaStream）、相手ごとの送信は`entry.screenSenders[n]`。個別の終了は操作パネルの自分の画面共有行の「■ 終了」かブラウザの「共有を停止」（`stopScreenShare(n)`）。
+- 画面番号は`members/{id}/screens`（`{ s1: true, s3: true }`。数字キーだとRTDBが配列にするので`s`付き）に書き、`sharing`は「1つ以上共有中か」として旧バージョン互換で残す（`publishMyScreens`）。`screens`が無い（旧バージョンの）相手は`sharing`だけで画面1つとみなす（`memberScreenNums`）。offer/answerに`streamKinds`と並べて`screenNums: { [MediaStream.id]: n }`も同梱し、受信側は`entry.remoteScreenNums`で番号を引く（無ければ1）。
+- 画面共有の開始・終了は自分の`members/{myId}/sharing`/`screens`に反映し、受信側はこのフラグを正として画面共有タイルの表示/削除を同期する（`removeTrack`後の相手側track状態イベントには依存しない）。
+- タイルのDOM要素キーは、カメラ＝`peerId`、画面共有＝1つ目`` `${peerId}-screen` ``・2つ目以降`` `${peerId}-screen${n}` ``（`screenKey`。1つ目は旧キーのままなので保存済みの配置が効く）で区別する（`computeSlots()`が返すスロットに`kind: "camera"|"screen"`と`key`を持つ）。
 
 ## レイアウト同期（申請・許可制）
 
 - リーダーは`runTransaction`で`layoutSync/leaderId`を排他的に確保する（先着優先。既に誰かがいる間はボタンを無効化）。切断時は`onDisconnect().remove()`で自動的にリーダー権を手放す。
 - 各参加者は個別に`layoutSync/followers/{peerId}`へ"accepted"/"rejected"を書き込む。許可した人だけがリーダーの`layouts/{leaderId}`を購読して追従する。
-- タイルの識別は表示スロットではなく`peerId`または`` `${peerId}-screen` ``（画面共有タイルも同期対象）。座標は0〜1の相対値。ドラッグ・リサイズ中はリーダー側で100ms間隔にスロットルして`layouts/{leaderId}`へ書き込む（`scheduleLayoutPublish`）。
+- タイルの識別は表示スロットではなく`peerId`または`screenKey(peerId, n)`（画面共有タイルも同期対象）。座標は0〜1の相対値。ドラッグ・リサイズ中はリーダー側で100ms間隔にスロットルして`layouts/{leaderId}`へ書き込む（`scheduleLayoutPublish`）。
 - 追従中（`followingLayout`が非nullかつ自分がリーダーでない）はこの端末のドラッグ・リサイズ・非表示操作をロックする（`layoutInteractionLocked()`）。
 - **背景画像も同期**：リーダーは同期開始時と背景の変更・削除時に、自分の背景を最大1920×1080のJPEGに縮めて`layoutBg/{leaderId}`へ書く（`publishLeaderBg`。位置の同期ノードとは分けて、大きな画像を毎回送らない）。追従中の端末は`followingBg`としてそれを表示し（リーダーが背景なしなら背景なし）、追従をやめると自分の背景（localStorage）に戻す（`applyBgImage`）。合成録画にも背景画像を描く（cover相当）。
 - 追従解除（同期解除ボタン、リーダー消失、リーダーからの拒否状態変化）の際は、直前まで見えていたレイアウトをこの端末のローカル配置（スロット基準）に変換して引き継ぐ（`snapshotLayoutIntoLocal`）。手動解除は`myManualUnfollow`フラグで管理し、「再度追従する」で同じリーダーへ許可を取り直さず復帰できる。
