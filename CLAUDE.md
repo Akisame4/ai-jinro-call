@@ -13,6 +13,7 @@ rooms/{ROOM_ID}/layoutSync/leaderId: peerId              // レイアウト同�
 rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layoutBg/{leaderId}: { dataUrl|null, updatedAt }   // リーダーの背景画像（JPEG・最大1920×1080に縮小）
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
+rooms/{ROOM_ID}/memberFrames/{peerId}: { dataUrl, updatedAt }   // 各自の「自分の枠」（PNG・最大1920×1080）
 rooms/{ROOM_ID}/scoreboard: { on }   // スコアボードタイルを全員に表示するか（誰でもON/OFF可）
 rooms/{ROOM_ID}/buzzer/host: { name, at }
 rooms/{ROOM_ID}/buzzer/music: { playing }   // イントロクイズの曲が流れているか（曲名は送らない）
@@ -96,6 +97,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - **枠もレイアウト同期する**：以前は枠がこの端末だけの設定で同期されず、追従側で枠が消えていた。リーダーの枠画像は`layoutFrame/{leaderId}`（背景と同じく別ノード、透過を残すためPNGで最大1920×1080、`publishLeaderFrame`）、表示ON/OFFとタイルごとのOFFは`layouts/{leaderId}/frame`（`{show, off:[frameTileId...]}`）で送る。追従中は`followingFrameImage`が非undefinedになり、`effectiveFrameSettings()`がリーダーの設定を返す（枠ボタンは押せない）。追従をやめると自分の設定に戻る。RTDBは配列をオブジェクトで返すことがあるので`off`は`Object.values`で読む。
 - **枠は録画にも入る**（2026-09-28）：合成録画（`drawRecordFrame`）で、各タイルの映像を描いた直後に、画面と同じ条件（`#videoGrid.showFrame`・`.frameOverlay.hasImage`・`.frameOff`でない）で`frameImageEl`をオーバーレイの範囲に重ねる。`frameImageEl`は`syncFrameImageEl`で表示中の枠（追従中はリーダーの枠）に合わせる。
 - **録画は画面の重なり順どおり**（2026-09-28）：`drawRecordFrame`はタイルを計算後のz-index（`getComputedStyle`。早押しの回答者強調`.buzzAnswer`のz-index: 50 !importantも反映）の小さい順（同じ値はDOM順）に描く。以前はDOM順で、「最前面へ」などの重なり順が録画に反映されていなかった。
+- **自分の枠（人ごとに別の枠）**（UC要望、2026-09-28）：「自分の枠(PNG)を設定」で各自が自分のカメラタイル用の枠を選ぶ。PNGのまま最大1920×1080に縮めてlocalStorage `aiJinroMyFrameImage`に保存し、入室時・変更時に`rooms/{ROOM_ID}/memberFrames/{peerId}: { dataUrl, updatedAt }`へ書く（`publishMyFrame`、`onDisconnect`で削除。membersとは別ノードにして大きな画像を毎回配らない）。全員が`listenMemberFrames`で購読する。タイルの枠は`frameUrlForKey`で決め、自分の枠を設定している人のカメラタイルはその枠（レイアウト追従中でも）、それ以外のタイル・画面共有・スコアボードは従来の枠（「共通の枠」＝`effectiveFrameSettings().url`。追従中はリーダーの共通の枠）。枠を表示ON/OFFとタイルごとのOFFは従来どおり見る側（追従中はリーダー）の設定に従う。合成録画は`tile.frameImage`（枠URLごとに共有する`Image`、`frameImageFor`）を描く。
 - **無音警告のレイアウト固定**：`#gateWarning`は常にDOMに存在させ、`display`ではなく`visibility`（`.show`クラス）で切り替える。これにより表示/非表示で他要素の行がずれない。
 - **聞こえる音量（相手ごと）**：操作テーブルの「聞こえる音量」スライダー（0〜100%）で、この端末で聞こえる相手の音量を変える（`<video>.volume`）。ミュートとは独立。再入室でpeerIdが変わっても残るよう**名前をキー**にlocalStorage（`peerVolumes`）へ保存。100%超の増幅は、Web Audio経由で再生する必要があり、Chromeではその経路だとエコーキャンセルが効かなくなることがあるため行っていない。スライダー操作中は行のドラッグ並び替えを始めない（`volSliderActive`）。
 - **タイルの重なり順（手動）**：操作テーブルの各行に「⬆最前面へ/⬇最背面へ」ボタンを持つ（画面共有タイルの行も含む）。`bringTileToFront`は現在の全タイルの最大z-indexを都度計算して+1する（固定カウンタ方式だと、スロット番号由来の既定z＝`idx+1`を追い抜けないバグがあったため修正済み）。`sendTileKeyToBack`は他タイルの最小z-index-1を設定する。

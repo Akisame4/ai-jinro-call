@@ -368,9 +368,14 @@
       </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="frameToggle"> 枠を表示</label>
-        <button class="small" id="frameImageSelectBtn">枠画像(PNG)を設定</button>
-        <button class="small" id="frameImageClearBtn">枠を削除</button>
+        <button class="small" id="frameImageSelectBtn" title="自分の枠を設定していない人のタイルと画面共有に使う枠（この端末の設定）">共通の枠(PNG)を設定</button>
+        <button class="small" id="frameImageClearBtn">共通の枠を削除</button>
         <input type="file" id="frameImageInput" accept="image/png" style="display:none;">
+      </span>
+      <span class="optionGroup">
+        <button class="small" id="myFrameSelectBtn" title="自分のカメラのタイルに出す枠。全員の画面・録画に反映されます">自分の枠(PNG)を設定</button>
+        <button class="small" id="myFrameClearBtn">自分の枠を削除</button>
+        <input type="file" id="myFrameInput" accept="image/png" style="display:none;">
       </span>
     </div>
     <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
@@ -722,6 +727,9 @@ const frameToggle = document.getElementById("frameToggle");
 const frameImageSelectBtn = document.getElementById("frameImageSelectBtn");
 const frameImageClearBtn = document.getElementById("frameImageClearBtn");
 const frameImageInput = document.getElementById("frameImageInput");
+const myFrameSelectBtn = document.getElementById("myFrameSelectBtn");
+const myFrameClearBtn = document.getElementById("myFrameClearBtn");
+const myFrameInput = document.getElementById("myFrameInput");
 const recBtn = document.getElementById("recBtn");
 const recIndicator = document.getElementById("recIndicator");
 const recDownloads = document.getElementById("recDownloads");
@@ -1133,8 +1141,17 @@ function toggleTileFrame(slotKey) {
   renderControls(computeSlots());
   if (isLayoutLeader()) publishLeaderLayout();
 }
+// 自分の枠：各自が自分のカメラのタイル用に設定し、rooms/{ROOM_ID}/memberFrames/{peerId} で全員に配る。
+// 設定している人のカメラタイルは（追従中でも）その枠、それ以外のタイル・画面共有は共通の枠（effectiveFrameSettings().url）
+const MY_FRAME_KEY = "aiJinroMyFrameImage";
+let myFrameUrl = localStorage.getItem(MY_FRAME_KEY);
+let memberFrames = {}; // peerId → dataUrl（相手の自分の枠）
+function frameUrlForKey(key) {
+  if (key === myId && myFrameUrl) return myFrameUrl;
+  return memberFrames[key] || effectiveFrameSettings().url; // 画面共有・スコアボードのキーはmemberFramesに無い
+}
 function applyFrameImageToTile(tile) {
-  const dataUrl = effectiveFrameSettings().url;
+  const dataUrl = frameUrlForKey(tile.id.slice("tile-".length));
   const overlay = tile.querySelector(".frameOverlay");
   if (!overlay) return;
   if (dataUrl) {
@@ -1144,17 +1161,73 @@ function applyFrameImageToTile(tile) {
     overlay.style.backgroundImage = "";
     overlay.classList.remove("hasImage");
   }
+  tile.frameImage = dataUrl ? frameImageFor(dataUrl) : null; // 合成録画で描く画像
 }
-const frameImageEl = new Image(); // 合成録画に枠を描くための画像
-function syncFrameImageEl() {
-  const dataUrl = effectiveFrameSettings().url;
-  if (dataUrl) { if (frameImageEl.src !== dataUrl) frameImageEl.src = dataUrl; } else frameImageEl.removeAttribute("src");
+// 合成録画に枠を描くための画像（同じ枠を使うタイルで共有）
+const frameImageCache = new Map();
+function frameImageFor(dataUrl) {
+  let img = frameImageCache.get(dataUrl);
+  if (!img) { img = new Image(); img.src = dataUrl; frameImageCache.set(dataUrl, img); }
+  return img;
 }
-syncFrameImageEl();
 function applyFrameImageToAllTiles() {
   videoGrid.querySelectorAll(".tile").forEach(applyFrameImageToTile);
-  syncFrameImageEl();
+  // 使われなくなった枠画像を捨てる
+  const used = new Set([...videoGrid.querySelectorAll(".tile")].map((t) => t.frameImage?.src).filter(Boolean));
+  for (const url of frameImageCache.keys()) if (!used.has(url)) frameImageCache.delete(url);
 }
+let memberFramesListening = false; // 入室済みか（入室前に自分の枠を変えても送らない。入室時にまとめて送る）
+function listenMemberFrames() {
+  memberFramesListening = true;
+  onValue(ref(db, `rooms/${ROOM_ID}/memberFrames`), (snap) => {
+    const data = snap.val() || {};
+    memberFrames = {};
+    for (const [id, v] of Object.entries(data)) if (id !== myId && v?.dataUrl) memberFrames[id] = v.dataUrl;
+    applyFrameImageToAllTiles();
+  });
+}
+async function publishMyFrame() {
+  if (!memberFramesListening) return;
+  const frameRef = ref(db, `rooms/${ROOM_ID}/memberFrames/${myId}`);
+  try {
+    if (myFrameUrl) {
+      await set(frameRef, { dataUrl: myFrameUrl, updatedAt: serverTimestamp() });
+      onDisconnect(frameRef).remove();
+    } else {
+      onDisconnect(frameRef).cancel();
+      await remove(frameRef);
+    }
+  } catch (e) {
+    console.warn("publishMyFrame failed", e);
+  }
+}
+myFrameSelectBtn.addEventListener("click", () => myFrameInput.click());
+myFrameInput.addEventListener("change", () => {
+  const file = myFrameInput.files[0];
+  myFrameInput.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      // 全員に配るので、共通の枠の同期と同じく透過を残したPNGで最大1920×1080に縮めて保存・送信する
+      const dataUrl = await shrinkImageDataUrl(reader.result, 1920, 1080, undefined, "image/png");
+      localStorage.setItem(MY_FRAME_KEY, dataUrl);
+      myFrameUrl = dataUrl;
+    } catch (e) {
+      alert("画像の保存に失敗しました（サイズが大きすぎる可能性があります）");
+      return;
+    }
+    applyFrameImageToAllTiles();
+    publishMyFrame();
+  };
+  reader.readAsDataURL(file);
+});
+myFrameClearBtn.addEventListener("click", () => {
+  localStorage.removeItem(MY_FRAME_KEY);
+  myFrameUrl = null;
+  applyFrameImageToAllTiles();
+  publishMyFrame();
+});
 frameToggle.addEventListener("change", () => {
   frameShowEnabled = frameToggle.checked;
   localStorage.setItem(FRAME_SHOW_KEY, frameShowEnabled ? "1" : "0");
@@ -1348,6 +1421,8 @@ async function joinRoom(name) {
   });
   listenBuzzer();
   listenScoreboard();
+  listenMemberFrames();
+  publishMyFrame();
 }
 
 window.addEventListener("beforeunload", () => {
@@ -1355,6 +1430,7 @@ window.addEventListener("beforeunload", () => {
     remove(ref(db, `rooms/${ROOM_ID}/members/${myId}`));
     remove(ref(db, `rooms/${ROOM_ID}/status/${myId}`));
     remove(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`));
+    remove(ref(db, `rooms/${ROOM_ID}/memberFrames/${myId}`));
     if (syncLeaderId === myId) remove(ref(db, `rooms/${ROOM_ID}/layoutSync/leaderId`));
   } catch (e) { /* best effort */ }
 });
@@ -3018,7 +3094,7 @@ function drawRecordFrame() {
   const scaleY = recordCanvas.height / gridRect.height;
 
   // 枠：画面と同じ条件（枠を表示ON・画像あり・そのタイルの枠がOFFでない）でタイル全体に重ねる
-  const drawFrames = videoGrid.classList.contains("showFrame") && frameImageEl.src && frameImageEl.complete && frameImageEl.naturalWidth;
+  const drawFrames = videoGrid.classList.contains("showFrame");
   // 画面の重なり順（z-index）どおりに奥から描く。早押しの回答者強調（CSSでz-index: 50 !important）も含めるため計算後の値を使う。
   // 同じz-indexは画面と同じくDOMの順（sortは安定ソート）
   const zOf = (t) => parseInt(gridWin().getComputedStyle(t).zIndex, 10) || 0;
@@ -3036,9 +3112,10 @@ function drawRecordFrame() {
     ctx.drawImage(video, vx, vy, vw, vh);
 
     const overlay = drawFrames && !tile.classList.contains("frameOff") && tile.querySelector(".frameOverlay.hasImage");
-    if (overlay) {
+    const img = tile.frameImage; // タイルごとの枠（自分の枠 or 共通の枠。applyFrameImageToTile）
+    if (overlay && img?.complete && img.naturalWidth) {
       const r = overlay.getBoundingClientRect();
-      ctx.drawImage(frameImageEl, (r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
+      ctx.drawImage(img,(r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
     }
   });
 
