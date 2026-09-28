@@ -159,6 +159,7 @@
     width: 100%; aspect-ratio: 16/9; background: #000; display: block; object-fit: cover;
     pointer-events: none;
   }
+  .tile.screenTile video { object-fit: contain; } /* 縦横比は共有元に合わせてJSで設定（applyScreenAspect） */
   .camZoomCtrl { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; white-space: nowrap; }
   .camZoomCtrl #camZoomLabel { min-width: 38px; text-align: center; font-size: 12px; }
   .tile video.videoHidden { visibility: hidden; }
@@ -2407,6 +2408,7 @@ function positionTile(tile, idx) {
   tile.style.width = (pos.width || TILE_W_PCT) + "%";
   tile.style.zIndex = String(pos.z || idx + 1);
   tile.dataset.slot = String(idx);
+  if (tile.dataset.aspect) fitTileInGrid(tile); // 映像の比率がスロット確定より先に分かっていた画面共有タイル
 }
 
 function saveTileRect(tile) {
@@ -2482,7 +2484,7 @@ function makeDraggable(tile) {
 
 function makeResizable(tile) {
   const handle = tile.querySelector(".resizeHandle");
-  let resizing = false, startX = 0, startWPct = 0, containerW = 0;
+  let resizing = false, startX = 0, startWPct = 0, containerW = 0, containerH = 0;
 
   handle.addEventListener("pointerdown", (e) => {
     if (layoutInteractionLocked()) return;
@@ -2490,6 +2492,7 @@ function makeResizable(tile) {
     resizing = true;
     const rect = videoGrid.getBoundingClientRect();
     containerW = rect.width;
+    containerH = rect.height;
     startX = e.clientX;
     startWPct = parseFloat(tile.style.width) || TILE_W_PCT;
     handle.setPointerCapture(e.pointerId);
@@ -2499,7 +2502,13 @@ function makeResizable(tile) {
     if (!resizing || !containerW) return;
     const dxPct = ((e.clientX - startX) / containerW) * 100;
     const leftPct = parseFloat(tile.style.left) || 0;
-    const maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
+    let maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
+    // 画面共有タイル（縦長もありうる）は下にはみ出さない幅まで
+    const aspect = parseFloat(tile.dataset.aspect);
+    if (aspect && containerH) {
+      const topPct = parseFloat(tile.style.top) || 0;
+      maxWPct = Math.max(MIN_TILE_PCT, Math.min(maxWPct, (100 - topPct) * containerH * aspect / containerW));
+    }
     let newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
     newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, snapX(newW)));
     tile.style.width = newW + "%";
@@ -2535,7 +2544,45 @@ function createVideoTile(peerId, name, isSelf) {
   }
   makeDraggable(tile);
   makeResizable(tile);
+  if (peerId.includes("-screen")) {
+    tile.classList.add("screenTile");
+    const video = tile.querySelector("video");
+    // 共有元の解像度が分かった時・変わった時（ウィンドウのサイズ変更など）にタイルの縦横比を合わせる
+    video.addEventListener("loadedmetadata", () => applyScreenAspect(tile, video));
+    video.addEventListener("resize", () => applyScreenAspect(tile, video));
+  }
   renderGrid();
+}
+
+// 画面共有タイルの縦横比を共有元（16:9以外のウィンドウ・縦長の画面など）に合わせる。
+// 高さは幅から決まるので、配置データ（left/top/width）やレイアウト同期の形式は変わらない
+function applyScreenAspect(tile, video) {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+  const prev = parseFloat(tile.dataset.aspect) || 0;
+  if (prev && Math.abs(prev - w / h) / prev < 0.01) return; // 送信側の解像度調整による端数の揺れは無視
+  tile.dataset.aspect = String(w / h);
+  video.style.aspectRatio = `${w} / ${h}`;
+  fitTileInGrid(tile);
+}
+
+// タイルが配置エリアの下にはみ出したら、上へずらす（それでも入らない縦長なら幅を縮める）。
+// 追従中は自分で配置を変えない（リーダー側で直した配置が届く）
+function fitTileInGrid(tile) {
+  if (layoutInteractionLocked() || tile.dataset.slot == null) return;
+  const gridH = videoGrid.getBoundingClientRect().height;
+  if (!gridH || tile.offsetParent === null) return;
+  const hPct = (tile.offsetHeight / gridH) * 100;
+  const top = parseFloat(tile.style.top) || 0;
+  if (top + hPct <= 100.5) return;
+  if (hPct > 100) {
+    const w = parseFloat(tile.style.width) || TILE_W_PCT;
+    tile.style.width = Math.max(MIN_TILE_PCT, w * 100 / hPct) + "%";
+    tile.style.top = "0%";
+  } else {
+    tile.style.top = (100 - hPct) + "%";
+  }
+  saveTileRect(tile);
 }
 
 function updateNameLabel(key, name) {

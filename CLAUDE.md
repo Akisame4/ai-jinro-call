@@ -32,6 +32,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 送信側の`maxBitrate`等は接続確立前だと`encodings`が空で設定できないため、`updateStats`（2秒ごと）で毎回かけ直す（値が同じなら何もしない）。
 - **1人で複数の画面を共有できる（最大`MAX_SCREENS_PER_PERSON`=4、2026-09-27〜）**。「🖥 画面共有」ボタンを押すたびに1画面追加（`addScreenShare`）。各共有に空いている最小の番号nを振り（`myScreens`: n→MediaStream）、相手ごとの送信は`entry.screenSenders[n]`。個別の終了は操作パネルの自分の画面共有行の「■ 終了」かブラウザの「共有を停止」（`stopScreenShare(n)`）。
 - 画面番号は`members/{id}/screens`（`{ s1: true, s3: true }`。数字キーだとRTDBが配列にするので`s`付き）に書き、`sharing`は「1つ以上共有中か」として旧バージョン互換で残す（`publishMyScreens`）。`screens`が無い（旧バージョンの）相手は`sharing`だけで画面1つとみなす（`memberScreenNums`）。offer/answerに`streamKinds`と並べて`screenNums: { [MediaStream.id]: n }`も同梱し、受信側は`entry.remoteScreenNums`で番号を引く（無ければ1）。
+- **画面共有タイルは共有元の縦横比で表示する**（UC要望、2026-09-28。16:9以外のウィンドウや縦長の画面も映すため）：`.tile.screenTile`の`<video>`に、`loadedmetadata`/`resize`イベントで`videoWidth/videoHeight`の`aspect-ratio`をインラインで設定する（`applyScreenAspect`、比率は`tile.dataset.aspect`。1%未満の揺れは無視）。配置データは従来どおりleft/top/widthだけで、高さは各端末が映像の比率から決める（レイアウト同期・テンプレートの形式は変更なし）。配置エリアの下にはみ出すときは上へずらし、それでも入らない縦長は幅を縮める（`fitTileInGrid`、追従中は何もしない）。リサイズハンドルも下にはみ出さない幅までに制限。合成録画はタイルの矩形に映像を描くのでそのまま同じ比率になる。カメラ・スコアボードは16:9のまま。
 - 画面共有の開始・終了は自分の`members/{myId}/sharing`/`screens`に反映し、受信側はこのフラグを正として画面共有タイルの表示/削除を同期する（`removeTrack`後の相手側track状態イベントには依存しない）。
 - タイルのDOM要素キーは、カメラ＝`peerId`、画面共有＝1つ目`` `${peerId}-screen` ``・2つ目以降`` `${peerId}-screen${n}` ``（`screenKey`。1つ目は旧キーのままなので保存済みの配置が効く）で区別する（`computeSlots()`が返すスロットに`kind: "camera"|"screen"`と`key`を持つ）。
 
