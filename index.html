@@ -1489,6 +1489,7 @@ async function sendSignal(toPeerId, type, payload) {
   await set(pushRef, { type, payload: JSON.stringify(payload) });
 }
 
+const signalChains = {}; // 相手のpeerId → そこから届いたシグナルの処理待ち（Promiseの鎖）
 function listenSignals() {
   onValue(ref(db, `rooms/${ROOM_ID}/signals/${myId}`), (snap) => {
     const data = snap.val();
@@ -1500,7 +1501,13 @@ function listenSignals() {
         if (processedSignals.has(key)) continue;
         processedSignals.add(key);
         const { type, payload } = pushes[pushId];
-        handleSignal(fromId, type, JSON.parse(payload));
+        // 相手ごとに届いた順で1つずつ処理する。並行に処理すると、途中入室時に続けて届く
+        // 「answer」と「画面共有を足すoffer」で、answer処理中のofferが衝突扱いで捨てられ、
+        // 共有画面だけ届かないまま相手が返事待ちで止まっていた（通信がまとめて届く人ほど毎回起きる）
+        const parsed = JSON.parse(payload);
+        signalChains[fromId] = (signalChains[fromId] || Promise.resolve())
+          .then(() => handleSignal(fromId, type, parsed))
+          .catch((e) => console.warn("handleSignal failed", e));
         remove(ref(db, `rooms/${ROOM_ID}/signals/${myId}/${fromId}/${pushId}`));
       }
     }
@@ -1634,6 +1641,7 @@ function createPeerConnection(peerId, isInitiator) {
       entry.makingOffer = true;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      entry.offerSentAt = Date.now();
       await sendSignal(peerId, "offer", {
         type: pc.localDescription.type,
         sdp: pc.localDescription.sdp,
@@ -1885,6 +1893,18 @@ async function updateStats(peerId) {
   // 送信側の上限は接続確立後でないと効かないことがあるので、ここで毎回（変化がなければ何もしない）かけ直す
   if (entry.videoSender) applyCameraSenderParams(entry.videoSender);
   for (const sender of Object.values(entry.screenSenders)) applyScreenSenderParams(sender);
+  // 保険：通話中の再交渉offerに10秒たっても返事が来ない（相手が捨てた・旧バージョンの相手で上の不具合が起きた等）
+  // ときは、同じofferを送り直す。返事待ちのままだと画面共有の追加・削除が相手に届かない
+  const pc = entry.pc;
+  if (pc.signalingState === "have-local-offer" && !entry.makingOffer && entry.offerSentAt && Date.now() - entry.offerSentAt > 10000) {
+    entry.offerSentAt = Date.now();
+    sendSignal(peerId, "offer", {
+      type: pc.localDescription.type,
+      sdp: pc.localDescription.sdp,
+      streamKinds: localStreamKindsFor(entry),
+      screenNums: localScreenNumsFor(entry)
+    });
+  }
   const stats = await entry.pc.getStats();
 
   let routeType = "-", rttMs = null;

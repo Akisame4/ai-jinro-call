@@ -28,6 +28,8 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 - カメラ映像と画面共有映像は別々の `RTCRtpSender`（`addTrack`/`removeTrack`）で送信する。`replaceTrack`は使わない。
 - 通話中のトラック追加・削除は再交渉(renegotiation)を伴うため、`onnegotiationneeded` + Perfect Negotiation パターンで衝突を解決する（`peers[id].polite`/`makingOffer`/`ignoreOffer`）。polite側は「後から接続してきた側（`isInitiator=false`）」に固定。
+- **シグナルは相手ごとに届いた順で1つずつ処理する**（`signalChains[fromId]`のPromiseの鎖、2026-09-29修正）。以前は`handleSignal`を待たずに並行処理しており、共有中に途中入室した人に「answer」と「画面共有を足すoffer」が続けて（Firebaseの1回の更新で）届くと、answerの`setRemoteDescription`中にofferが衝突扱い（impolite側なので無視）で捨てられた。共有側は`have-local-offer`のまま止まり（接続状態はconnectedのまま）、その人にだけ共有画面が届かなかった（「しのだけ毎回見えない」の原因）。モックに受信のまとめ届け（`?lat=`）を入れて再現・修正を確認済み。
+- 保険として、再交渉のofferに10秒返事が無いときは同じofferを送り直す（`updateStats`内、`entry.offerSentAt`）。相手が旧バージョンでofferを捨てた場合もこれで回復する（約10〜15秒後に共有画面が届く）。
 - ストリーム種別（camera/screen）の判別は、**RTDBの別ノードではなく、offer/answerのシグナルpayloadに`streamKinds: { [MediaStream.id]: "camera"|"screen" }`を同梱**して伝える方式にしている（mid はPCペアごとに採番されるため、共有ノードで持つと整合性が壊れるのを避けるため）。受信側は`entry.remoteStreamKinds`にマージして保持し、`pc.ontrack`の`e.streams[0].id`で参照する。
 - **画面共有の画質**：ヘッダーの選択（`SCREEN_QUALITY_PRESETS`、localStorage `screenQuality`）で、文字くっきり（contentHint=detail・15fps・2.5Mbps・maintain-resolution）／動き優先（motion・30fps・4Mbps・maintain-framerate）／高画質（detail・30fps・6Mbps）。共有中に変えても`applyScreenQualityToTrack`と`applyScreenSenderParams`で即反映。メッシュなので送信量は「ビットレート×相手の人数」。
 - 送信側の`maxBitrate`等は接続確立前だと`encodings`が空で設定できないため、`updateStats`（2秒ごと）で毎回かけ直す（値が同じなら何もしない）。
