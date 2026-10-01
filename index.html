@@ -1281,10 +1281,12 @@ controlsTable.addEventListener("click", (e) => {
   const { action, id, key, num } = btn.dataset;
   if (action === "stopShare") { stopScreenShare(parseInt(num, 10)); return; }
   if (action === "zoomIn" || action === "zoomOut") {
+    if (camZoomLocked) return;
     setCamZoom({ ...camZoom, z: camZoom.z * (action === "zoomIn" ? 1.25 : 1 / 1.25) });
     return;
   }
-  if (action === "zoomReset") { setCamZoom({ z: 1, cx: 0.5, cy: 0.5 }); return; }
+  if (action === "zoomReset") { if (!camZoomLocked) setCamZoom({ z: 1, cx: 0.5, cy: 0.5 }); return; }
+  if (action === "camZoomLock") { setCamZoomLocked(!camZoomLocked); return; }
   if (action === "camMirror") { setCamMirror(!camMirror); return; }
   if (action === "frame") { if (followingFrameImage === undefined) toggleTileFrame(key); return; }
   if (action === "mic") toggleMicFor(id);
@@ -1747,6 +1749,8 @@ let camZoom = (() => {
   return { z: 1, cx: 0.5, cy: 0.5 };
 })();
 let camMirror = (() => { try { return localStorage.getItem("camMirror") === "1"; } catch (e) { return false; } })();
+// ズーム固定：ONの間はホイール・Shift＋ドラッグ・－/＋/↺でズームや位置が変わらない（うっかりズーム防止）
+let camZoomLocked = (() => { try { return localStorage.getItem("camZoomLock") === "1"; } catch (e) { return false; } })();
 let camSendTrack = null;   // 送信・自分のタイル表示に使うカメラトラック（ズーム非対応ブラウザでは元のトラック）
 let camCropHeight = null;  // 切り抜き後の高さ（px）。送信時の縮小率の計算に使う
 function clampCamZoom({ z, cx, cy }) {
@@ -1768,6 +1772,17 @@ function setCamMirror(on) {
   const btn = document.getElementById("camMirrorBtn");
   if (btn) { btn.textContent = camMirrorLabel(); btn.classList.toggle("active", on); }
 }
+function setCamZoomLocked(on) {
+  camZoomLocked = on;
+  try { localStorage.setItem("camZoomLock", on ? "1" : "0"); } catch (e) {}
+  const btn = document.getElementById("camZoomLockBtn");
+  if (btn) { btn.textContent = camZoomLockLabel(); btn.classList.toggle("active", on); }
+  for (const b of document.querySelectorAll('.camZoomCtrl [data-action^="zoom"]')) b.disabled = on;
+  const tile = document.getElementById("tile-" + myId);
+  if (tile) tile.title = camZoomTileTitle();
+}
+function camZoomLockLabel() { return camZoomLocked ? "🔒 ズーム固定中" : "🔓 ズーム固定"; }
+function camZoomTileTitle() { return camZoomLocked ? "ズーム固定中（操作パネルの🔒で解除）" : "ホイールでズーム、Shift＋ドラッグで映す位置を調整"; }
 function camMirrorLabel() { return camMirror ? "↔ 反転ON" : "↔ 反転OFF"; }
 function setupCameraZoom(rawTrack) {
   if (!rawTrack || !camZoomSupported()) return rawTrack;
@@ -1827,7 +1842,7 @@ function attachCamZoomHandlers(tile) {
     return { fx: Math.min(1, Math.max(0, fx)), fy: Math.min(1, Math.max(0, fy)), r };
   };
   tile.addEventListener("wheel", (e) => {
-    if (!camZoomSupported()) return;
+    if (!camZoomSupported() || camZoomLocked) return;
     e.preventDefault();
     const { fx, fy } = toFrac(e);
     const { z, cx, cy } = camZoom;
@@ -1837,7 +1852,7 @@ function attachCamZoomHandlers(tile) {
   }, { passive: false });
   let pan = null;
   tile.addEventListener("pointerdown", (e) => {
-    if (!e.shiftKey || !camZoomSupported() || e.target.closest(".resizeHandle")) return;
+    if (!e.shiftKey || !camZoomSupported() || camZoomLocked || e.target.closest(".resizeHandle")) return;
     e.stopImmediatePropagation(); // タイルの移動（makeDraggable）はしない
     pan = { x: e.clientX, y: e.clientY, cx: camZoom.cx, cy: camZoom.cy, r: video.getBoundingClientRect() };
     try { tile.setPointerCapture(e.pointerId); } catch (err) {}
@@ -2636,7 +2651,7 @@ function createVideoTile(peerId, name, isSelf) {
   applyFrameImageToTile(tile);
   if (isSelf && peerId === myId) {
     attachCamZoomHandlers(tile); // makeDraggableより先に登録（Shift＋ドラッグをタイル移動より優先する）
-    tile.title = "ホイールでズーム、Shift＋ドラッグで映す位置を調整";
+    tile.title = camZoomTileTitle();
   }
   makeDraggable(tile);
   makeResizable(tile);
@@ -2783,7 +2798,7 @@ function renderControls(slots) {
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
       <td class="ctrlCell volCol">${isSelf ? "-" : `<input type="range" class="volSlider" min="0" max="100" step="5" value="${getPeerVolume(s.id)}" data-id="${s.id}" title="この端末で聞こえる${escapeHtml(s.name)}さんの音量"><span class="volLabel">${getPeerVolume(s.id)}%</span>`}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button>${isSelf && camZoomSupported() ? `
-        <span class="camZoomCtrl" title="配信画面の自分のカメラのズーム（タイル上のホイールでも可、Shift＋ドラッグで位置調整）"><button class="small ctrlBtn" data-action="zoomOut">－</button><span id="camZoomLabel">${Math.round(camZoom.z * 100)}%</span><button class="small ctrlBtn" data-action="zoomIn">＋</button><button class="small ctrlBtn" data-action="zoomReset" title="等倍に戻す">↺</button></span>
+        <span class="camZoomCtrl" title="配信画面の自分のカメラのズーム（タイル上のホイールでも可、Shift＋ドラッグで位置調整）"><button class="small ctrlBtn" data-action="zoomOut"${camZoomLocked ? " disabled" : ""}>－</button><span id="camZoomLabel">${Math.round(camZoom.z * 100)}%</span><button class="small ctrlBtn" data-action="zoomIn"${camZoomLocked ? " disabled" : ""}>＋</button><button class="small ctrlBtn" data-action="zoomReset" title="等倍に戻す"${camZoomLocked ? " disabled" : ""}>↺</button><button class="small ctrlBtn${camZoomLocked ? " active" : ""}" id="camZoomLockBtn" data-action="camZoomLock" title="ONの間はホイールやShift＋ドラッグでズーム・位置が変わらない（うっかりズーム防止）">${camZoomLockLabel()}</button></span>
         <button class="small ctrlBtn${camMirror ? " active" : ""}" id="camMirrorBtn" data-action="camMirror" title="送るカメラ映像を左右反転する（相手の画面・配信画面・レイアウト録画にも反映）">${camMirrorLabel()}</button>` : ""}</td>
       ${frameCell(s)}
       <td class="ctrlCell">
