@@ -160,7 +160,7 @@
     pointer-events: none;
   }
   .tile.screenTile video { object-fit: contain; } /* 縦横比は共有元に合わせてJSで設定（applyScreenAspect） */
-  .camZoomCtrl { display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; white-space: nowrap; }
+  .camZoomCtrl { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px; }
   .camZoomCtrl #camZoomLabel { min-width: 38px; text-align: center; font-size: 12px; }
   .tile video.videoHidden { visibility: hidden; }
   .tile .statsLine {
@@ -207,6 +207,10 @@
   table#controlsTable .volLabel { display: inline-block; width: 40px; text-align: right; font-size: 12px; color: #ccc; }
   table#controlsTable td.ctrlCell { text-align: center; white-space: nowrap; }
   table#controlsTable .ctrlBtn { width: 100%; min-width: 0; }
+  /* 自分のカメラ欄：ズーム操作・反転を「📷」ボタンの下に折り返して並べる（横一列だと欄からはみ出して見えない） */
+  table#controlsTable td.camCell { white-space: normal; }
+  table#controlsTable td.camCell .camExtra { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; margin-top: 4px; }
+  table#controlsTable td.camCell .camExtra .ctrlBtn { width: auto; }
   table#controlsTable tr[draggable="true"] { cursor: grab; }
   table#controlsTable tr.dragOver td { box-shadow: inset 0 0 0 2px #3a6ea5; }
   table#controlsTable .dragHandle { color: #777; margin-right: 6px; }
@@ -2797,9 +2801,9 @@ function renderControls(slots) {
       <td><span class="dragHandle">⠿</span>${escapeHtml(s.name)}${isSelf ? "（自分）" : ""}</td>
       <td class="ctrlCell"><button class="small ctrlBtn" data-action="mic" data-id="${s.id}">${micOn ? "🎤 ミュート" : "🔇 解除"}</button></td>
       <td class="ctrlCell volCol">${isSelf ? "-" : `<input type="range" class="volSlider" min="0" max="100" step="5" value="${getPeerVolume(s.id)}" data-id="${s.id}" title="この端末で聞こえる${escapeHtml(s.name)}さんの音量"><span class="volLabel">${getPeerVolume(s.id)}%</span>`}</td>
-      <td class="ctrlCell"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button>${isSelf && camZoomSupported() ? `
-        <span class="camZoomCtrl" title="配信画面の自分のカメラのズーム（タイル上のホイールでも可、Shift＋ドラッグで位置調整）"><button class="small ctrlBtn" data-action="zoomOut"${camZoomLocked ? " disabled" : ""}>－</button><span id="camZoomLabel">${Math.round(camZoom.z * 100)}%</span><button class="small ctrlBtn" data-action="zoomIn"${camZoomLocked ? " disabled" : ""}>＋</button><button class="small ctrlBtn" data-action="zoomReset" title="等倍に戻す"${camZoomLocked ? " disabled" : ""}>↺</button><button class="small ctrlBtn${camZoomLocked ? " active" : ""}" id="camZoomLockBtn" data-action="camZoomLock" title="ONの間はホイールやShift＋ドラッグでズーム・位置が変わらない（うっかりズーム防止）">${camZoomLockLabel()}</button></span>
-        <button class="small ctrlBtn${camMirror ? " active" : ""}" id="camMirrorBtn" data-action="camMirror" title="送るカメラ映像を左右反転する（相手の画面・配信画面・レイアウト録画にも反映）">${camMirrorLabel()}</button>` : ""}</td>
+      <td class="ctrlCell${isSelf && camZoomSupported() ? " camCell" : ""}"><button class="small ctrlBtn" data-action="cam" data-id="${s.id}">${camOn ? "📷 オフ" : "📷 オン"}</button>${isSelf && camZoomSupported() ? `
+        <div class="camExtra"><span class="camZoomCtrl" title="配信画面の自分のカメラのズーム（タイル上のホイールでも可、Shift＋ドラッグで位置調整）"><button class="small ctrlBtn" data-action="zoomOut"${camZoomLocked ? " disabled" : ""}>－</button><span id="camZoomLabel">${Math.round(camZoom.z * 100)}%</span><button class="small ctrlBtn" data-action="zoomIn"${camZoomLocked ? " disabled" : ""}>＋</button><button class="small ctrlBtn" data-action="zoomReset" title="等倍に戻す"${camZoomLocked ? " disabled" : ""}>↺</button><button class="small ctrlBtn${camZoomLocked ? " active" : ""}" id="camZoomLockBtn" data-action="camZoomLock" title="ONの間はホイールやShift＋ドラッグでズーム・位置が変わらない（うっかりズーム防止）">${camZoomLockLabel()}</button></span>
+        <button class="small ctrlBtn${camMirror ? " active" : ""}" id="camMirrorBtn" data-action="camMirror" title="送るカメラ映像を左右反転する（相手の画面・配信画面・レイアウト録画にも反映）">${camMirrorLabel()}</button></div>` : ""}</td>
       ${frameCell(s)}
       <td class="ctrlCell">
         <button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆</button>
