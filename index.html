@@ -287,6 +287,33 @@
   #buzzJudgeMark.show { display: flex; }
   #buzzJudgeMark.correct { color: rgba(255,82,82,0.85); }
   #buzzJudgeMark.wrong { color: rgba(80,160,255,0.85); }
+  /* サイコロ */
+  #diceOverlay {
+    position: absolute; left: 0; right: 0; top: 6%; z-index: 9002; pointer-events: none;
+    display: none; justify-content: center;
+  }
+  #diceOverlay.show { display: flex; animation: buzzCutinIn 0.25s ease-out; }
+  #diceOverlay .diceBox {
+    background: rgba(20,20,20,0.88); border: 3px solid #ffd54f; border-radius: 12px;
+    padding: 10px 24px; text-align: center; color: #fff; box-shadow: 0 4px 20px rgba(0,0,0,0.6); max-width: 90%;
+  }
+  #diceOverlay .diceHead { font-size: clamp(14px, 2vw, 28px); font-weight: bold; color: #ffd54f; }
+  #diceOverlay .diceFaces { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 8px 0; }
+  #diceOverlay .diceFace {
+    min-width: 1.6em; padding: 0 0.2em; height: 1.6em; line-height: 1.6em; border-radius: 0.25em;
+    background: #fff; color: #1c1c1c; font-weight: bold; font-size: clamp(16px, 3vw, 44px);
+  }
+  #diceOverlay .diceTotal { font-size: clamp(18px, 3.4vw, 50px); font-weight: bold; }
+  #diceOverlay.rolling .diceFace { background: #ccc; }
+  #diceOverlay.rolling .diceTotal { color: #888; }
+  #dicePanel input[type="text"] { width: 90px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 6px; }
+  #dicePanel input[type="number"] { width: 56px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
+  .diceRow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+  #diceRollBtn { font-weight: bold; }
+  #diceError { color: #ff8a8a; }
+  #diceLog { margin-top: 8px; font-size: 13px; max-height: 180px; overflow-y: auto; }
+  #diceLog div { padding: 2px 0; border-bottom: 1px solid #333; }
+  #diceLog .diceLogTotal { color: #ffd54f; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -384,7 +411,7 @@
     </div>
     <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
     <div id="popAudioContainer"></div>
-    <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div></div>
+    <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div><div id="diceOverlay"></div></div>
 
     <section class="panel" id="buzzPanel">
       <h2>早押し</h2>
@@ -447,6 +474,30 @@
       </div>
     </section>
 
+    <section class="panel" id="dicePanel">
+      <h2>🎲 サイコロ</h2>
+      <label><input type="checkbox" id="diceEnabledToggle"> サイコロを使う（全員の画面に表示されます・誰でもON/OFFできます）</label>
+      <div id="diceBody" style="display:none;">
+        <div class="diceRow">
+          <label title="「個数d面数」で指定します（例: 2d6＝6面ダイスを2個、1d100＝100面ダイスを1個）">振るダイス <input type="text" id="diceNotationInput" value="1d6" placeholder="例: 2d6"></label>
+          <button id="diceRollBtn">🎲 振る</button>
+          <span id="diceError"></span>
+        </div>
+        <div class="diceRow">
+          <span class="hint">よく使う:</span>
+          <button class="small diceQuick" data-dice="1d6">1d6</button>
+          <button class="small diceQuick" data-dice="2d6">2d6</button>
+          <button class="small diceQuick" data-dice="3d6">3d6</button>
+          <button class="small diceQuick" data-dice="1d10">1d10</button>
+          <button class="small diceQuick" data-dice="1d20">1d20</button>
+          <button class="small diceQuick" data-dice="1d100">1d100</button>
+          <label title="出目を配置エリアに表示しておく秒数">表示 <input type="number" id="diceShowSec" min="1" max="600" step="1">秒</label>
+        </div>
+        <span class="hint" style="font-size:11px; color:#888;">個数は1〜100、面数は2〜10000。振った結果は全員の配置エリア（録画・別ウィンドウ表示にも）に表示されます。</span>
+        <div id="diceLog"></div>
+      </div>
+    </section>
+
     <section class="panel">
       <h2>操作</h2>
       <table id="controlsTable"></table>
@@ -479,7 +530,8 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, set, get, update, remove, push, onValue, onDisconnect, serverTimestamp, runTransaction
+  getDatabase, ref, set, get, update, remove, push, onValue, onDisconnect, serverTimestamp, runTransaction,
+  query, limitToLast
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ai-jinro-call プロジェクト。ROOM_ID は RTDB セキュリティルール(rooms/test1)と一致させる必要がある
@@ -1427,6 +1479,7 @@ async function joinRoom(name) {
   });
   listenBuzzer();
   listenScoreboard();
+  listenDice();
   listenMemberFrames();
   publishMyFrame();
 }
@@ -3159,6 +3212,7 @@ function drawRecordFrame() {
   });
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
+  drawDiceOverlayOnCanvas(ctx);
 
   recordLoopWin = gridWin(); // 配置エリアを表示しているウィンドウのrAFで回す（メイン画面が裏に隠れても止まらないように）
   recordLoopId = recordLoopWin.requestAnimationFrame(drawRecordFrame);
@@ -4531,6 +4585,254 @@ function fitText(ctx, text, maxW) {
 }
 
 // ---------- 結果コピー ----------
+// ---------- サイコロ（オプション機能） ----------
+// rooms/{ROOM_ID}/dice/config: { enabled }（誰でもON/OFF。ONの間だけ全員に振る操作欄と出目の表示が出る）
+// rooms/{ROOM_ID}/dice/log/{pushId}: { name, n, m, values: [...], total, at }
+// 出目は振った人の端末で決めて（crypto.getRandomValues）書き込み、全員が同じ値を表示する。
+// 表示は配置エリア内の#diceOverlay（別ウィンドウ表示にも一緒に移る）と、合成録画のキャンバス（drawDiceOverlayOnCanvas）。
+const DICE_MAX_COUNT = 100, DICE_MAX_SIDES = 10000;
+const DICE_ROLL_ANIM_MS = 1200;      // 出目が決まるまでの転がる演出
+const DICE_FACES_SHOWN_MAX = 20;     // これより多い個数は出目を並べず合計だけ出す
+const DICE_LOG_KEEP = 30;
+const diceEnabledToggle = document.getElementById("diceEnabledToggle");
+const diceBody = document.getElementById("diceBody");
+const diceNotationInput = document.getElementById("diceNotationInput");
+const diceRollBtn = document.getElementById("diceRollBtn");
+const diceError = document.getElementById("diceError");
+const diceShowSecInput = document.getElementById("diceShowSec");
+const diceLogEl = document.getElementById("diceLog");
+const diceOverlay = document.getElementById("diceOverlay");
+let diceEnabled = false;
+let diceLog = [];                 // [{ id, name, n, m, values, total, at }]（古い順）
+let diceSeenIds = null;           // 入室時点で既にあったログは演出しない
+let diceShow = null;              // 表示中の出目 { roll, rollUntil, until }
+let diceAnimTimer = null;
+let diceShowSec = 8;
+try {
+  const saved = localStorage.getItem("diceNotation");
+  if (saved) diceNotationInput.value = saved;
+  const sec = parseInt(localStorage.getItem("diceShowSec"), 10);
+  if (sec > 0) diceShowSec = sec;
+} catch (e) {}
+diceShowSecInput.value = diceShowSec;
+
+// "2d6" / "d20" / "２Ｄ６"（全角）を { n, m } に。不正なら null
+function parseDiceNotation(text) {
+  const t = String(text).replace(/[０-９ＤｄDd]/g, (c) => {
+    const code = c.charCodeAt(0);
+    return code >= 0xFF10 && code <= 0xFF19 ? String.fromCharCode(code - 0xFEE0) : "d";
+  }).replace(/\s+/g, "");
+  const mt = /^(\d*)d(\d+)$/.exec(t);
+  if (!mt) return null;
+  const n = mt[1] === "" ? 1 : parseInt(mt[1], 10);
+  const m = parseInt(mt[2], 10);
+  if (!(n >= 1 && n <= DICE_MAX_COUNT && m >= 2 && m <= DICE_MAX_SIDES)) return null;
+  return { n, m };
+}
+
+// 1〜mの一様乱数（剰余の偏りを避けるため棄却法）
+function rollDie(m) {
+  const buf = new Uint32Array(1);
+  const limit = Math.floor(0x100000000 / m) * m;
+  do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+  return (buf[0] % m) + 1;
+}
+
+function rollDice(text) {
+  const d = parseDiceNotation(text);
+  if (!d) {
+    diceError.textContent = `「個数d面数」で入力してください（例: 2d6。個数1〜${DICE_MAX_COUNT}・面数2〜${DICE_MAX_SIDES}）`;
+    return;
+  }
+  diceError.textContent = "";
+  diceNotationInput.value = `${d.n}d${d.m}`;
+  try { localStorage.setItem("diceNotation", diceNotationInput.value); } catch (e) {}
+  const values = Array.from({ length: d.n }, () => rollDie(d.m));
+  const total = values.reduce((a, b) => a + b, 0);
+  push(ref(db, `rooms/${ROOM_ID}/dice/log`), { name: myName, n: d.n, m: d.m, values, total, at: serverTimestamp() });
+}
+
+diceEnabledToggle.addEventListener("change", () => {
+  set(ref(db, `rooms/${ROOM_ID}/dice/config/enabled`), diceEnabledToggle.checked);
+});
+diceRollBtn.addEventListener("click", () => rollDice(diceNotationInput.value));
+diceNotationInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") rollDice(diceNotationInput.value);
+});
+document.querySelectorAll(".diceQuick").forEach((b) => b.addEventListener("click", () => rollDice(b.dataset.dice)));
+diceShowSecInput.addEventListener("change", () => {
+  const v = parseInt(diceShowSecInput.value, 10);
+  diceShowSec = v >= 1 ? Math.min(v, 600) : 8;
+  diceShowSecInput.value = diceShowSec;
+  try { localStorage.setItem("diceShowSec", String(diceShowSec)); } catch (e) {}
+});
+
+function listenDice() {
+  onValue(ref(db, `rooms/${ROOM_ID}/dice/config`), (snap) => {
+    diceEnabled = !!snap.val()?.enabled;
+    diceEnabledToggle.checked = diceEnabled;
+    diceBody.style.display = diceEnabled ? "" : "none";
+    if (!diceEnabled) hideDiceOverlay();
+  });
+  onValue(query(ref(db, `rooms/${ROOM_ID}/dice/log`), limitToLast(DICE_LOG_KEEP)), (snap) => {
+    const list = [];
+    snap.forEach((c) => { list.push({ id: c.key, ...c.val() }); });
+    diceLog = list;
+    if (diceSeenIds === null) {
+      diceSeenIds = new Set(list.map((r) => r.id));
+    } else {
+      const fresh = list.filter((r) => !diceSeenIds.has(r.id));
+      fresh.forEach((r) => diceSeenIds.add(r.id));
+      if (fresh.length && diceEnabled) showDiceRoll(fresh[fresh.length - 1]);
+    }
+    renderDiceLog();
+  });
+}
+
+function diceValuesOf(r) {
+  return Array.isArray(r.values) ? r.values : Object.values(r.values || {});
+}
+
+function diceRollLabel(r) {
+  return `${r.name} が ${r.n}d${r.m} を振った`;
+}
+
+function renderDiceLog() {
+  diceLogEl.innerHTML = diceLog.slice().reverse().map((r) => {
+    const vals = diceValuesOf(r);
+    const faces = vals.length > 1 && vals.length <= DICE_FACES_SHOWN_MAX ? ` [${vals.join(", ")}]` : "";
+    const time = r.at ? new Date(r.at).toLocaleTimeString("ja-JP") : "";
+    return `<div>${escapeHtml(time)} ${escapeHtml(r.name)}: ${r.n}d${r.m}${faces} → <span class="diceLogTotal">${r.total}</span></div>`;
+  }).join("");
+}
+
+function showDiceRoll(roll) {
+  const now = Date.now();
+  diceShow = { roll: { ...roll, values: diceValuesOf(roll) }, rollUntil: now + DICE_ROLL_ANIM_MS, until: now + DICE_ROLL_ANIM_MS + diceShowSec * 1000, settled: false };
+  clearInterval(diceAnimTimer);
+  let tick = 0;
+  diceAnimTimer = setInterval(() => {
+    const t = Date.now();
+    if (!diceShow) { clearInterval(diceAnimTimer); return; }
+    if (t < diceShow.rollUntil) {
+      if (tick++ % 2 === 0) playBuzzTones([{ f: 600 + Math.random() * 400, d: 0.03, type: "square", g: 0.08 }]);
+      renderDiceOverlay(true);
+    } else if (t < diceShow.until) {
+      if (!diceShow.settled) {
+        diceShow.settled = true;
+        renderDiceOverlay(false);
+        playBuzzTones([{ f: 784, d: 0.12, type: "sine", g: 0.3 }, { f: 1175, d: 0.3, type: "sine", g: 0.3 }]);
+      }
+    } else {
+      hideDiceOverlay();
+    }
+  }, 60);
+  renderDiceOverlay(true);
+}
+
+// 転がっている間は出目をランダムに入れ替えて見せる（録画のキャンバスも同じ値を描く）
+function diceDisplayValues(rolling) {
+  const r = diceShow.roll;
+  if (!rolling) return r.values;
+  if (!diceShow.fake || Date.now() - diceShow.fakeAt > 80) {
+    diceShow.fake = r.values.map(() => 1 + Math.floor(Math.random() * r.m));
+    diceShow.fakeAt = Date.now();
+  }
+  return diceShow.fake;
+}
+
+// 合計の行：転がっている間は「…」、2個以上は「合計 n」、1個は出目そのものが答えなので出さない
+function diceTotalText(vals, rolling) {
+  if (rolling) return "…";
+  if (vals.length > 1) return `合計 ${diceShow.roll.total}`;
+  return vals.length > DICE_FACES_SHOWN_MAX ? String(diceShow.roll.total) : "";
+}
+
+function renderDiceOverlay(rolling) {
+  if (!diceShow) return;
+  const vals = diceDisplayValues(rolling);
+  const faces = vals.length <= DICE_FACES_SHOWN_MAX
+    ? `<div class="diceFaces">${vals.map((v) => `<span class="diceFace">${v}</span>`).join("")}</div>` : "";
+  const total = diceTotalText(vals, rolling);
+  diceOverlay.innerHTML = `<div class="diceBox"><div class="diceHead">🎲 ${escapeHtml(diceRollLabel(diceShow.roll))}</div>${faces}${total ? `<div class="diceTotal">${escapeHtml(total)}</div>` : ""}</div>`;
+  diceOverlay.classList.toggle("rolling", rolling);
+  diceOverlay.classList.add("show");
+}
+
+function hideDiceOverlay() {
+  clearInterval(diceAnimTimer);
+  diceShow = null;
+  diceOverlay.classList.remove("show", "rolling");
+  diceOverlay.innerHTML = "";
+}
+
+function drawDiceOverlayOnCanvas(ctx) {
+  if (!diceShow || Date.now() >= diceShow.until) return;
+  const rolling = Date.now() < diceShow.rollUntil;
+  const vals = diceDisplayValues(rolling);
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  const headPx = Math.round(H * 0.035), facePx = Math.round(H * 0.06), totalPx = Math.round(H * 0.065);
+  const head = `🎲 ${diceRollLabel(diceShow.roll)}`;
+  const total = diceTotalText(vals, rolling);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  // 出目の箱を横幅に収まるよう折り返して並べる
+  ctx.font = `bold ${facePx}px system-ui, sans-serif`;
+  const gap = facePx * 0.25, maxRowW = W * 0.8, faceH = facePx * 1.6;
+  const boxes = vals.length <= DICE_FACES_SHOWN_MAX ? vals.map((v) => {
+    const s = String(v);
+    return { s, w: Math.max(faceH, ctx.measureText(s).width + facePx * 0.5) };
+  }) : [];
+  const rows = [];
+  for (const b of boxes) {
+    const row = rows[rows.length - 1];
+    if (row && row.w + gap + b.w <= maxRowW) { row.items.push(b); row.w += gap + b.w; }
+    else rows.push({ items: [b], w: b.w });
+  }
+  ctx.font = `bold ${headPx}px system-ui, sans-serif`;
+  const headW = ctx.measureText(head).width;
+  ctx.font = `bold ${totalPx}px system-ui, sans-serif`;
+  const totalW = total ? ctx.measureText(total).width : 0;
+  const pad = headPx * 0.8;
+  const contentW = Math.max(headW, totalW, ...rows.map((rw) => rw.w));
+  const contentH = headPx * 1.4 + rows.length * (faceH + gap) + (total ? totalPx * 1.4 : 0);
+  const bw = contentW + pad * 2, bh = contentH + pad * 2;
+  const bx = (W - bw) / 2, by = H * 0.06;
+  ctx.fillStyle = "rgba(20,20,20,0.88)";
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = Math.max(3, H * 0.004);
+  ctx.beginPath();
+  ctx.roundRect(bx, by, bw, bh, headPx * 0.6);
+  ctx.fill();
+  ctx.stroke();
+  let y = by + pad + headPx * 0.7;
+  ctx.font = `bold ${headPx}px system-ui, sans-serif`;
+  ctx.fillStyle = "#ffd54f";
+  ctx.fillText(head, W / 2, y);
+  y += headPx * 0.7 + gap;
+  ctx.font = `bold ${facePx}px system-ui, sans-serif`;
+  for (const rw of rows) {
+    let x = (W - rw.w) / 2;
+    for (const b of rw.items) {
+      ctx.fillStyle = rolling ? "#ccc" : "#fff";
+      ctx.beginPath();
+      ctx.roundRect(x, y, b.w, faceH, facePx * 0.25);
+      ctx.fill();
+      ctx.fillStyle = "#1c1c1c";
+      ctx.fillText(b.s, x + b.w / 2, y + faceH / 2);
+      x += b.w + gap;
+    }
+    y += faceH + gap;
+  }
+  if (total) {
+    ctx.font = `bold ${totalPx}px system-ui, sans-serif`;
+    ctx.fillStyle = rolling ? "#888" : "#fff";
+    ctx.fillText(total, W / 2, y + totalPx * 0.7);
+  }
+  ctx.restore();
+}
+
 function copyResults() {
   const now = new Date().toLocaleString("ja-JP");
   const slots = computeSlots().filter((s) => s && s.kind === "camera");
@@ -4568,6 +4870,13 @@ function copyResults() {
     text += "\n[早押しのスコア]\n";
     for (const r of scoreRows.sort((a, b) => (b.points || 0) - (a.points || 0))) {
       text += `${r.name}${r.team ? `（${r.team}）` : ""}: ${r.points || 0}点（正解${r.correct || 0}・誤答${r.wrong || 0}）\n`;
+    }
+  }
+
+  if (diceLog.length) {
+    text += "\n[サイコロの履歴]\n";
+    for (const r of diceLog) {
+      text += `${r.name}: ${r.n}d${r.m} [${diceValuesOf(r).join(", ")}] → ${r.total}\n`;
     }
   }
 

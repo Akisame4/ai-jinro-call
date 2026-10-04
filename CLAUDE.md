@@ -15,6 +15,8 @@ rooms/{ROOM_ID}/layoutBg/{leaderId}: { dataUrl|null, updatedAt }   // リーダ�
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/memberFrames/{peerId}: { dataUrl, updatedAt }   // 各自の「自分の枠」（PNG・最大1920×1080）
 rooms/{ROOM_ID}/scoreboard: { on }   // スコアボードタイルを全員に表示するか（誰でもON/OFF可）
+rooms/{ROOM_ID}/dice/config: { enabled }   // サイコロ機能を使うか（誰でもON/OFF可）
+rooms/{ROOM_ID}/dice/log/{pushId}: { name, n, m, values: [...], total, at }
 rooms/{ROOM_ID}/buzzer/host: { name, at }
 rooms/{ROOM_ID}/buzzer/music: { playing }   // イントロクイズの曲が流れているか（曲名は送らない）
 rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
@@ -111,6 +113,15 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 「表示/非表示」ボタンは廃止。カメラがオフの参加者はタイルごと非表示にし、真っ黒な枠を出さない（`applyCameraVisibility`、`renderGrid`の最後で毎回適用）。音声は再生し続ける。
 - 自分のカメラON/OFFは`members/{myId}/cameraOn`に書き込み、全員の画面で同じタイルが消える。相手の行の「📷 オフ」はこの端末だけでそのタイルを隠す（`locallyHiddenVideoPeers`）。
 - レイアウト同期のデータから`hidden`は削除した（表示/非表示は各端末がカメラ状態から決める）。
+
+## サイコロ（オプション機能）
+
+- 「🎲 サイコロ」パネルの「サイコロを使う」で`dice/config/enabled`を切り替える（誰でもON/OFF可。早押しと違いホスト制ではない）。ONの間だけ振る操作欄と出目の表示が全員に出る。
+- 「個数d面数」（NdM）で指定（`parseDiceNotation`。`d20`＝1個、全角の「２Ｄ６」も可。個数1〜100・面数2〜10000）。よく使うものはボタン（1d6/2d6/3d6/1d10/1d20/1d100）。最後に使った指定はlocalStorage `diceNotation`。
+- 出目は**振った人の端末**で`crypto.getRandomValues`（棄却法で偏りなし、`rollDie`）で決め、`dice/log`へpushする。全員が同じ値を表示する。
+- 表示は配置エリア内の`#diceOverlay`（上部中央。別ウィンドウ表示にも一緒に移る）。届いた瞬間に約1.2秒ランダムな目で転がる演出→確定（効果音は`playBuzzTones`なので合成録画の音声にも入る）→「表示 ○秒」（既定8秒、localStorage `diceShowSec`）で消える。21個以上は出目を並べず合計だけ。入室時点で既にあったログは演出しない（`diceSeenIds`）。
+- 合成録画には`drawDiceOverlayOnCanvas`で画面と同じ見た目を描く（`drawRecordFrame`の最後）。
+- 履歴はパネルに直近30件（`limitToLast`）、「結果をコピー」にも出力する。
 
 ## 早押し（オプション機能・第一弾）
 
