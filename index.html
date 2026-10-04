@@ -177,6 +177,8 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #videoGrid.hideNames .nameLabel { display: none; }
+  /* 早押し・サイコロの演出を配置エリアに出さない（この端末のみ。操作パネル側は今までどおり使える） */
+  #videoGrid.hideBuzzFx #buzzCutin, #videoGrid.hideBuzzFx #buzzJudgeMark, #videoGrid.hideDiceFx #diceOverlay { display: none !important; }
   .tile .frameOverlay {
     position: absolute; inset: 0; z-index: 7; pointer-events: none;
     background-size: 100% 100%; background-repeat: no-repeat; display: none;
@@ -270,7 +272,7 @@
   #buzzHostControls { border-top: 1px solid #3a3a3a; margin-top: 12px; padding-top: 4px; }
   #buzzCorrectBtn { background: #1e5a2c; }
   #buzzWrongBtn { background: #6a1e1e; }
-  .tile.buzzAnswer { box-shadow: 0 0 0 4px #ffd54f, 0 0 18px 6px rgba(255,213,79,0.7); z-index: 50 !important; }
+  #videoGrid:not(.hideBuzzFx) .tile.buzzAnswer { box-shadow: 0 0 0 4px #ffd54f, 0 0 18px 6px rgba(255,213,79,0.7); z-index: 50 !important; }
   #buzzCutin {
     position: absolute; left: 0; right: 0; bottom: 12%; z-index: 9000; pointer-events: none;
     text-align: center; line-height: 1.2; display: none;
@@ -391,6 +393,10 @@
     </div>
     <div id="displayOptionsBar">
       <label><input type="checkbox" id="nameLabelToggle" checked> 名前表示</label>
+      <span class="optionGroup" title="配置エリア（別ウィンドウ表示・レイアウト録画も）に出すかどうか。この端末だけの設定です。早押し・サイコロ自体はOFFでも使えます">
+        <label><input type="checkbox" id="buzzFxToggle" checked> 早押しの演出を表示</label>
+        <label><input type="checkbox" id="diceFxToggle" checked> サイコロの出目を表示</label>
+      </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
         <label title="配置エリアの横幅を何マスに分けるか。マスは正方形になります">マス目 横<input type="number" id="gridColsInput" min="4" max="128" step="1">分割</label>
@@ -696,6 +702,8 @@ let gridSnapCols = Math.min(128, Math.max(4, parseInt(localStorage.getItem("aiJi
 let gridSnapEnabled = localStorage.getItem("aiJinroGridSnap") === "1";
 let gridLinesShown = localStorage.getItem("aiJinroGridLines") === "1";
 let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定はON
+let showBuzzFx = localStorage.getItem("showBuzzFx") !== "0"; // 早押しの演出（カットイン・○×・回答者の金枠）を配置エリアに出すか。既定はON
+let showDiceFx = localStorage.getItem("showDiceFx") !== "0"; // サイコロの出目を配置エリアに出すか。既定はON
 function gridStepXPct() { return 100 / gridSnapCols; }
 function gridStepYPct() {
   const w = videoGrid.clientWidth, h = videoGrid.clientHeight;
@@ -791,6 +799,8 @@ screenAudioCheckbox.addEventListener("change", () => {
   try { localStorage.setItem("screenShareAudio", screenAudioCheckbox.checked ? "1" : "0"); } catch (e) {}
 });
 const nameLabelToggle = document.getElementById("nameLabelToggle");
+const buzzFxToggle = document.getElementById("buzzFxToggle");
+const diceFxToggle = document.getElementById("diceFxToggle");
 const gridSnapToggle = document.getElementById("gridSnapToggle");
 const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
 const bgImageClearBtn = document.getElementById("bgImageClearBtn");
@@ -1105,6 +1115,22 @@ nameLabelToggle.addEventListener("change", () => {
   showNameLabels = nameLabelToggle.checked;
   localStorage.setItem("aiJinroShowNames", showNameLabels ? "1" : "0");
   videoGrid.classList.toggle("hideNames", !showNameLabels);
+});
+
+// 早押しの演出・サイコロの出目を配置エリアに出すか（録画にも同じ条件で描く：drawBuzzerOverlayOnCanvas/drawDiceOverlayOnCanvas）
+buzzFxToggle.checked = showBuzzFx;
+diceFxToggle.checked = showDiceFx;
+videoGrid.classList.toggle("hideBuzzFx", !showBuzzFx);
+videoGrid.classList.toggle("hideDiceFx", !showDiceFx);
+buzzFxToggle.addEventListener("change", () => {
+  showBuzzFx = buzzFxToggle.checked;
+  localStorage.setItem("showBuzzFx", showBuzzFx ? "1" : "0");
+  videoGrid.classList.toggle("hideBuzzFx", !showBuzzFx);
+});
+diceFxToggle.addEventListener("change", () => {
+  showDiceFx = diceFxToggle.checked;
+  localStorage.setItem("showDiceFx", showDiceFx ? "1" : "0");
+  videoGrid.classList.toggle("hideDiceFx", !showDiceFx);
 });
 
 gridSnapToggle.checked = gridSnapEnabled;
@@ -4117,7 +4143,7 @@ function playBuzzTones(tones) {
 }
 
 function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
-  if (!buzzConfig.enabled) return;
+  if (!buzzConfig.enabled || !showBuzzFx) return;
   const now = Date.now();
   const highlightId = buzzHighlightId();
   const answerTile = highlightId ? gridEl(`tile-${highlightId}`) : null;
@@ -4853,7 +4879,7 @@ function hideDiceOverlay() {
 }
 
 function drawDiceOverlayOnCanvas(ctx) {
-  if (!diceShow || Date.now() >= diceShow.until) return;
+  if (!diceShow || !showDiceFx || Date.now() >= diceShow.until) return;
   const rolling = Date.now() < diceShow.rollUntil;
   const vals = diceDisplayValues(rolling);
   const W = ctx.canvas.width, H = ctx.canvas.height;

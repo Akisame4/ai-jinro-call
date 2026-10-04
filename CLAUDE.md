@@ -98,6 +98,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 ## 表示オプション（この端末のみ・localStorage保存）
 
 - **名前表示ON/OFF**：`#videoGrid.hideNames`クラスで`.nameLabel`（各タイル右下）をCSSごと隠す。テキストは常にDOMへ設定しておき、表示/非表示だけを切り替える。
+- **早押しの演出・サイコロの出目の表示ON/OFF**（UC要望、2026-10-04）：「早押しの演出を表示」「サイコロの出目を表示」（localStorage `showBuzzFx`/`showDiceFx`、既定ON）。OFFだと`#videoGrid.hideBuzzFx`/`.hideDiceFx`で、配置エリアのカットイン・○×・回答者の金枠（`#videoGrid:not(.hideBuzzFx) .tile.buzzAnswer`なので金枠とz-index: 50の最前面化の両方が止まる）／サイコロの出目を隠し、合成録画にも描かない。この端末だけの設定で、早押し・サイコロ自体（パネル・履歴・効果音）はそのまま使える。
 - **グリッドスナップ（正方形のマス目）**：横を`gridSnapCols`等分（「マス目 横○分割」4〜128、既定32、localStorage `aiJinroGridCols`）し、縦も同じピクセル幅で刻む（`snapX`/`snapY`。縦の刻み%＝横の刻み%×配置エリアの幅/高さ）。配置エリアが16:9なので、%で同じ刻みにすると長方形になってしまうため。「線を表示」で`#gridLinesOverlay`（CSSのlinear-gradient、pointer-events:none）にマス目を描く。録画（合成キャンバスは`.tile`だけ描く）には入らない。配置エリアのサイズが変わると`ResizeObserver`で線を引き直す。
 - **背景画像**：選択した画像をlocalStorageにdata URLで保存し、`#videoGrid`の`background-image`に設定（`applyBgImage`）。
 - **枠画像（PNG）**：各タイル内の`.frameOverlay`（z-index最上位・`pointer-events:none`）にdata URLを設定して重ねる（`applyFrameImageToTile`/`applyFrameImageToAllTiles`）。表示ON/OFFは`#videoGrid.showFrame`で制御。
