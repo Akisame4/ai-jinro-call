@@ -22,6 +22,8 @@
     flex-wrap: wrap;
   }
   header h1 { font-size: 16px; margin: 0; margin-right: 8px; }
+  #screenAudioLabel { font-size: 13px; cursor: pointer; white-space: nowrap; }
+  #screenAudioNote { font-size: 12px; color: #ffb74d; }
   header input[type="text"] {
     background: #111; color: #fff; border: 1px solid #555;
     padding: 6px 10px; border-radius: 4px;
@@ -342,6 +344,8 @@
     <h1>遊ぶところ撮影ツール</h1>
     <button id="muteBtn">🔊 全体ミュート</button>
     <button id="shareBtn">🖥 画面共有</button>
+    <label id="screenAudioLabel" title="画面共有するときに、その画面の音（タブの音声・システム音声）も一緒に送ります。共有を始める時点の設定が使われます"><input type="checkbox" id="screenAudioCheckbox"> 画面の音も共有</label>
+    <span id="screenAudioNote"></span>
     <select id="screenQualitySelect" title="画面共有の画質（共有中に変えてもすぐ反映されます）"></select>
     <button id="scoreboardBtn" title="早押しのスコアを、画面共有と同じように全員の配置エリアへタイルとして表示します">📊 スコアボード</button>
     <button id="gateBtn">🔇 ノイズ抑制: ON</button>
@@ -539,6 +543,7 @@ const ROOM_ID = "test1";
 const MAX_PEERS = 6;
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const VIDEO_MAX_BITRATE = 400000;  // bps（通常のカメラ映像）
+const SCREEN_AUDIO_BITRATE = 128000; // bps（画面の音。音楽・ゲーム音を想定して声より高め）
 // カメラは個人録画用に高解像度で取り込み、通話にはこの高さ・fpsまで縮めて送る（送信量を増やさないため）
 const CAMERA_SEND_HEIGHT = 360, CAMERA_SEND_FPS = 24;
 // 画面共有の画質。contentHint="detail"は解像度を保って（必要ならfpsを落として）文字をくっきりさせ、
@@ -583,6 +588,11 @@ const MAX_SCREENS_PER_PERSON = 4;
 const myScreens = new Map(); // 番号 -> MediaStream（自分が共有中の画面）
 function screenKey(peerId, n) { return n === 1 ? `${peerId}-screen` : `${peerId}-screen${n}`; }
 function screenLabel(name, n) { return n === 1 ? `${name}（画面共有）` : `${name}（画面共有${n}）`; }
+// 画面共有タイルのキー → { peerId, n }（カメラのキーなら null）
+function parseScreenKey(key) {
+  const mt = /^(.*)-screen(\d*)$/.exec(key);
+  return mt ? { peerId: mt[1], n: mt[2] ? parseInt(mt[2], 10) : 1 } : null;
+}
 // members/{id} から共有中の画面番号の一覧を得る（旧バージョンはsharingフラグだけなので1つとみなす）
 function memberScreenNums(m) {
   if (!m?.sharing) return [];
@@ -774,6 +784,12 @@ const popinGridBtn = document.getElementById("popinGridBtn");
 const gridPlaceholder = document.getElementById("gridPlaceholder");
 const popAudioContainer = document.getElementById("popAudioContainer");
 const scoreboardBtn = document.getElementById("scoreboardBtn");
+const screenAudioCheckbox = document.getElementById("screenAudioCheckbox");
+const screenAudioNote = document.getElementById("screenAudioNote");
+try { screenAudioCheckbox.checked = localStorage.getItem("screenShareAudio") === "1"; } catch (e) {}
+screenAudioCheckbox.addEventListener("change", () => {
+  try { localStorage.setItem("screenShareAudio", screenAudioCheckbox.checked ? "1" : "0"); } catch (e) {}
+});
 const nameLabelToggle = document.getElementById("nameLabelToggle");
 const gridSnapToggle = document.getElementById("gridSnapToggle");
 const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
@@ -1358,7 +1374,7 @@ controlsTable.addEventListener("input", (e) => {
   if (!slider) return;
   const id = slider.dataset.id;
   const vol = parseInt(slider.value, 10);
-  const name = members[id]?.name;
+  const name = volumeNameOf(id);
   if (name) {
     peerVolumes[name] = vol;
     try { localStorage.setItem("peerVolumes", JSON.stringify(peerVolumes)); } catch (e) {}
@@ -1644,6 +1660,7 @@ function createPeerConnection(peerId, isInitiator) {
     videoSender: null,
     audioSender: null,
     screenSenders: {}, // 画面番号 -> RTCRtpSender
+    screenAudioSenders: {}, // 画面番号 -> 画面の音のRTCRtpSender（音も共有したときだけ）
     polite: !isInitiator,
     makingOffer: false,
     ignoreOffer: false,
@@ -1688,6 +1705,10 @@ function createPeerConnection(peerId, isInitiator) {
       const n = entry.remoteScreenNums[streamId] || 1;
       entry.remoteScreenStreams[n] = e.streams[0];
       attachScreenStreamToTile(peerId, n, e.streams[0]);
+      if (e.track.kind === "audio") {
+        connectAudioSource(screenKey(peerId, n), e.streams[0]); // 画面の音もレイアウト録画に入れる
+        renderControls(computeSlots()); // 操作パネルに画面の音のミュート・音量を出す
+      }
     } else {
       entry.remoteStream = e.streams[0];
       attachStreamToTile(peerId, e.streams[0]);
@@ -1759,6 +1780,12 @@ function addScreenTrackToPeer(entry, n) {
   if (!track) return;
   entry.screenSenders[n] = entry.pc.addTrack(track, stream);
   applyScreenSenderParams(entry.screenSenders[n]);
+  // 画面の音は同じMediaStreamで送る（相手は同じストリームを画面共有タイルで再生する）
+  const audioTrack = stream.getAudioTracks()[0];
+  if (audioTrack) {
+    entry.screenAudioSenders[n] = entry.pc.addTrack(audioTrack, stream);
+    applyBitrate(entry.screenAudioSenders[n], SCREEN_AUDIO_BITRATE);
+  }
 }
 
 function applyScreenQualityToTrack(stream) {
@@ -1779,6 +1806,9 @@ function removeScreenTrackFromPeer(entry, n) {
   if (!sender) return;
   try { entry.pc.removeTrack(sender); } catch (e) {}
   delete entry.screenSenders[n];
+  const audioSender = entry.screenAudioSenders[n];
+  if (audioSender) { try { entry.pc.removeTrack(audioSender); } catch (e) {} }
+  delete entry.screenAudioSenders[n];
 }
 
 function applyBitrate(sender, bitrate, degradationPreference) {
@@ -1954,6 +1984,7 @@ function closePeerConnection(peerId) {
   if (!entry) return;
   if (entry.statsInterval) clearInterval(entry.statsInterval);
   disconnectAudioSource(peerId);
+  for (let n = 1; n <= MAX_SCREENS_PER_PERSON; n++) disconnectAudioSource(screenKey(peerId, n));
   try { entry.pc.close(); } catch (e) {}
   delete peers[peerId];
 }
@@ -1965,6 +1996,7 @@ async function updateStats(peerId) {
   // 送信側の上限は接続確立後でないと効かないことがあるので、ここで毎回（変化がなければ何もしない）かけ直す
   if (entry.videoSender) applyCameraSenderParams(entry.videoSender);
   for (const sender of Object.values(entry.screenSenders)) applyScreenSenderParams(sender);
+  for (const sender of Object.values(entry.screenAudioSenders)) applyBitrate(sender, SCREEN_AUDIO_BITRATE);
   // 保険：通話中の再交渉offerに10秒たっても返事が来ない（相手が捨てた・旧バージョンの相手で上の不具合が起きた等）
   // ときは、同じofferを送り直す。返事待ちのままだと画面共有の追加・削除が相手に届かない
   const pc = entry.pc;
@@ -2033,15 +2065,21 @@ async function addScreenShare() {
     return;
   }
   let stream;
+  const wantAudio = screenAudioCheckbox.checked;
   try {
     const q = screenQuality();
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: q.fps, max: q.fps } },
-      audio: false
+      // 音楽・ゲーム音をそのまま送るため、声向けの加工（エコー除去・ノイズ抑制・自動音量）はかけない。
+      // restrictOwnAudio: 画面全体の音を取るときに、このページ自身の音（相手の声）を除く（対応ブラウザのみ。相手に自分の声が返るのを防ぐ）
+      audio: wantAudio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true } : false,
+      systemAudio: wantAudio ? "include" : "exclude"
     });
   } catch (e) {
     return; // ユーザーがキャンセルした等
   }
+  showScreenAudioNote(wantAudio && !stream.getAudioTracks().length
+    ? "この画面の音は取れませんでした（ウィンドウ共有は音なし。タブか画面全体を選び「音声を共有」をONにしてください）" : "");
   let n = 1;
   while (myScreens.has(n)) n++;
   myScreens.set(n, stream);
@@ -2050,7 +2088,11 @@ async function addScreenShare() {
   const key = screenKey(myId, n);
   createVideoTile(key, screenLabel(myName, n), false);
   const selfScreenVideo = gridEl(`video-${key}`);
-  if (selfScreenVideo) selfScreenVideo.srcObject = stream;
+  if (selfScreenVideo) {
+    selfScreenVideo.muted = true; // 画面の音は自分のPCで既に鳴っているので二重に鳴らさない
+    selfScreenVideo.srcObject = stream;
+  }
+  connectAudioSource(key, stream); // 画面の音をレイアウト録画（全員の音声）にも入れる
 
   for (const entry of Object.values(peers)) addScreenTrackToPeer(entry, n);
 
@@ -2065,6 +2107,7 @@ function stopScreenShare(n) {
   if (!stream) return;
   myScreens.delete(n);
   for (const entry of Object.values(peers)) removeScreenTrackFromPeer(entry, n);
+  disconnectAudioSource(screenKey(myId, n));
   stream.getTracks().forEach((t) => t.stop());
   removeVideoTile(screenKey(myId, n));
   publishMyScreens();
@@ -2082,6 +2125,13 @@ function publishMyScreens() {
   });
 }
 
+let screenAudioNoteTimer = null;
+function showScreenAudioNote(text) {
+  screenAudioNote.textContent = text;
+  clearTimeout(screenAudioNoteTimer);
+  if (text) screenAudioNoteTimer = setTimeout(() => (screenAudioNote.textContent = ""), 10000);
+}
+
 function updateShareBtn() {
   shareBtn.textContent = myScreens.size ? `🖥 画面を追加（共有中${myScreens.size}）` : "🖥 画面共有";
   shareBtn.classList.toggle("active", myScreens.size > 0);
@@ -2093,8 +2143,10 @@ function attachScreenStreamToTile(peerId, n, stream) {
   const key = screenKey(peerId, n);
   createVideoTile(key, screenLabel(name, n), false);
   const video = gridEl(`video-${key}`);
-  if (video) video.srcObject = stream;
+  if (video && video.srcObject !== stream) video.srcObject = stream;
   if (gridPopped) syncPopAudio(`video-${key}`);
+  applyPeerMute(key);
+  applyPeerVolume(key);
   renderGrid();
 }
 
@@ -2104,6 +2156,7 @@ function removeRemoteScreenTiles(peerId, keepNums) {
   for (let n = 1; n <= MAX_SCREENS_PER_PERSON; n++) {
     if (keepNums.includes(n)) continue;
     if (entry) delete entry.remoteScreenStreams[n];
+    disconnectAudioSource(screenKey(peerId, n));
     removeVideoTile(screenKey(peerId, n));
   }
 }
@@ -2797,8 +2850,14 @@ function applyPeerMute(id) {
   if (el) el.muted = globalMuted || locallyMutedPeers.has(id);
 }
 
+// 聞こえる音量の保存キー（名前）。画面の音は「名前（画面共有n）」で人の声とは別に持つ
+function volumeNameOf(id) {
+  const sk = parseScreenKey(id);
+  if (sk) return members[sk.peerId] ? screenLabel(members[sk.peerId].name, sk.n) : undefined;
+  return members[id]?.name;
+}
 function getPeerVolume(id) {
-  const v = peerVolumes[members[id]?.name];
+  const v = peerVolumes[volumeNameOf(id)];
   return typeof v === "number" ? v : 100;
 }
 function applyPeerVolume(id) {
@@ -2816,7 +2875,10 @@ function updateStatsDisplay(peerId, s) {
 function toggleGlobalMute() {
   globalMuted = !globalMuted;
   muteBtn.textContent = globalMuted ? "🔇 ミュート解除" : "🔊 全体ミュート";
-  for (const id of Object.keys(peers)) applyPeerMute(id);
+  for (const [id, entry] of Object.entries(peers)) {
+    applyPeerMute(id);
+    for (const n of Object.keys(entry.remoteScreenStreams)) applyPeerMute(screenKey(id, +n));
+  }
 }
 
 // ---------- UI: 操作パネル（自分=実際のマイク/カメラ、他人=この端末だけの表示制御） ----------
@@ -2830,10 +2892,11 @@ function renderControls(slots) {
   for (const s of slots) {
     if (!s) continue;
     if (s.kind === "screen" || s.kind === "scoreboard") {
+      const sa = screenAudioCells(s);
       html += `<tr data-key="${s.key}">
         <td>${s.kind === "scoreboard" ? "📊 スコアボード" : escapeHtml(screenLabel(s.name, s.screenNum))}</td>
-        <td class="ctrlCell">-</td>
-        <td class="ctrlCell volCol">-</td>
+        <td class="ctrlCell">${sa.mic}</td>
+        <td class="ctrlCell volCol">${sa.vol}</td>
         <td class="ctrlCell">${s.kind === "screen" && s.id === myId ? `<button class="small ctrlBtn" data-action="stopShare" data-num="${s.screenNum}" title="この画面の共有を終了">■ 終了</button>` : "-"}</td>
         ${frameCell(s)}
         <td class="ctrlCell">
@@ -2866,6 +2929,22 @@ function renderControls(slots) {
   }
   controlsTable.innerHTML = html;
   for (const s of slots) if (s && s.kind === "camera") applyPeerVolume(s.id); // 名前が後から判明した相手にも保存済みの音量を反映
+  for (const s of slots) if (s && s.kind === "screen" && s.id !== myId) applyPeerVolume(s.key);
+}
+
+// 画面共有行の「マイク」「聞こえる音量」欄。音も共有されている画面だけ、相手の画面ならミュートと音量を出す
+function screenAudioCells(s) {
+  const none = { mic: "-", vol: "-" };
+  if (s.kind !== "screen") return none;
+  const stream = s.id === myId ? myScreens.get(s.screenNum) : peers[s.id]?.remoteScreenStreams[s.screenNum];
+  if (!stream?.getAudioTracks().length) return none;
+  if (s.id === myId) return { mic: `<span title="この画面の音も共有しています">🔊 音あり</span>`, vol: "-" };
+  const label = escapeHtml(screenLabel(s.name, s.screenNum));
+  const vol = getPeerVolume(s.key);
+  return {
+    mic: `<button class="small ctrlBtn" data-action="mic" data-id="${s.key}" title="この端末でだけ、この画面の音を消す">${locallyMutedPeers.has(s.key) ? "🔇 解除" : "🔊 ミュート"}</button>`,
+    vol: `<input type="range" class="volSlider" min="0" max="100" step="5" value="${vol}" data-id="${s.key}" title="この端末で聞こえる${label}の音量"><span class="volLabel">${vol}%</span>`
+  };
 }
 
 function bringTileKeyToFront(key) {
@@ -4451,7 +4530,12 @@ function popInGrid() {
   resumeGridVideos();
   for (const id of Object.keys(peers)) { applyPeerMute(id); applyPeerVolume(id); }
   videoGrid.querySelectorAll("video").forEach((v) => {
-    if (isScreenVideoId(v.id)) v.muted = false; // 画面共有の音声を元どおりタイルから鳴らす
+    if (!isScreenVideoId(v.id)) return;
+    // 画面共有の音声を元どおりタイルから鳴らす（自分の画面は自分のPCで鳴っているので常にミュート）
+    const key = v.id.replace(/^video-/, "");
+    if (parseScreenKey(key)?.peerId === myId) { v.muted = true; return; }
+    applyPeerMute(key);
+    applyPeerVolume(key);
   });
   if (wasRecording) { recordLoopWin = window; recordLoopId = requestAnimationFrame(drawRecordFrame); }
   if (win && !win.closed) win.close();
@@ -4467,6 +4551,7 @@ function resumeGridVideos() {
 function syncPopAudio(videoId) {
   const video = gridEl(videoId);
   if (!video || !video.srcObject || video.id === `video-${myId}` || video.id === `video-${SCOREBOARD_KEY}`) return;
+  if (parseScreenKey(videoId.replace(/^video-/, ""))?.peerId === myId) return; // 自分の画面の音は鳴らさない（タイルもミュートのまま）
   video.muted = true;
   if (!video.srcObject.getAudioTracks().length) return;
   let audio = document.getElementById(`popAudio-${videoId}`);
@@ -4479,7 +4564,8 @@ function syncPopAudio(videoId) {
   if (audio.srcObject !== video.srcObject) audio.srcObject = video.srcObject;
   audio.play().catch(() => {});
   const peerId = videoId.replace(/^video-/, "");
-  if (peers[peerId]) { applyPeerMute(peerId); applyPeerVolume(peerId); }
+  const sk = parseScreenKey(peerId);
+  if (peers[peerId] || (sk && peers[sk.peerId])) { applyPeerMute(peerId); applyPeerVolume(peerId); }
 }
 
 window.addEventListener("beforeunload", () => { if (gridPopupWin && !gridPopupWin.closed) gridPopupWin.close(); });
