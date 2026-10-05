@@ -256,6 +256,12 @@
   #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
   #buzzHostInfo b { color: #ffd54f; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
+  .buzzSettings select { background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
+  .buzzSettings.mbMode .buzzPtsOnly, .buzzSettings:not(.mbMode) .buzzMbOnly { display: none; }
+  .buzzMarks { letter-spacing: 1px; white-space: nowrap; }
+  .buzzMarks .maru { color: #ff6b6b; }
+  .buzzMarks .batsu { color: #6bb0ff; }
+  .buzzMarks .empty { color: #555; }
   .buzzSettings input[type="number"] { width: 56px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
   #buzzTeamInput { width: 100px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 6px; }
   .buzzCols { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -458,11 +464,14 @@
             <button id="buzzResetBtn">▶ 次の問題へ</button>
           </div>
           <div class="buzzHostRow buzzSettings">
-            <label>正解 +<input type="number" id="buzzPtsCorrect" min="0" step="1">点</label>
-            <label>誤答 −<input type="number" id="buzzPtsWrong" min="0" step="1">点</label>
+            <label>方式 <select id="buzzScoreMode"><option value="points">得点制</option><option value="marubatsu">○×制</option></select></label>
+            <label class="buzzPtsOnly">正解 +<input type="number" id="buzzPtsCorrect" min="0" step="1">点</label>
+            <label class="buzzPtsOnly">誤答 −<input type="number" id="buzzPtsWrong" min="0" step="1">点</label>
+            <label class="buzzPtsOnly"><input type="number" id="buzzWinPts" min="0" step="1">点先取で勝ち抜け（0=なし）</label>
+            <label class="buzzPtsOnly">誤答 <input type="number" id="buzzMaxWrong" min="0" step="1">回で失格（0=なし）</label>
+            <label class="buzzMbOnly">○ <input type="number" id="buzzMaruWin" min="0" step="1">個で勝ち抜け（0=なし）</label>
+            <label class="buzzMbOnly">× <input type="number" id="buzzBatsuOut" min="0" step="1">個で失格（0=なし）</label>
             <label>制限時間 <input type="number" id="buzzAnswerSec" min="0" step="1">秒（0=なし）</label>
-            <label><input type="number" id="buzzWinPts" min="0" step="1">点先取で勝ち抜け（0=なし）</label>
-            <label>誤答 <input type="number" id="buzzMaxWrong" min="0" step="1">回で失格（0=なし）</label>
             <label><input type="checkbox" id="buzzTeamMode"> チーム戦</label>
             <button class="small" id="buzzClearScoresBtn">スコアを全消去</button>
           </div>
@@ -863,8 +872,12 @@ const BUZZ_NUMBER_INPUTS = {
   ptsWrong: document.getElementById("buzzPtsWrong"),
   answerSec: document.getElementById("buzzAnswerSec"),
   winPts: document.getElementById("buzzWinPts"),
-  maxWrong: document.getElementById("buzzMaxWrong")
+  maxWrong: document.getElementById("buzzMaxWrong"),
+  maruWin: document.getElementById("buzzMaruWin"),
+  batsuOut: document.getElementById("buzzBatsuOut")
 };
+const buzzScoreModeSelect = document.getElementById("buzzScoreMode");
+const buzzSettingsRow = document.querySelector(".buzzSettings");
 
 // 表示名はこの端末に保存し、次回以降は自動で入力欄に復元する
 nameInput.value = localStorage.getItem("aiJinroDisplayName") || "";
@@ -936,6 +949,7 @@ layoutSyncBtn.addEventListener("click", onLayoutSyncBtnClick);
 buzzBtn.addEventListener("click", pressBuzzer);
 buzzEnabledToggle.addEventListener("change", () => hostUpdateBuzzConfig({ enabled: buzzEnabledToggle.checked }));
 buzzTeamModeToggle.addEventListener("change", () => hostUpdateBuzzConfig({ teamMode: buzzTeamModeToggle.checked }));
+buzzScoreModeSelect.addEventListener("change", () => hostUpdateBuzzConfig({ scoreMode: buzzScoreModeSelect.value }));
 for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
   input.addEventListener("change", () => hostUpdateBuzzConfig({ [field]: Math.max(0, parseInt(input.value, 10) || 0) }));
 }
@@ -967,7 +981,7 @@ buzzTeamInput.addEventListener("change", () => {
 });
 buzzScoreTable.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-buzz-adjust]");
-  if (btn) hostAdjustBuzzScore(btn.dataset.key, parseInt(btn.dataset.buzzAdjust, 10));
+  if (btn) hostAdjustBuzzScore(btn.dataset.key, parseInt(btn.dataset.buzzAdjust, 10), btn.dataset.field || "points");
 });
 // スペースキーで早押し（入力欄にフォーカスがあるときは文字入力を優先する）。別ウィンドウの配置エリアでも使えるよう関数にしておく
 document.addEventListener("keydown", onBuzzHotkey);
@@ -3730,7 +3744,8 @@ function isRoomHost() {
 }
 
 // ---------- 早押し ----------
-// rooms/{ROOM_ID}/buzzer/config: { enabled, ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, teamMode }
+// rooms/{ROOM_ID}/buzzer/config: { enabled, scoreMode: "points"|"marubatsu", ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, maruWin, batsuOut, teamMode }
+// scoreMode="marubatsu"（○×制）では正解数＝○・誤答数＝×として表示し、勝ち抜け・失格を maruWin/batsuOut で決める（点数は裏で従来どおり加算）
 // rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"（"done"は旧仕様・現在は使わない）, answererId, answerDeadline, lockedOut: {entityKey: true}, judge: {id, correct, name} }
 // rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at(サーバー時刻換算ms), recv, name, team }
 // rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
@@ -3741,7 +3756,7 @@ function isRoomHost() {
 const BUZZ_WINDOW_MS = 500;
 const BUZZ_CUTIN_MS = 1800;
 const BUZZ_JUDGE_MARK_MS = 1200;
-const BUZZ_DEFAULT_CONFIG = { enabled: false, ptsCorrect: 1, ptsWrong: 0, answerSec: 0, winPts: 0, maxWrong: 0, teamMode: false };
+const BUZZ_DEFAULT_CONFIG = { enabled: false, scoreMode: "points", ptsCorrect: 1, ptsWrong: 0, answerSec: 0, winPts: 0, maxWrong: 0, maruWin: 7, batsuOut: 3, teamMode: false };
 let buzzConfig = { ...BUZZ_DEFAULT_CONFIG };
 let buzzState = {};
 let buzzPresses = {};       // phase -> { peerId: press }
@@ -3777,15 +3792,41 @@ function buzzEntityOf(id) {
   const team = buzzTeamOf(id);
   return buzzConfig.teamMode && team ? { key: "t_" + fbKey(team), label: team } : { key: "p_" + fbKey(name), label: name };
 }
+function buzzIsMarubatsu() {
+  return buzzConfig.scoreMode === "marubatsu";
+}
+// 勝ち抜け・失格の判定（方式によって見る値と基準が変わる）
+function buzzJudgeStats(points, correct, wrong) {
+  if (buzzIsMarubatsu()) {
+    return { won: buzzConfig.maruWin > 0 && correct >= buzzConfig.maruWin, out: buzzConfig.batsuOut > 0 && wrong >= buzzConfig.batsuOut };
+  }
+  return { won: buzzConfig.winPts > 0 && points >= buzzConfig.winPts, out: buzzConfig.maxWrong > 0 && wrong >= buzzConfig.maxWrong };
+}
 function buzzEntityStats(entity) {
-  let points = 0, wrong = 0;
+  let points = 0, correct = 0, wrong = 0;
   for (const r of Object.values(buzzScores)) {
     const rEntityKey = buzzConfig.teamMode && r.team ? "t_" + fbKey(r.team) : "p_" + fbKey(r.name);
     if (rEntityKey !== entity.key) continue;
     points += r.points || 0;
+    correct += r.correct || 0;
     wrong += r.wrong || 0;
   }
-  return { points, wrong, won: buzzConfig.winPts > 0 && points >= buzzConfig.winPts, out: buzzConfig.maxWrong > 0 && wrong >= buzzConfig.maxWrong };
+  return { points, correct, wrong, ...buzzJudgeStats(points, correct, wrong) };
+}
+// ○×制の並び順：勝ち抜け → 残っている人 → 失格。それぞれ○が多い順、×が少ない順
+function buzzMbCompare(a, b) {
+  const rank = (st) => (st.won ? 0 : st.out ? 2 : 1);
+  return rank(a) - rank(b) || b.correct - a.correct || a.wrong - b.wrong;
+}
+// ○×を「○○○○○」のように並べる（目標数があればその数だけ枠を出し、まだの分は暗く。多すぎるときは数字で）
+function buzzMarksHtml(count, target, mark, cls) {
+  if (target > 0 && target <= 10) {
+    const filled = Math.min(count, target);
+    return `<span class="buzzMarks"><span class="${cls}">${mark.repeat(filled)}</span><span class="empty">${mark.repeat(target - filled)}</span>${count > target ? `<span class="${cls}">+${count - target}</span>` : ""}</span>`;
+  }
+  if (!count) return `<span class="buzzMarks"><span class="empty">-</span></span>`;
+  if (count <= 10) return `<span class="buzzMarks"><span class="${cls}">${mark.repeat(count)}</span></span>`;
+  return `<span class="buzzMarks"><span class="${cls}">${mark}${count}</span></span>`;
 }
 function buzzEligible(id) {
   if (!members[id] || members[id].buzzSpectator) return false;
@@ -3947,6 +3988,15 @@ async function hostJudgeBuzz(correct) {
     order: sorted.map(([id, pr]) => ({ name: pr.name, diffMs: pr.at - firstAt }))
   });
   const judge = { id: Date.now() + "_" + Math.random().toString(36).slice(2, 6), correct, name };
+  // この判定で勝ち抜け・失格が決まったら演出用に載せる（加算前の値＋今回の分で判定する）
+  const entity = buzzEntityOf(answererId);
+  const before = buzzEntityStats(entity);
+  const after = buzzJudgeStats(
+    before.points + (correct ? buzzConfig.ptsCorrect : -buzzConfig.ptsWrong),
+    before.correct + (correct ? 1 : 0), before.wrong + (correct ? 0 : 1));
+  if (after.won && !before.won) judge.result = "win";
+  else if (after.out && !before.out) judge.result = "out";
+  judge.label = entity.label;
   // 正解・不正解のどちらでも、判定したらすぐに全員が押せる状態に戻す（2着以降へ回答権を回すことはしない）
   if (correct) {
     await addBuzzScore(answererId, { points: buzzConfig.ptsCorrect, correct: 1 });
@@ -3980,9 +4030,13 @@ async function hostResetBuzzQuestion(nextQuestion = true, extra = {}) {
   });
 }
 
-function hostAdjustBuzzScore(key, delta) {
-  if (!isRoomHost() || !buzzScores[key]) return;
-  runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}/points`), (cur) => (cur || 0) + delta);
+// field: "points"（得点制の点数）／"correct"・"wrong"（○×制の○・×の数）
+function hostAdjustBuzzScore(key, delta, field = "points") {
+  if (!isRoomHost() || !buzzScores[key] || !["points", "correct", "wrong"].includes(field)) return;
+  runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}/${field}`), (cur) => {
+    const v = (cur || 0) + delta;
+    return field === "points" ? v : Math.max(0, v);
+  });
 }
 
 // 誤操作防止のため、2回押しで消去（ブラウザのconfirmダイアログは使わない）
@@ -4079,6 +4133,16 @@ function handleBuzzStateEffects(isInitialSnapshot) {
   if (judgeIsNew) {
     buzzLastJudgeId = judgeId;
     showBuzzJudge(!!buzzState.judge.correct);
+    const result = buzzState.judge.result;
+    if (result) { // 勝ち抜け・失格が決まったら○×の後にカットインで知らせる
+      const text = `${buzzState.judge.label || buzzState.judge.name} ${result === "win" ? "勝ち抜け！" : "失格…"}`;
+      setTimeout(() => {
+        showBuzzCutinText(text);
+        playBuzzTones(result === "win"
+          ? [{ f: 1047, d: 0.12, type: "sine", g: 0.3 }, { f: 1319, d: 0.12, type: "sine", g: 0.3 }, { f: 1568, d: 0.4, type: "sine", g: 0.3 }]
+          : [{ f: 330, d: 0.25, type: "triangle", g: 0.3 }, { f: 262, d: 0.25, type: "triangle", g: 0.3 }, { f: 196, d: 0.5, type: "triangle", g: 0.3 }]);
+      }, BUZZ_JUDGE_MARK_MS);
+    }
   }
   const alreadyAnnounced = buzzAnnounced.phase === buzzState.phase && buzzAnnounced.id === answererId;
   if (answerKey && answerKey !== buzzLastAnswerer && !(alreadyAnnounced && !judgeIsNew)) {
@@ -4095,15 +4159,18 @@ function handleBuzzStateEffects(isInitialSnapshot) {
 function showBuzzCutin(peerId, silent = false) {
   const name = buzzNameOf(peerId);
   const team = buzzConfig.teamMode ? buzzTeamOf(peerId) : "";
-  buzzCutinText = team ? `${name}（${team}）` : name;
+  showBuzzCutinText(team ? `${name}（${team}）` : name);
+  // ピンポーン
+  if (!silent) playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
+}
+function showBuzzCutinText(text) {
+  buzzCutinText = text;
   buzzCutin.querySelector("span").textContent = buzzCutinText;
   buzzCutin.classList.remove("show");
   void buzzCutin.offsetWidth; // アニメーションを毎回やり直す
   buzzCutin.classList.add("show");
   buzzCutinUntil = Date.now() + BUZZ_CUTIN_MS;
   setTimeout(() => { if (Date.now() >= buzzCutinUntil) buzzCutin.classList.remove("show"); }, BUZZ_CUTIN_MS);
-  // ピンポーン
-  if (!silent) playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
 }
 
 function showBuzzJudge(correct) {
@@ -4232,14 +4299,24 @@ function renderBuzzer() {
     ? `ホスト: <b>${escapeHtml(hostName)}</b>${isHostNamePresent() ? "" : "（未指定のため最初に入室した人が代行中）"}`
     : "";
   buzzTeamModeToggle.checked = !!buzzConfig.teamMode;
+  const mb = buzzIsMarubatsu();
+  if (document.activeElement !== buzzScoreModeSelect) buzzScoreModeSelect.value = mb ? "marubatsu" : "points";
+  buzzSettingsRow.classList.toggle("mbMode", mb);
   for (const [field, input] of Object.entries(BUZZ_NUMBER_INPUTS)) {
     if (document.activeElement !== input) input.value = buzzConfig[field] ?? 0;
   }
-  const rules = [`正解+${buzzConfig.ptsCorrect}`];
-  if (buzzConfig.ptsWrong) rules.push(`誤答−${buzzConfig.ptsWrong}`);
+  const rules = [];
+  if (mb) {
+    rules.push("○×制");
+    if (buzzConfig.maruWin) rules.push(`○${buzzConfig.maruWin}つで勝ち抜け`);
+    if (buzzConfig.batsuOut) rules.push(`×${buzzConfig.batsuOut}つで失格`);
+  } else {
+    rules.push(`正解+${buzzConfig.ptsCorrect}`);
+    if (buzzConfig.ptsWrong) rules.push(`誤答−${buzzConfig.ptsWrong}`);
+    if (buzzConfig.winPts) rules.push(`${buzzConfig.winPts}点先取`);
+    if (buzzConfig.maxWrong) rules.push(`${buzzConfig.maxWrong}誤答で失格`);
+  }
   if (buzzConfig.answerSec) rules.push(`制限${buzzConfig.answerSec}秒`);
-  if (buzzConfig.winPts) rules.push(`${buzzConfig.winPts}点先取`);
-  if (buzzConfig.maxWrong) rules.push(`${buzzConfig.maxWrong}誤答で失格`);
   if (buzzConfig.teamMode) rules.push("チーム戦");
   buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
 
@@ -4297,36 +4374,47 @@ function renderBuzzer() {
 
   // スコア
   const rows = Object.entries(buzzScores);
-  let sh = `<tr><th>${buzzConfig.teamMode ? "チーム / 名前" : "名前"}</th><th>点</th><th>正解</th><th>誤答</th>${host ? "<th>修正</th>" : ""}</tr>`;
-  const scoreRow = (key, r, indent) => {
-    const adjust = host ? `<td><button class="small" data-buzz-adjust="1" data-key="${key}">+1</button> <button class="small" data-buzz-adjust="-1" data-key="${key}">−1</button></td>` : "";
-    return `<tr><td>${indent ? "　" : ""}${escapeHtml(r.name)}</td><td>${r.points || 0}</td><td>${r.correct || 0}</td><td>${r.wrong || 0}</td>${adjust}</tr>`;
+  // 得点制：点・正解・誤答／○×制：○・×（目標数の枠つき）。ホストの修正ボタンも方式に合わせる
+  const adjBtns = (key, field, label) =>
+    `${label}<button class="small" data-buzz-adjust="1" data-field="${field}" data-key="${key}">+1</button> <button class="small" data-buzz-adjust="-1" data-field="${field}" data-key="${key}">−1</button>`;
+  const valueCells = (pts, c, w, bold) => {
+    const b = (v) => (bold ? `<b>${v}</b>` : v);
+    return mb
+      ? `<td>${buzzMarksHtml(c, buzzConfig.maruWin, "○", "maru")}</td><td>${buzzMarksHtml(w, buzzConfig.batsuOut, "×", "batsu")}</td>`
+      : `<td>${b(pts)}</td><td>${c}</td><td>${w}</td>`;
+  };
+  const colCount = (mb ? 3 : 4) + (host ? 1 : 0);
+  let sh = `<tr><th>${buzzConfig.teamMode ? "チーム / 名前" : "名前"}</th>${mb ? "<th>○</th><th>×</th>" : "<th>点</th><th>正解</th><th>誤答</th>"}${host ? "<th>修正</th>" : ""}</tr>`;
+  const scoreRow = (key, r, indent, badgeHtml = "") => {
+    const adjust = host ? `<td>${mb ? `${adjBtns(key, "correct", "○")}　${adjBtns(key, "wrong", "×")}` : adjBtns(key, "points", "")}</td>` : "";
+    return `<tr><td>${indent ? "　" : ""}${escapeHtml(r.name)}${badgeHtml}</td>${valueCells(r.points || 0, r.correct || 0, r.wrong || 0)}${adjust}</tr>`;
   };
   const badge = (st) => (st.won ? `<span class="buzzBadge win">勝ち抜け</span>` : "") + (st.out ? `<span class="buzzBadge out">失格</span>` : "");
+  const personStats = (r) => buzzEntityStats({ key: "p_" + fbKey(r.name) });
   if (buzzConfig.teamMode) {
     const teams = {};
     for (const [key, r] of rows) {
       const t = r.team || "";
       (teams[t] = teams[t] || []).push([key, r]);
     }
-    const teamTotals = Object.entries(teams).map(([t, list]) => [t, list, list.reduce((a, [, r]) => a + (r.points || 0), 0)])
-      .sort((a, b) => b[2] - a[2]);
-    for (const [t, list, total] of teamTotals) {
+    const teamTotals = Object.entries(teams).map(([t, list]) => [t, list, list.reduce((a, [, r]) => a + (r.points || 0), 0), t ? buzzEntityStats({ key: "t_" + fbKey(t) }) : null])
+      .sort((a, b) => (mb && a[3] && b[3] ? buzzMbCompare(a[3], b[3]) : b[2] - a[2]));
+    for (const [t, list, total, st] of teamTotals) {
       if (t) {
-        const st = buzzEntityStats({ key: "t_" + fbKey(t) });
         const c = list.reduce((a, [, r]) => a + (r.correct || 0), 0);
         const w = list.reduce((a, [, r]) => a + (r.wrong || 0), 0);
-        sh += `<tr><td><b>${escapeHtml(t)}</b>${badge(st)}</td><td><b>${total}</b></td><td>${c}</td><td>${w}</td>${host ? "<td></td>" : ""}</tr>`;
+        sh += `<tr><td><b>${escapeHtml(t)}</b>${badge(st)}</td>${valueCells(total, c, w, true)}${host ? "<td></td>" : ""}</tr>`;
         for (const [key, r] of list) sh += scoreRow(key, r, true);
       } else {
-        for (const [key, r] of list) sh += scoreRow(key, r, false).replace("</td>", `${badge(buzzEntityStats({ key: "p_" + fbKey(r.name) }))}</td>`);
+        for (const [key, r] of list) sh += scoreRow(key, r, false, badge(personStats(r)));
       }
     }
   } else {
-    rows.sort((a, b) => (b[1].points || 0) - (a[1].points || 0));
-    for (const [key, r] of rows) sh += scoreRow(key, r, false).replace("</td>", `${badge(buzzEntityStats({ key: "p_" + fbKey(r.name) }))}</td>`);
+    if (mb) rows.sort((a, b) => buzzMbCompare(personStats(a[1]), personStats(b[1])));
+    else rows.sort((a, b) => (b[1].points || 0) - (a[1].points || 0));
+    for (const [key, r] of rows) sh += scoreRow(key, r, false, badge(personStats(r)));
   }
-  if (!rows.length) sh += `<tr><td colspan="${host ? 5 : 4}" class="hint">まだ得点はありません</td></tr>`;
+  if (!rows.length) sh += `<tr><td colspan="${colCount}" class="hint">まだ得点はありません</td></tr>`;
   buzzScoreTable.innerHTML = sh;
 }
 
@@ -4649,19 +4737,20 @@ function drawScoreboard() {
   ctx.font = "bold 44px system-ui, sans-serif";
   ctx.fillText(`第${buzzState.question || 1}問`, W - 50, 57);
 
-  // チーム戦ならチーム合計、そうでなければ個人の点数（多い順）
-  let rows;
-  if (buzzConfig.teamMode) {
-    const teams = {};
-    for (const r of Object.values(buzzScores)) {
-      const key = r.team || r.name;
-      teams[key] = (teams[key] || 0) + (r.points || 0);
-    }
-    rows = Object.entries(teams).map(([name, points]) => ({ name, points }));
-  } else {
-    rows = Object.values(buzzScores).map((r) => ({ name: r.name, points: r.points || 0 }));
+  // チーム戦ならチーム合計、そうでなければ個人の点数（多い順）。○×制なら○×の数と勝ち抜け・失格
+  const mb = buzzIsMarubatsu();
+  const agg = {};
+  for (const r of Object.values(buzzScores)) {
+    const isTeam = buzzConfig.teamMode && r.team;
+    const key = isTeam ? "t_" + fbKey(r.team) : "p_" + fbKey(r.name);
+    const a = agg[key] = agg[key] || { key, name: isTeam ? r.team : r.name, points: 0, correct: 0, wrong: 0 };
+    a.points += r.points || 0;
+    a.correct += r.correct || 0;
+    a.wrong += r.wrong || 0;
   }
-  rows.sort((a, b) => b.points - a.points);
+  const rows = Object.values(agg).map((a) => ({ ...a, ...buzzJudgeStats(a.points, a.correct, a.wrong) }));
+  if (mb) rows.sort(buzzMbCompare);
+  else rows.sort((a, b) => b.points - a.points);
   if (!rows.length) {
     ctx.fillStyle = "#8899aa";
     ctx.textAlign = "center";
@@ -4675,10 +4764,14 @@ function drawScoreboard() {
       const y = 140 + rowH * i + rowH / 2;
       ctx.fillStyle = i % 2 ? "#15202b" : "#1b2733";
       ctx.fillRect(30, y - rowH / 2 + 4, W - 60, rowH - 8);
+      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+      if (mb) {
+        drawScoreboardMbRow(ctx, r, y, rowH, fontPx, W);
+        return;
+      }
       const rank = i === 0 || r.points !== shown[i - 1].points ? i + 1 : null;
       ctx.fillStyle = "#ffd54f";
       ctx.textAlign = "center";
-      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
       if (rank) ctx.fillText(String(rank), 90, y);
       ctx.fillStyle = "#ffffff";
       ctx.textAlign = "left";
@@ -4688,6 +4781,70 @@ function drawScoreboard() {
       ctx.fillText(`${r.points}点`, W - 60, y);
     });
   }
+}
+// ○×制の1行：名前（勝ち抜け・失格の札）＋右側に○の列と×の列。目標数があればまだの分を暗い枠で描く
+function drawScoreboardMbRow(ctx, r, y, rowH, fontPx, W) {
+  const markR = Math.min(rowH * 0.26, 22);   // ○×1個の半径
+  const gap = markR * 2.5;
+  const marksW = (target, count) => (Math.max(target > 0 && target <= 10 ? target : 0, Math.min(count, 10)) || 1) * gap;
+  const maruSlots = buzzConfig.maruWin > 0 && buzzConfig.maruWin <= 10 ? buzzConfig.maruWin : 0;
+  const batsuSlots = buzzConfig.batsuOut > 0 && buzzConfig.batsuOut <= 10 ? buzzConfig.batsuOut : 0;
+  const batsuW = marksW(batsuSlots, r.wrong);
+  const maruW = marksW(maruSlots, r.correct);
+  const batsuX = W - 60 - batsuW;
+  const maruX = batsuX - 40 - maruW;
+  // 名前と札
+  ctx.globalAlpha = r.out ? 0.45 : 1;
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  const tag = r.won ? "勝ち抜け" : r.out ? "失格" : "";
+  const tagFont = Math.round(fontPx * 0.5);
+  const nameMax = Math.max(80, maruX - 80 - (tag ? tagFont * 5 : 0));
+  const nameText = fitText(ctx, r.name, nameMax);
+  ctx.fillText(nameText, 60, y);
+  if (tag) {
+    const nx = 60 + ctx.measureText(nameText).width + 16;
+    ctx.font = `bold ${tagFont}px system-ui, sans-serif`;
+    const tw = ctx.measureText(tag).width + tagFont;
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = r.won ? "#1e7a3c" : "#7a1e1e";
+    ctx.fillRect(nx, y - tagFont * 0.75, tw, tagFont * 1.5);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(tag, nx + tagFont / 2, y);
+    ctx.globalAlpha = r.out ? 0.45 : 1;
+  }
+  // ○と×の列
+  const drawMarks = (x0, count, slots, kind) => {
+    const n = Math.max(slots, Math.min(count, 10));
+    for (let k = 0; k < n; k++) {
+      const cx = x0 + gap * k + gap / 2;
+      const on = k < count;
+      ctx.strokeStyle = on ? (kind === "maru" ? "#ff5252" : "#4fa3ff") : "#3a4652";
+      ctx.lineWidth = Math.max(4, markR * 0.35);
+      ctx.beginPath();
+      if (kind === "maru") {
+        ctx.arc(cx, y, markR, 0, Math.PI * 2);
+      } else {
+        ctx.moveTo(cx - markR, y - markR); ctx.lineTo(cx + markR, y + markR);
+        ctx.moveTo(cx + markR, y - markR); ctx.lineTo(cx - markR, y + markR);
+      }
+      ctx.stroke();
+    }
+    if (count > 10 || (slots && count > slots)) { // 枠に収まらない分は数字で
+      ctx.fillStyle = kind === "maru" ? "#ff5252" : "#4fa3ff";
+      ctx.textAlign = "right";
+      ctx.font = `bold ${Math.round(fontPx * 0.55)}px system-ui, sans-serif`;
+      ctx.fillText(String(count), x0 - 6, y);
+    }
+    if (!n) {
+      ctx.fillStyle = "#3a4652";
+      ctx.textAlign = "center";
+      ctx.fillText("-", x0 + gap / 2, y);
+    }
+  };
+  drawMarks(maruX, r.correct, maruSlots, "maru");
+  drawMarks(batsuX, r.wrong, batsuSlots, "batsu");
+  ctx.globalAlpha = 1;
 }
 function fitText(ctx, text, maxW) {
   if (ctx.measureText(text).width <= maxW) return text;
@@ -4979,9 +5136,11 @@ function copyResults() {
   }
   const scoreRows = Object.values(buzzScores);
   if (scoreRows.length) {
-    text += "\n[早押しのスコア]\n";
+    text += `\n[早押しのスコア${buzzIsMarubatsu() ? "（○×制）" : ""}]\n`;
     for (const r of scoreRows.sort((a, b) => (b.points || 0) - (a.points || 0))) {
-      text += `${r.name}${r.team ? `（${r.team}）` : ""}: ${r.points || 0}点（正解${r.correct || 0}・誤答${r.wrong || 0}）\n`;
+      text += buzzIsMarubatsu()
+        ? `${r.name}${r.team ? `（${r.team}）` : ""}: ○${r.correct || 0}・×${r.wrong || 0}\n`
+        : `${r.name}${r.team ? `（${r.team}）` : ""}: ${r.points || 0}点（正解${r.correct || 0}・誤答${r.wrong || 0}）\n`;
     }
   }
 
