@@ -174,8 +174,7 @@
   .tile .mbBadge .mbTag.win { background: #1e7a3c; }
   .tile .mbBadge .mbTag.out { background: #8a2020; }
   #videoGrid.hideMbBadge .mbBadge { display: none !important; }
-  /* サイコロ：各自のカメラの左上にその人が最後に振った出目（○×と同じくドラッグで移動できる） */
-  .tile .diceBadge { right: auto; left: 2%; text-align: left; }
+  /* サイコロ：各自のカメラの右上にその人が最後に振った結果（○×と同じくドラッグで移動できる。○×が右上にあるときはその下に並ぶ） */
   .tile .diceBadge { font-size: clamp(12px, 6cqw, 80px); line-height: 1.1; padding: 0.1em 0.4em; }
   .tile .diceBadge .dbTotal { color: #ffd54f; }
   #videoGrid.hideDiceBadge .diceBadge { display: none !important; }
@@ -425,7 +424,7 @@
         <label><input type="checkbox" id="buzzFxToggle" checked> 早押しの演出を表示</label>
         <label><input type="checkbox" id="diceFxToggle" checked> サイコロの出目を表示</label>
         <label title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）"><input type="checkbox" id="mbBadgeToggle" checked> ○×をカメラに表示</label>
-        <label title="サイコロを使っている間、各自のカメラの左上にその人が最後に振った結果（1個なら出目、2個以上なら合計）を出します。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）"><input type="checkbox" id="diceBadgeToggle" checked> 出目をカメラに表示</label>
+        <label title="サイコロを使っている間、各自のカメラの右上にその人が最後に振った結果（1個なら出目、2個以上なら合計）を出します（○×が出ているときはその下）。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）"><input type="checkbox" id="diceBadgeToggle" checked> 出目をカメラに表示</label>
       </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
@@ -531,6 +530,7 @@
           <button class="small diceQuick" data-dice="1d6">1d6</button>
           <button class="small diceQuick" data-dice="2d6">2d6</button>
           <button class="small diceQuick" data-dice="3d6">3d6</button>
+          <button class="small diceQuick" data-dice="1d8">1d8</button>
           <button class="small diceQuick" data-dice="1d10">1d10</button>
           <button class="small diceQuick" data-dice="1d20">1d20</button>
           <button class="small diceQuick" data-dice="1d100">1d100</button>
@@ -1170,6 +1170,7 @@ mbBadgeToggle.addEventListener("change", () => {
   showMbBadge = mbBadgeToggle.checked;
   localStorage.setItem("showMbBadge", showMbBadge ? "1" : "0");
   videoGrid.classList.toggle("hideMbBadge", !showMbBadge);
+  updateDiceBadges();
 });
 diceBadgeToggle.checked = showDiceBadge;
 videoGrid.classList.toggle("hideDiceBadge", !showDiceBadge);
@@ -4488,7 +4489,7 @@ function mbBadgeHtml(st) {
   const tag = st.won ? `<div><span class="mbTag win">勝ち抜け</span></div>` : st.out ? `<div><span class="mbTag out">失格</span></div>` : "";
   return row(st.correct, buzzConfig.maruWin, "○", "maru") + row(st.wrong, buzzConfig.batsuOut, "×", "batsu") + tag;
 }
-// バッジ（○×・サイコロの出目）の位置。pos が無ければCSSの既定位置（○×は右上・出目は左上）
+// バッジ（○×・サイコロの出目）の位置。pos が無ければCSSの既定位置（どちらも右上。重なるときは出目を○×の下へ：stackDiceBadgeUnderMb）
 function applyTileBadgePos(badge, pos) {
   if (badge.classList.contains("dragging")) return;
   if (pos) {
@@ -4526,6 +4527,7 @@ function updateMbBadges() {
     badge.classList.add("show");
     applyBadgeKindPos(badge, mbBadgeKind);
   });
+  updateDiceBadges(); // 出目のバッジは○×の下に並べるので、○×の大きさ・表示が変わったら置き直す
 }
 function makeTileBadgeDraggable(badge, tile, kind) {
   let drag = null;
@@ -5228,7 +5230,7 @@ function hideDiceOverlay() {
 }
 
 // ---------- サイコロ：各自のカメラタイルにその人が最後に振った出目を出す ----------
-// サイコロを使っている間、カメラタイルの左上（既定）にその人が最後に振った結果（1個なら出目、2個以上なら合計）だけを出し続ける。
+// サイコロを使っている間、カメラタイルの右上（既定。○×と重なるときはその下）にその人が最後に振った結果（1個なら出目、2個以上なら合計）だけを出し続ける。
 // 位置の持ち方・ドラッグ・レイアウト同期（layouts/{id}/diceBadge）・録画は○×のバッジと共通（makeTileBadgeDraggable/drawTileBadgeOnCanvas）。
 const DICE_BADGE_POS_KEY = "diceBadgePos";
 let diceBadgePos = (() => { try { return JSON.parse(localStorage.getItem(DICE_BADGE_POS_KEY) || "{}") || {}; } catch (e) { return {}; } })();
@@ -5267,7 +5269,18 @@ function updateDiceBadges() {
     if (badge.innerHTML !== html) badge.innerHTML = html;
     badge.classList.add("show");
     applyBadgeKindPos(badge, diceBadgeKind);
+    stackDiceBadgeUnderMb(badge, tile);
   });
+}
+// 出目も○×も既定の右上で重なるときは、出目を○×のすぐ下へずらす（ドラッグで位置を決めたものはそのまま）
+function stackDiceBadgeUnderMb(badge, tile) {
+  if (badge.classList.contains("dragging") || badge.style.top) return; // 位置を指定済み
+  const mb = tile.querySelector(".mbBadge.show");
+  if (!mb || videoGrid.classList.contains("hideMbBadge")) return;
+  const a = mb.getBoundingClientRect(), b = badge.getBoundingClientRect(), tr = tile.getBoundingClientRect();
+  if (!a.width || !b.width || !tr.height) return;
+  const overlap = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  if (overlap) badge.style.top = ((a.bottom - tr.top + tr.height * 0.015) / tr.height * 100) + "%";
 }
 
 function drawDiceOverlayOnCanvas(ctx) {

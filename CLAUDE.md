@@ -122,12 +122,12 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 ## サイコロ（オプション機能）
 
 - 「🎲 サイコロ」パネルの「サイコロを使う」で`dice/config/enabled`を切り替える（誰でもON/OFF可。早押しと違いホスト制ではない）。ONの間だけ振る操作欄と出目の表示が全員に出る。
-- 「個数d面数」（NdM）で指定（`parseDiceNotation`。`d20`＝1個、全角の「２Ｄ６」も可。個数1〜100・面数2〜10000）。よく使うものはボタン（1d6/2d6/3d6/1d10/1d20/1d100）。最後に使った指定はlocalStorage `diceNotation`。
+- 「個数d面数」（NdM）で指定（`parseDiceNotation`。`d20`＝1個、全角の「２Ｄ６」も可。個数1〜100・面数2〜10000）。よく使うものはボタン（1d6/2d6/3d6/1d8/1d10/1d20/1d100）。最後に使った指定はlocalStorage `diceNotation`。
 - 出目は**振った人の端末**で`crypto.getRandomValues`（棄却法で偏りなし、`rollDie`）で決め、`dice/log`へpushする。全員が同じ値を表示する。
 - 表示は配置エリア内の`#diceOverlay`（上部中央。別ウィンドウ表示にも一緒に移る）。届いた瞬間に約1.2秒ランダムな目で転がる演出→確定（効果音は`playBuzzTones`なので合成録画の音声にも入る）→「表示 ○秒」（既定8秒、localStorage `diceShowSec`）で消える。21個以上は出目を並べず合計だけ。入室時点で既にあったログは演出しない（`diceSeenIds`）。
 - 合成録画には`drawDiceOverlayOnCanvas`で画面と同じ見た目を描く（`drawRecordFrame`の最後）。
 - 履歴はパネルに直近30件（`limitToLast`）、「結果をコピー」にも出力する。
-- **各自のカメラに結果を表示**（UC要望、2026-10-07。○×のバッジと同じ仕組み）：サイコロを使っている間、カメラタイルの左上（既定）に、その人が最後に振った**結果だけ**（1個なら出目、2個以上なら合計の数字のみ。NdMや個々の出目は出さない、UC指示）を出し続ける（`.diceBadge`、`updateDiceBadges`。`renderGrid`とサイコロのログ・設定の購読から更新）。人の対応は名前（`diceLatestByName`、`fbKey(名前)`）。新しく振られた結果は、中央の転がる演出が確定するのと同時（`DICE_ROLL_ANIM_MS`後、`revealDiceBadge`）に差し替える（それまでは前回の結果のまま）。入室時点のログからも最新の結果を出す。ドラッグで移動・ダブルクリックで元の位置、位置はlocalStorage `diceBadgePos`・レイアウト同期は`layouts/{id}/diceBadge`、録画にも描く。○×と共通の部品：`makeTileBadgeDraggable(badge, tile, kind)`（kind＝`{posMap, syncField, save}`）・`applyBadgeKindPos`・`drawTileBadgeOnCanvas`（背景色のあるspanは箱も描く）。表示オプションの「出目をカメラに表示」（localStorage `showDiceBadge`、既定ON、この端末だけ）で消せる。
+- **各自のカメラに結果を表示**（UC要望、2026-10-07。○×のバッジと同じ仕組み）：サイコロを使っている間、カメラタイルの右上（既定。UC指示で2026-10-08に左上から変更）に、その人が最後に振った**結果だけ**（1個なら出目、2個以上なら合計の数字のみ。NdMや個々の出目は出さない、UC指示）を出し続ける（`.diceBadge`、`updateDiceBadges`。`renderGrid`とサイコロのログ・設定の購読から更新）。人の対応は名前（`diceLatestByName`、`fbKey(名前)`）。新しく振られた結果は、中央の転がる演出が確定するのと同時（`DICE_ROLL_ANIM_MS`後、`revealDiceBadge`）に差し替える（それまでは前回の結果のまま）。入室時点のログからも最新の結果を出す。○×制のバッジ（同じく右上）と重なるときは、出目を○×のすぐ下にずらす（`stackDiceBadgeUnderMb`。ドラッグで位置を決めた出目はそのまま。`updateMbBadges`の最後でも置き直す）。ドラッグで移動・ダブルクリックで元の位置、位置はlocalStorage `diceBadgePos`・レイアウト同期は`layouts/{id}/diceBadge`、録画にも描く。○×と共通の部品：`makeTileBadgeDraggable(badge, tile, kind)`（kind＝`{posMap, syncField, save}`）・`applyBadgeKindPos`・`drawTileBadgeOnCanvas`（背景色のあるspanは箱も描く）。表示オプションの「出目をカメラに表示」（localStorage `showDiceBadge`、既定ON、この端末だけ）で消せる。
 
 ## 早押し（オプション機能・第一弾）
 
