@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>遊ぶところ撮影ツール</title>
+<!-- サイコロの立体演出用（読めないときは従来の平面の演出になる） -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -324,6 +326,9 @@
     display: none; justify-content: center;
   }
   #diceOverlay.show { display: flex; animation: buzzCutinIn 0.25s ease-out; }
+  /* 立体ダイスが転がるステージ（配置エリア全体。three.js、Dice3D） */
+  #diceStage { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 9001; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  #videoGrid.hideDiceFx #diceStage { display: none !important; }
   #diceOverlay .diceBox {
     background: rgba(20,20,20,0.88); border: 3px solid #ffd54f; border-radius: 12px;
     padding: 10px 24px; text-align: center; color: #fff; box-shadow: 0 4px 20px rgba(0,0,0,0.6); max-width: 90%;
@@ -5050,7 +5055,8 @@ function fitText(ctx, text, maxW) {
 // 出目は振った人の端末で決めて（crypto.getRandomValues）書き込み、全員が同じ値を表示する。
 // 表示は配置エリア内の#diceOverlay（別ウィンドウ表示にも一緒に移る）と、合成録画のキャンバス（drawDiceOverlayOnCanvas）。
 const DICE_MAX_COUNT = 100, DICE_MAX_SIDES = 10000;
-const DICE_ROLL_ANIM_MS = 1200;      // 出目が決まるまでの転がる演出
+const DICE_ROLL_ANIM_MS = 1900;      // 出目が決まるまでの転がる演出（立体ダイスが着地するまで）
+const DICE_3D_MAX_COUNT = 30;        // これより多い個数は立体にせず従来の平面の演出
 const DICE_FACES_SHOWN_MAX = 20;     // これより多い個数は出目を並べず合計だけ出す
 const DICE_LOG_KEEP = 30;
 const diceEnabledToggle = document.getElementById("diceEnabledToggle");
@@ -5169,16 +5175,242 @@ function renderDiceLog() {
   }).join("");
 }
 
+// ---------- 立体ダイス（three.js。サイトリーの演出を移植） ----------
+// 配置エリア全体に重ねたWebGLのキャンバス（#diceStage）で、ダイスが下から転がってきて跳ね、出目の面を上にして止まる。
+// 形は面数で決める：4=四面体／6=立方体／8=八面体／10=十面体（五角の凧形）／12=十二面体／20=二十面体／それ以外=立方体（上の面に出目、他の面は適当な数）。
+// キャンバスは#videoGridの中なので別ウィンドウ表示にも一緒に移り、合成録画にはdrawToで描く（preserveDrawingBuffer）。
+// three.jsが読めないときはnullで、従来の平面の演出になる。
+const Dice3D = (() => {
+  if (typeof THREE === "undefined") return null;
+  try {
+    const V3 = THREE.Vector3, Q = THREE.Quaternion;
+    const SHAPE_OF = { 4: "tetra", 6: "cube", 8: "octa", 10: "d10", 12: "dodeca", 20: "icosa" };
+    const COLOR_OF = { 4: 0x2e9a7d, 6: 0x3d6fc0, 8: 0x7a52c9, 10: 0xd9822b, 12: 0xc0453d, 20: 0x1fa3b3 };
+    const DECAL_K = { cube: 1.15, tetra: 0.95, octa: 0.95, d10: 0.85, dodeca: 1.45, icosa: 1.0 };
+    // 十面体（五角の凧形10枚）。上下の頂点と、ずらした上下2段の輪。凧形が平面になる高さ H = z0(1+cos36°)/(1-cos36°)
+    function d10Geometry() {
+      const z0 = 0.09, c36 = Math.cos(Math.PI / 5), H = z0 * (1 + c36) / (1 - c36), R = 0.82, k = 0.9 / H;
+      const top = new V3(0, 0, H * k), bot = new V3(0, 0, -H * k);
+      const U = [], L = [];
+      for (let i = 0; i < 5; i++) {
+        U.push(new V3(R * Math.cos(i * 2 * Math.PI / 5), R * Math.sin(i * 2 * Math.PI / 5), z0 * k));
+        L.push(new V3(R * Math.cos((i + 0.5) * 2 * Math.PI / 5), R * Math.sin((i + 0.5) * 2 * Math.PI / 5), -z0 * k));
+      }
+      const tris = [];
+      for (let i = 0; i < 5; i++) {
+        const j = (i + 1) % 5;
+        tris.push([top, U[i], L[i]], [top, L[i], U[j]]);   // 上の凧形
+        tris.push([bot, L[i], U[j]], [bot, U[j], L[j]]);   // 下の凧形
+      }
+      const arr = [];
+      for (let [a, b, c] of tris) {
+        const n = new V3().subVectors(b, a).cross(new V3().subVectors(c, a));
+        const cen = new V3().add(a).add(b).add(c);
+        if (n.dot(cen) < 0) [b, c] = [c, b]; // 外向きの巻き順にそろえる
+        arr.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
+      return g;
+    }
+    const shapes = {};
+    function shapeInfo(shape) {
+      if (shapes[shape]) return shapes[shape];
+      let g;
+      if (shape === "cube") g = new THREE.BoxGeometry(1, 1, 1);
+      else if (shape === "tetra") g = new THREE.TetrahedronGeometry(0.9);
+      else if (shape === "octa") g = new THREE.OctahedronGeometry(0.85);
+      else if (shape === "d10") g = d10Geometry();
+      else if (shape === "icosa") g = new THREE.IcosahedronGeometry(0.9);
+      else g = new THREE.DodecahedronGeometry(0.85);
+      if (g.index) g = g.toNonIndexed();
+      g.computeVertexNormals();
+      const pos = g.attributes.position, faces = [], a = new V3(), b = new V3(), c = new V3(), verts = [];
+      for (let i = 0; i < pos.count; i += 3) {
+        a.fromBufferAttribute(pos, i); b.fromBufferAttribute(pos, i + 1); c.fromBufferAttribute(pos, i + 2);
+        const n = new V3().subVectors(c, b).cross(new V3().subVectors(a, b)).normalize();
+        const cen = new V3().add(a).add(b).add(c).divideScalar(3);
+        if (n.dot(cen) < 0) n.negate();
+        let f = faces.find((f) => f.n.dot(n) > 0.999);
+        if (!f) { f = { n, verts: [] }; faces.push(f); }
+        [a, b, c].forEach((v) => { if (!f.verts.some((w) => w.distanceTo(v) < 1e-4)) f.verts.push(v.clone()); });
+      }
+      faces.forEach((f) => {
+        f.c = f.verts.reduce((s, v) => s.add(v), new V3()).divideScalar(f.verts.length);
+        f.r = f.verts.reduce((s, v) => s + v.distanceTo(f.c), 0) / f.verts.length;
+        const up = Math.abs(f.n.y) > 0.95 ? new V3(0, 0, -1) : new V3(0, 1, 0);
+        const x = new V3().crossVectors(up, f.n).normalize(), y = new V3().crossVectors(f.n, x);
+        f.q = new Q().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, f.n)); // 面ローカル→ダイスローカル
+        f.qShow = f.q.clone().invert();                                                  // 面を+Zへ・文字を+Yへ
+      });
+      for (let i = 0; i < pos.count; i++) { const v = new V3().fromBufferAttribute(pos, i); if (!verts.some((w) => w.distanceTo(v) < 1e-4)) verts.push(v); }
+      return shapes[shape] = { geo: g, edges: new THREE.EdgesGeometry(g, 15), faces, verts };
+    }
+    // 面のラベル。面数どおりの形なら1〜N。立方体で代用する面数は、出目の面（shown）に出目、他の面は1〜Mの適当な数
+    function labelsFor(m, val) {
+      const shape = SHAPE_OF[m] || "cube", n = shapeInfo(shape).faces.length;
+      if (SHAPE_OF[m]) return { labels: Array.from({ length: n }, (_, i) => String(i + 1)), shown: null };
+      const labels = Array.from({ length: n }, (_, i) => String(m <= 3 ? (i % m) + 1 : 1 + Math.floor(Math.random() * m)));
+      const shown = Math.floor(Math.random() * n);
+      labels[shown] = String(val);
+      return { labels, shown };
+    }
+    const texCache = {}, matCache = {}, planeGeo = new THREE.PlaneGeometry(1, 1);
+    function labelMat(label) {
+      if (texCache[label]) return texCache[label];
+      const cv = document.createElement("canvas"); cv.width = cv.height = 128; const x = cv.getContext("2d");
+      x.fillStyle = "rgba(0,0,0,.2)"; x.beginPath(); x.arc(64, 64, 58, 0, Math.PI * 2); x.fill();
+      let px = 96; x.font = `bold ${px}px "Yu Gothic UI",Arial,sans-serif`;
+      const w = x.measureText(label).width;
+      if (w > 104) { px = Math.floor(px * 104 / w); x.font = `bold ${px}px "Yu Gothic UI",Arial,sans-serif`; }
+      x.textAlign = "center"; x.textBaseline = "middle";
+      x.lineWidth = Math.max(4, px / 10); x.strokeStyle = "rgba(0,0,0,.65)"; x.lineJoin = "round"; x.strokeText(label, 64, 64 + px * 0.08);
+      x.fillStyle = "#fff"; x.fillText(label, 64, 64 + px * 0.08);
+      if (label === "6" || label === "9") x.fillRect(46, 108, 36, 7);
+      const tex = new THREE.CanvasTexture(cv);
+      return texCache[label] = new THREE.MeshStandardMaterial({ map: tex, transparent: true, roughness: 0.5, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2, depthWrite: false });
+    }
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45 });
+    function buildDie(m, val) {
+      const shape = SHAPE_OF[m] || "cube", si = shapeInfo(shape), grp = new THREE.Group();
+      const color = COLOR_OF[m] ?? 0x5b6b86;
+      const mat = matCache[color] || (matCache[color] = new THREE.MeshStandardMaterial({ color, roughness: 0.32, metalness: 0.15, flatShading: true }));
+      grp.add(new THREE.Mesh(si.geo, mat));
+      grp.add(new THREE.LineSegments(si.edges, edgeMat));
+      const { labels, shown } = labelsFor(m, val);
+      si.faces.forEach((f, i) => {
+        const mesh = new THREE.Mesh(planeGeo, labelMat(labels[i])), sc = f.r * DECAL_K[shape];
+        mesh.scale.set(sc, sc, 1); mesh.position.copy(f.c).addScaledVector(f.n, 0.004); mesh.quaternion.copy(f.q); grp.add(mesh);
+      });
+      let fi = shown;
+      if (fi == null) {
+        const cand = labels.map((l, i) => (l === String(val) ? i : -1)).filter((i) => i >= 0);
+        fi = cand.length ? cand[Math.floor(Math.random() * cand.length)] : 0;
+      }
+      return { grp, si, fi };
+    }
+    function addLights(scene) {
+      scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+      const d = new THREE.DirectionalLight(0xffffff, 0.7); d.position.set(-0.5, -0.6, 1); scene.add(d);
+      const d2 = new THREE.DirectionalLight(0x99aaff, 0.25); d2.position.set(0.8, 0.5, 0.3); scene.add(d2);
+    }
+    // 着地の「カッ」：早押しの効果音と同じく、自分のスピーカーと合成録画の音声（audioDest）へ
+    function clack(vol) {
+      try {
+        ensureAudioGraph();
+        if (audioCtx.state !== "running") return;
+        const t = audioCtx.currentTime, len = Math.floor(audioCtx.sampleRate * 0.05), buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate), d = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+        const src = audioCtx.createBufferSource(); src.buffer = buf;
+        const bp = audioCtx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1500 + Math.random() * 2500; bp.Q.value = 1.1;
+        const g = audioCtx.createGain(); g.gain.value = vol * 0.35;
+        src.connect(bp); bp.connect(g); g.connect(audioCtx.destination); g.connect(audioDest); src.start(t);
+      } catch (e) {}
+    }
+
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+    renderer.setClearColor(0, 0);
+    const cv = renderer.domElement; cv.id = "diceStage";
+    videoGrid.appendChild(cv);
+    const scene = new THREE.Scene(); addLights(scene);
+    const TH = Math.PI / 6.4, COSA = Math.cos(TH);
+    const shadowGeo = new THREE.CircleGeometry(0.62, 20), shadowMat = new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: 0.3, depthWrite: false });
+    const easeOut = (u) => 1 - Math.pow(1 - u, 3);
+    let items = [], raf = 0, rafWin = null, timer = 0, gen = 0, visible = false;
+    function removeItems() {
+      items.forEach((it) => { scene.remove(it.die); scene.remove(it.shadow); it.shadow.material.dispose(); });
+      items = [];
+    }
+    function stop() { if (raf && rafWin) rafWin.cancelAnimationFrame(raf); raf = 0; clearInterval(timer); timer = 0; }
+    // list: [{ m: 面数, val: 出目 }]、sec: 着地までの秒数。始められたらtrue
+    function roll(list, sec) {
+      const W = videoGrid.clientWidth, H = videoGrid.clientHeight;
+      if (!W || !H) return false;
+      stop(); removeItems(); gen++;
+      // 録画（1920×1080）でもぼやけないよう、配置エリアが小さいときは解像度を上げて描く
+      renderer.setPixelRatio(Math.min(3, Math.max(window.devicePixelRatio || 1, 1920 / W)));
+      renderer.setSize(W, H, false);
+      const cam = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -4000, 4000);
+      cam.position.set(0, -Math.sin(TH) * 1000, Math.cos(TH) * 1000); cam.lookAt(0, 0, 0);
+      const n = list.length;
+      const S = Math.max(18, Math.min(H * 0.09, Math.min(W, H) / (Math.sqrt(n) * 3.1)));
+      const cols = Math.ceil(Math.sqrt(n * 1.8)), rows = Math.ceil(n / cols), gap = S * 1.6;
+      const k = sec / 1.9; // 1.9秒を基準に、転がる時間を合わせる
+      let tEnd = 0;
+      list.forEach((d, i) => {
+        const { grp: die, si, fi } = buildDie(d.m, d.val);
+        const yaw = (Math.random() - 0.5) * 0.9; // 文字がだいたい正面を向くように、ひねりは控えめ
+        const qFinal = new Q().setFromAxisAngle(new V3(0, 0, 1), yaw).multiply(si.faces[fi].qShow);
+        let minZ = 1e9; si.verts.forEach((v) => { const z = v.clone().applyQuaternion(qFinal).z; if (z < minZ) minZ = z; });
+        const r = Math.floor(i / cols), c = i % cols, inRow = Math.min(cols, n - r * cols);
+        const x1 = (c - (inRow - 1) / 2) * gap + (Math.random() - 0.5) * S * 0.3;
+        const y1 = ((rows - 1) / 2 - r) * gap * 0.9 + (Math.random() - 0.5) * S * 0.3 - H * 0.06;
+        const T = (1.0 + Math.random() * 0.55) * k, delay = Math.random() * 0.18 * k;
+        const it = { die, qFinal, zRest: -minZ * S, x0: (Math.random() - 0.5) * W * 0.35, y0: -(H / 2) / COSA - S * 2, x1, y1, T, delay,
+          axis: new V3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(), A0: (5 + Math.random() * 6) * Math.PI,
+          zMax: S * (4.2 + Math.random() * 2.2), nb: 2 + Math.floor(Math.random() * 2), hit: 0, shadow: new THREE.Mesh(shadowGeo, shadowMat.clone()) };
+        die.scale.setScalar(S); scene.add(die); scene.add(it.shadow);
+        items.push(it); tEnd = Math.max(tEnd, delay + T);
+      });
+      cv.style.transition = "none"; cv.style.opacity = "1"; visible = true;
+      const t0 = performance.now(), tmp = new Q(), myGen = gen;
+      rafWin = gridWin();
+      let lastAt = 0, ended = false;
+      // 描画はrAF（配置エリアを出しているウィンドウ）とタイマー（メイン画面）の両方から進める。
+      // 別ウィンドウが裏に隠れるなどでrAFが止まっても、最後は出目の面で止まった絵になるように
+      const render = () => {
+        if (myGen !== gen || ended) return;
+        const now = performance.now();
+        if (now - lastAt < 12) return;
+        lastAt = now;
+        const t = (now - t0) / 1000;
+        items.forEach((it) => {
+          const u = Math.min(1, Math.max(0, (t - it.delay) / it.T));
+          const e = easeOut(u);
+          const h = u >= 1 ? 0 : it.zMax * Math.pow(1 - u, 2) * Math.abs(Math.cos(Math.PI * it.nb * u));
+          it.die.position.set(it.x0 + (it.x1 - it.x0) * e, it.y0 + (it.y1 - it.y0) * e, it.zRest + h);
+          tmp.setFromAxisAngle(it.axis, it.A0 * (1 - e)); it.die.quaternion.copy(tmp).multiply(it.qFinal);
+          it.shadow.position.set(it.die.position.x, it.die.position.y, 0.5);
+          it.shadow.scale.setScalar(S * (1.05 - Math.min(0.5, h / (S * 9))));
+          it.shadow.material.opacity = 0.32 / (1 + h / (S * 2.5));
+          if (u > 0 && u < 1 && it.hit < it.nb && u >= (it.hit + 0.5) / it.nb) { clack(Math.pow(1 - u, 1.3) + 0.15); it.hit++; }
+        });
+        renderer.render(scene, cam);
+        if (t >= tEnd + 0.1) { ended = true; stop(); } // 着地後は止まった絵のまま
+      };
+      const onRaf = () => { render(); if (!ended && myGen === gen) raf = rafWin.requestAnimationFrame(onRaf); };
+      raf = rafWin.requestAnimationFrame(onRaf);
+      timer = setInterval(render, 33);
+      return true;
+    }
+    // 表示を終える（フェードアウトしてから片付け）
+    function clear() {
+      if (!visible) return;
+      visible = false; stop();
+      const myGen = ++gen;
+      cv.style.transition = "opacity 0.3s"; cv.style.opacity = "0";
+      setTimeout(() => { if (myGen === gen) { removeItems(); renderer.clear(); } }, 350);
+    }
+    function drawTo(ctx) {
+      if (!visible) return;
+      try { ctx.drawImage(cv, 0, 0, ctx.canvas.width, ctx.canvas.height); } catch (e) {}
+    }
+    return { roll, clear, drawTo };
+  } catch (e) { console.warn("[Dice3D] disabled:", e); return null; }
+})();
+
 function showDiceRoll(roll) {
   const now = Date.now();
   diceShow = { roll: { ...roll, values: diceValuesOf(roll) }, rollUntil: now + DICE_ROLL_ANIM_MS, until: now + DICE_ROLL_ANIM_MS + diceShowSec * 1000, settled: false };
   clearInterval(diceAnimTimer);
+  // 立体ダイス：配置エリアの下から転がってきて、着地した面が出目になる（効果音は着地のたびの「カッ」）
+  diceShow.use3d = !!Dice3D && diceShow.roll.values.length <= DICE_3D_MAX_COUNT && Dice3D.roll(diceShow.roll.values.map((v) => ({ m: diceShow.roll.m, val: v })), DICE_ROLL_ANIM_MS / 1000);
   let tick = 0;
   diceAnimTimer = setInterval(() => {
     const t = Date.now();
     if (!diceShow) { clearInterval(diceAnimTimer); return; }
     if (t < diceShow.rollUntil) {
-      if (tick++ % 2 === 0) playBuzzTones([{ f: 600 + Math.random() * 400, d: 0.03, type: "square", g: 0.08 }]);
+      if (!diceShow.use3d && tick++ % 2 === 0) playBuzzTones([{ f: 600 + Math.random() * 400, d: 0.03, type: "square", g: 0.08 }]);
       renderDiceOverlay(true);
     } else if (t < diceShow.until) {
       if (!diceShow.settled) {
@@ -5196,6 +5428,7 @@ function showDiceRoll(roll) {
 // 転がっている間は出目をランダムに入れ替えて見せる（録画のキャンバスも同じ値を描く）
 function diceDisplayValues(rolling) {
   const r = diceShow.roll;
+  if (diceShow.use3d) return []; // 出目は立体ダイスの面で見せるので、箱は並べない
   if (!rolling) return r.values;
   if (!diceShow.fake || Date.now() - diceShow.fakeAt > 80) {
     diceShow.fake = r.values.map(() => 1 + Math.floor(Math.random() * r.m));
@@ -5207,6 +5440,7 @@ function diceDisplayValues(rolling) {
 // 合計の行：転がっている間は「…」、2個以上は「合計 n」、1個は出目そのものが答えなので出さない
 function diceTotalText(vals, rolling) {
   if (rolling) return "…";
+  if (diceShow.use3d) return diceShow.roll.values.length > 1 ? `合計 ${diceShow.roll.total}` : String(diceShow.roll.total);
   if (vals.length > 1) return `合計 ${diceShow.roll.total}`;
   return vals.length > DICE_FACES_SHOWN_MAX ? String(diceShow.roll.total) : "";
 }
@@ -5225,6 +5459,7 @@ function renderDiceOverlay(rolling) {
 function hideDiceOverlay() {
   clearInterval(diceAnimTimer);
   diceShow = null;
+  if (Dice3D) Dice3D.clear();
   diceOverlay.classList.remove("show", "rolling");
   diceOverlay.innerHTML = "";
 }
@@ -5285,6 +5520,7 @@ function stackDiceBadgeUnderMb(badge, tile) {
 
 function drawDiceOverlayOnCanvas(ctx) {
   if (!diceShow || !showDiceFx || Date.now() >= diceShow.until) return;
+  if (diceShow.use3d) Dice3D.drawTo(ctx); // 立体ダイスのステージ（配置エリア全体）を先に描き、その上に箱
   const rolling = Date.now() < diceShow.rollUntil;
   const vals = diceDisplayValues(rolling);
   const W = ctx.canvas.width, H = ctx.canvas.height;
