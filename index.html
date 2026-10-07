@@ -176,10 +176,8 @@
   #videoGrid.hideMbBadge .mbBadge { display: none !important; }
   /* サイコロ：各自のカメラの左上にその人が最後に振った出目（○×と同じくドラッグで移動できる） */
   .tile .diceBadge { right: auto; left: 2%; text-align: left; }
-  .tile .diceBadge .dbHead { color: #ffd54f; font-size: 0.75em; }
-  .tile .diceBadge .dbFace { display: inline-block; margin: 0.1em 0.12em 0 0; padding: 0 0.3em; border-radius: 0.2em; background: #fff; color: #111; }
-  .tile .diceBadge .dbTotal { color: #ffd54f; margin-left: 0.15em; }
-  .tile .diceBadge.rolling .dbFace { background: #bbb; }
+  .tile .diceBadge { font-size: clamp(12px, 6cqw, 80px); line-height: 1.1; padding: 0.1em 0.4em; }
+  .tile .diceBadge .dbTotal { color: #ffd54f; }
   #videoGrid.hideDiceBadge .diceBadge { display: none !important; }
   .tile video {
     width: 100%; aspect-ratio: 16/9; background: #000; display: block; object-fit: cover;
@@ -427,7 +425,7 @@
         <label><input type="checkbox" id="buzzFxToggle" checked> 早押しの演出を表示</label>
         <label><input type="checkbox" id="diceFxToggle" checked> サイコロの出目を表示</label>
         <label title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）"><input type="checkbox" id="mbBadgeToggle" checked> ○×をカメラに表示</label>
-        <label title="サイコロを使っている間、各自のカメラの左上にその人が最後に振った出目を出します。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）"><input type="checkbox" id="diceBadgeToggle" checked> 出目をカメラに表示</label>
+        <label title="サイコロを使っている間、各自のカメラの左上にその人が最後に振った結果（1個なら出目、2個以上なら合計）を出します。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）"><input type="checkbox" id="diceBadgeToggle" checked> 出目をカメラに表示</label>
       </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
@@ -5138,14 +5136,14 @@ function listenDice() {
     const list = [];
     snap.forEach((c) => { list.push({ id: c.key, ...c.val() }); });
     diceLog = list;
-    list.forEach((r) => { diceLatestByName[fbKey(r.name || "")] = r; }); // 古い順なので最後が最新
     if (diceSeenIds === null) {
       diceSeenIds = new Set(list.map((r) => r.id));
+      list.forEach((r) => { diceLatestByName[fbKey(r.name || "")] = r; }); // 古い順なので最後が最新
     } else {
       const fresh = list.filter((r) => !diceSeenIds.has(r.id));
       fresh.forEach((r) => diceSeenIds.add(r.id));
       if (fresh.length && diceEnabled) showDiceRoll(fresh[fresh.length - 1]);
-      fresh.forEach((r) => startDiceBadgeRoll(r));
+      fresh.forEach((r) => revealDiceBadge(r));
     }
     renderDiceLog();
     updateDiceBadges();
@@ -5230,39 +5228,27 @@ function hideDiceOverlay() {
 }
 
 // ---------- サイコロ：各自のカメラタイルにその人が最後に振った出目を出す ----------
-// サイコロを使っている間、カメラタイルの左上（既定）にその人の最新の出目を出し続ける。新しく振ったときはそのバッジも転がる演出をする。
+// サイコロを使っている間、カメラタイルの左上（既定）にその人が最後に振った結果（1個なら出目、2個以上なら合計）だけを出し続ける。
 // 位置の持ち方・ドラッグ・レイアウト同期（layouts/{id}/diceBadge）・録画は○×のバッジと共通（makeTileBadgeDraggable/drawTileBadgeOnCanvas）。
 const DICE_BADGE_POS_KEY = "diceBadgePos";
-const DICE_BADGE_FACES_MAX = 10;   // これより多い個数は出目を並べず合計だけ
 let diceBadgePos = (() => { try { return JSON.parse(localStorage.getItem(DICE_BADGE_POS_KEY) || "{}") || {}; } catch (e) { return {}; } })();
 function saveDiceBadgePos() {
   try { localStorage.setItem(DICE_BADGE_POS_KEY, JSON.stringify(diceBadgePos)); } catch (e) {}
   if (isLayoutLeader()) publishLeaderLayout();
 }
 const diceBadgeKind = { posMap: () => diceBadgePos, syncField: "diceBadge", save: saveDiceBadgePos };
-const diceLatestByName = {};       // fbKey(名前) → その人の最新のログ
-const diceBadgeRollUntil = {};     // fbKey(名前) → 転がる演出の終わる時刻
-let diceBadgeTimer = null;
-function startDiceBadgeRoll(r) {
-  diceBadgeRollUntil[fbKey(r.name || "")] = Date.now() + DICE_ROLL_ANIM_MS;
-  if (diceBadgeTimer) return;
-  diceBadgeTimer = setInterval(() => {
+const diceLatestByName = {};       // fbKey(名前) → カメラに出しているその人の最新のログ
+// 新しく振られた出目は、中央の転がる演出が終わって確定するのと同時にカメラ側を差し替える（先に答えが見えないように）
+function revealDiceBadge(r) {
+  setTimeout(() => {
+    const key = fbKey(r.name || "");
+    const cur = diceLatestByName[key];
+    if (cur && (cur.at || 0) > (r.at || 0)) return; // もっと新しい出目が先に確定している
+    diceLatestByName[key] = r;
     updateDiceBadges();
-    const now = Date.now();
-    if (!Object.values(diceBadgeRollUntil).some((t) => t > now)) { clearInterval(diceBadgeTimer); diceBadgeTimer = null; updateDiceBadges(); }
-  }, 80);
-}
-function diceBadgeHtml(r, rolling) {
-  const vals = diceValuesOf(r);
-  const shown = rolling ? vals.map(() => 1 + Math.floor(Math.random() * r.m)) : vals;
-  const head = `<div><span class="dbHead">🎲 ${r.n}d${r.m}</span></div>`;
-  if (vals.length > DICE_BADGE_FACES_MAX) return head + `<div><span class="dbTotal">${rolling ? "…" : "= " + r.total}</span></div>`;
-  const faces = shown.map((v) => `<span class="dbFace">${v}</span>`).join("");
-  const total = vals.length > 1 ? `<span class="dbTotal">${rolling ? "= …" : "= " + r.total}</span>` : "";
-  return head + `<div>${faces}${total}</div>`;
+  }, DICE_ROLL_ANIM_MS);
 }
 function updateDiceBadges() {
-  const now = Date.now();
   videoGrid.querySelectorAll(".tile").forEach((tile) => {
     const id = tile.id.slice(5); // "tile-"の後ろ
     const member = members[id];
@@ -5277,10 +5263,8 @@ function updateDiceBadges() {
       makeTileBadgeDraggable(badge, tile, diceBadgeKind);
     }
     badge.dataset.name = member.name;
-    const rolling = (diceBadgeRollUntil[fbKey(member.name || "")] || 0) > now;
-    const html = diceBadgeHtml(r, rolling);
+    const html = `<span class="dbTotal">${Number(r.total) || 0}</span>`; // 結果（1個なら出目、2個以上なら合計）だけ
     if (badge.innerHTML !== html) badge.innerHTML = html;
-    badge.classList.toggle("rolling", rolling);
     badge.classList.add("show");
     applyBadgeKindPos(badge, diceBadgeKind);
   });
