@@ -127,6 +127,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 表示は配置エリア内の`#diceOverlay`（上部中央。別ウィンドウ表示にも一緒に移る）。届いた瞬間に約1.2秒ランダムな目で転がる演出→確定（効果音は`playBuzzTones`なので合成録画の音声にも入る）→「表示 ○秒」（既定8秒、localStorage `diceShowSec`）で消える。21個以上は出目を並べず合計だけ。入室時点で既にあったログは演出しない（`diceSeenIds`）。
 - 合成録画には`drawDiceOverlayOnCanvas`で画面と同じ見た目を描く（`drawRecordFrame`の最後）。
 - 履歴はパネルに直近30件（`limitToLast`）、「結果をコピー」にも出力する。
+- **各自のカメラに出目を表示**（UC要望、2026-10-07。○×のバッジと同じ仕組み）：サイコロを使っている間、カメラタイルの左上（既定）に、その人が最後に振った出目（`🎲 NdM`＋出目の箱＋合計。11個以上は合計だけ）を出し続ける（`.diceBadge`、`updateDiceBadges`。`renderGrid`とサイコロのログ・設定の購読から更新）。人の対応は名前（`diceLatestByName`、`fbKey(名前)`）。新しく振られたときはバッジも約1.2秒転がる（`startDiceBadgeRoll`）。入室時点のログからも最新の出目を出す（演出なし）。ドラッグで移動・ダブルクリックで元の位置、位置はlocalStorage `diceBadgePos`・レイアウト同期は`layouts/{id}/diceBadge`、録画にも描く。○×と共通の部品：`makeTileBadgeDraggable(badge, tile, kind)`（kind＝`{posMap, syncField, save}`）・`applyBadgeKindPos`・`drawTileBadgeOnCanvas`（背景色のあるspanは箱も描く）。表示オプションの「出目をカメラに表示」（localStorage `showDiceBadge`、既定ON、この端末だけ）で消せる。
 
 ## 早押し（オプション機能・第一弾）
 
@@ -145,7 +146,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 「結果をコピー」に早押しの履歴（問題ごとの判定と着順・時間差）とスコアを出力する。
 - **方式の切り替え（得点制／○×制）**（UC要望、2026-10-05）：ホストの設定欄「方式」で`buzzer/config/scoreMode`（`"points"`＝従来の得点制・既定／`"marubatsu"`＝○×制）を切り替える。○×制では正解数＝○・誤答数＝×として表示し、勝ち抜け・失格は`maruWin`（○N個で勝ち抜け、既定7）・`batsuOut`（×N個で失格、既定3）で決める（0=なし）。得点制の`winPts`/`maxWrong`とは別の設定（`buzzJudgeStats`が方式ごとに見分ける）。記録はどちらの方式でも同じ`scores/{nameKey}`の`points`/`correct`/`wrong`に加算するので、途中で切り替えても失われない。
 - ○×制の表示：パネルのスコア表は○/×を目標数ぶんの枠で並べ（`buzzMarksHtml`）、勝ち抜け→残り→失格、○が多い順・×が少ない順に並べる（`buzzMbCompare`）。ホストの修正ボタンは○と×をそれぞれ±1（`hostAdjustBuzzScore(key, delta, field)`）。スコアボードのタイルも○×の列で描き、失格は薄く表示（`drawScoreboardMbRow`）。
-- **各自のカメラに○×を表示**（UC要望、2026-10-07）：○×制の間、参加者（観戦者以外）のカメラタイルの右上に、その人（チーム戦ならチーム）の○の列・×の列（目標数ぶん、まだの分は薄く）と勝ち抜け／失格の札を重ねる（`.mbBadge`、`updateMbBadges`。`renderBuzzer`と`renderGrid`から更新）。大きさはタイル幅に追従（`.tile`に`container-type: inline-size`、`cqw`）。ドラッグでタイル内を移動（タイルの移動にはしない）、ダブルクリックで右上に戻す。位置は人ごと（`fbKey(名前)`）に`{ax:"l"|"r", x, y}`（近い方の左右の辺・上からの距離、タイルに対する割合）でlocalStorage `mbBadgePos`に保存し、レイアウト同期のリーダーは`layouts/{id}/mbBadge`で配る（追従中はリーダーの位置を使い、ドラッグ不可）。合成録画にも描く（`drawMbBadgeOnCanvas`：画面の各spanの位置・色を写す）。表示オプションの「○×をカメラに表示」（localStorage `showMbBadge`、既定ON、この端末だけ）で消せる。
+- **各自のカメラに○×を表示**（UC要望、2026-10-07）：○×制の間、参加者（観戦者以外）のカメラタイルの右上に、その人（チーム戦ならチーム）の○の列・×の列（目標数ぶん、まだの分は薄く）と勝ち抜け／失格の札を重ねる（`.mbBadge`、`updateMbBadges`。`renderBuzzer`と`renderGrid`から更新）。大きさはタイル幅に追従（`.tile`に`container-type: inline-size`、`cqw`）。ドラッグでタイル内を移動（タイルの移動にはしない）、ダブルクリックで右上に戻す。位置は人ごと（`fbKey(名前)`）に`{ax:"l"|"r", x, y}`（近い方の左右の辺・上からの距離、タイルに対する割合）でlocalStorage `mbBadgePos`に保存し、レイアウト同期のリーダーは`layouts/{id}/mbBadge`で配る（追従中はリーダーの位置を使い、ドラッグ不可）。合成録画にも描く（`drawTileBadgeOnCanvas`：画面の各spanの位置・色を写す。サイコロの出目のバッジと共通）。表示オプションの「○×をカメラに表示」（localStorage `showMbBadge`、既定ON、この端末だけ）で消せる。
 - **勝ち抜け・失格の演出**：判定でその人（チーム）が勝ち抜け・失格になったら、ホストが`judge.result`（`"win"`/`"out"`）と`judge.label`を書き込み、全員の端末で○×の後に「◯◯ 勝ち抜け！」「◯◯ 失格…」のカットインと効果音を出す（得点制の点数先取・誤答失格でも同じ）。
 
 ## 既知の制約
