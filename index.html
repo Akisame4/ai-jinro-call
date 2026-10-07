@@ -157,6 +157,23 @@
     line-height: 0;
   }
   .tile.dragging { cursor: grabbing; z-index: 20; box-shadow: 0 0 0 2px #3a6ea5; }
+  /* ○×制の各自の○×（カメラタイルの右上。ドラッグでタイル内を移動できる）。大きさはタイルの幅に合わせる */
+  .tile { container-type: inline-size; }
+  .tile .mbBadge {
+    position: absolute; top: 3%; right: 2%; z-index: 7; display: none;
+    padding: 0.15em 0.45em; border-radius: 0.35em; background: rgba(0,0,0,0.62);
+    font: bold clamp(9px, 4.2cqw, 56px)/1.2 system-ui, sans-serif; text-align: right; white-space: nowrap;
+    cursor: move; pointer-events: auto; touch-action: none; user-select: none;
+  }
+  .tile .mbBadge.show { display: block; }
+  .tile .mbBadge.dragging { outline: 2px dashed #ffd54f; }
+  .tile .mbBadge .maru { color: #ff5252; }
+  .tile .mbBadge .batsu { color: #4fa3ff; }
+  .tile .mbBadge .empty { color: rgba(255,255,255,0.28); }
+  .tile .mbBadge .mbTag { display: inline-block; margin-top: 0.1em; padding: 0 0.35em; border-radius: 0.2em; font-size: 0.75em; color: #fff; }
+  .tile .mbBadge .mbTag.win { background: #1e7a3c; }
+  .tile .mbBadge .mbTag.out { background: #8a2020; }
+  #videoGrid.hideMbBadge .mbBadge { display: none !important; }
   .tile video {
     width: 100%; aspect-ratio: 16/9; background: #000; display: block; object-fit: cover;
     pointer-events: none;
@@ -402,6 +419,7 @@
       <span class="optionGroup" title="配置エリア（別ウィンドウ表示・レイアウト録画も）に出すかどうか。この端末だけの設定です。早押し・サイコロ自体はOFFでも使えます">
         <label><input type="checkbox" id="buzzFxToggle" checked> 早押しの演出を表示</label>
         <label><input type="checkbox" id="diceFxToggle" checked> サイコロの出目を表示</label>
+        <label title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）"><input type="checkbox" id="mbBadgeToggle" checked> ○×をカメラに表示</label>
       </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
@@ -713,6 +731,7 @@ let gridLinesShown = localStorage.getItem("aiJinroGridLines") === "1";
 let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定はON
 let showBuzzFx = localStorage.getItem("showBuzzFx") !== "0"; // 早押しの演出（カットイン・○×・回答者の金枠）を配置エリアに出すか。既定はON
 let showDiceFx = localStorage.getItem("showDiceFx") !== "0"; // サイコロの出目を配置エリアに出すか。既定はON
+let showMbBadge = localStorage.getItem("showMbBadge") !== "0"; // ○×制の各自の○×をカメラタイルに出すか。既定はON
 function gridStepXPct() { return 100 / gridSnapCols; }
 function gridStepYPct() {
   const w = videoGrid.clientWidth, h = videoGrid.clientHeight;
@@ -809,6 +828,7 @@ screenAudioCheckbox.addEventListener("change", () => {
 });
 const nameLabelToggle = document.getElementById("nameLabelToggle");
 const buzzFxToggle = document.getElementById("buzzFxToggle");
+const mbBadgeToggle = document.getElementById("mbBadgeToggle");
 const diceFxToggle = document.getElementById("diceFxToggle");
 const gridSnapToggle = document.getElementById("gridSnapToggle");
 const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
@@ -1136,6 +1156,13 @@ buzzFxToggle.checked = showBuzzFx;
 diceFxToggle.checked = showDiceFx;
 videoGrid.classList.toggle("hideBuzzFx", !showBuzzFx);
 videoGrid.classList.toggle("hideDiceFx", !showDiceFx);
+mbBadgeToggle.checked = showMbBadge;
+videoGrid.classList.toggle("hideMbBadge", !showMbBadge);
+mbBadgeToggle.addEventListener("change", () => {
+  showMbBadge = mbBadgeToggle.checked;
+  localStorage.setItem("showMbBadge", showMbBadge ? "1" : "0");
+  videoGrid.classList.toggle("hideMbBadge", !showMbBadge);
+});
 buzzFxToggle.addEventListener("change", () => {
   showBuzzFx = buzzFxToggle.checked;
   localStorage.setItem("showBuzzFx", showBuzzFx ? "1" : "0");
@@ -2497,7 +2524,7 @@ async function publishLeaderLayout() {
   });
   try {
     const frame = { show: frameShowEnabled, off: [...frameOffTiles] };
-    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, updatedAt: serverTimestamp() });
+    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, mbBadge: mbBadgePos, updatedAt: serverTimestamp() });
   } catch (e) { console.warn("publishLeaderLayout failed", e); }
 }
 
@@ -2642,6 +2669,7 @@ function renderGrid() {
   }
   applyCameraVisibility();
   applyFrameState();
+  updateMbBadges();
 }
 
 // カメラがオフのタイルは真っ黒な枠を出さず、タイルごと非表示にする（音声は再生し続ける）。
@@ -2812,7 +2840,7 @@ function createVideoTile(peerId, name, isSelf) {
     video.addEventListener("loadedmetadata", () => applyScreenAspect(tile, video));
     video.addEventListener("resize", () => applyScreenAspect(tile, video));
   }
-  renderGrid();
+  renderGrid(); // ○×のバッジもここで付く（updateMbBadges）
 }
 
 // 画面共有タイルの縦横比を共有元（16:9以外のウィンドウ・縦長の画面など）に合わせる。
@@ -3328,6 +3356,7 @@ function drawRecordFrame() {
       const r = overlay.getBoundingClientRect();
       ctx.drawImage(img,(r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
     }
+    drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY);
   });
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
@@ -4320,6 +4349,8 @@ function renderBuzzer() {
   if (buzzConfig.teamMode) rules.push("チーム戦");
   buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
 
+  updateMbBadges();
+
   // タイルの強調（回答権のある人。押した瞬間から暫定1着を光らせる）
   videoGrid.querySelectorAll(".tile.buzzAnswer").forEach((t) => t.classList.remove("buzzAnswer"));
   const highlightId = buzzHighlightId();
@@ -4416,6 +4447,139 @@ function renderBuzzer() {
   }
   if (!rows.length) sh += `<tr><td colspan="${colCount}" class="hint">まだ得点はありません</td></tr>`;
   buzzScoreTable.innerHTML = sh;
+}
+
+// ---------- ○×制：各自のカメラタイルに○×を出す ----------
+// 早押しが○×制の間、参加者（観戦者以外）のカメラタイルの右上にその人（チーム戦ならチーム）の○×を出す。
+// ドラッグでタイル内を移動でき、位置は人ごと（名前キー）にこの端末へ保存する。レイアウト同期のリーダーなら
+// layouts/{id}/mbBadge で配り、追従中の人はリーダーの位置を使う。位置は { ax: "l"|"r", x, y }（x＝左右どちらかの辺からの距離、y＝上からの距離。タイルに対する割合）
+const MB_BADGE_POS_KEY = "mbBadgePos";
+let mbBadgePos = (() => { try { return JSON.parse(localStorage.getItem(MB_BADGE_POS_KEY) || "{}") || {}; } catch (e) { return {}; } })();
+function effectiveMbBadgePos() {
+  return followingLayout && !isLayoutLeader() ? (followingLayout.mbBadge || {}) : mbBadgePos;
+}
+function saveMbBadgePos() {
+  try { localStorage.setItem(MB_BADGE_POS_KEY, JSON.stringify(mbBadgePos)); } catch (e) {}
+  if (isLayoutLeader()) publishLeaderLayout();
+}
+// ○の列・×の列（目標数があればまだの分を薄く）＋勝ち抜け・失格の札
+function mbBadgeHtml(st) {
+  const row = (count, target, mark, cls) => {
+    if (target > 0 && target <= 10) {
+      const filled = Math.min(count, target);
+      return `<div><span class="${cls}">${mark.repeat(filled)}</span><span class="empty">${mark.repeat(target - filled)}</span>${count > target ? `<span class="${cls}">+${count - target}</span>` : ""}</div>`;
+    }
+    return `<div><span class="${cls}">${count <= 10 ? mark.repeat(count) || "" : mark + count}</span>${count ? "" : `<span class="empty">${mark}0</span>`}</div>`;
+  };
+  const tag = st.won ? `<div><span class="mbTag win">勝ち抜け</span></div>` : st.out ? `<div><span class="mbTag out">失格</span></div>` : "";
+  return row(st.correct, buzzConfig.maruWin, "○", "maru") + row(st.wrong, buzzConfig.batsuOut, "×", "batsu") + tag;
+}
+function applyMbBadgePos(badge, name) {
+  if (badge.classList.contains("dragging")) return;
+  const pos = effectiveMbBadgePos()[fbKey(name)];
+  if (pos) {
+    badge.style.top = (pos.y * 100) + "%";
+    badge.style.left = pos.ax === "l" ? (pos.x * 100) + "%" : "auto";
+    badge.style.right = pos.ax === "l" ? "auto" : (pos.x * 100) + "%";
+  } else {
+    badge.style.top = badge.style.left = badge.style.right = ""; // 既定（右上）
+  }
+}
+function updateMbBadges() {
+  const on = !!buzzConfig.enabled && buzzIsMarubatsu();
+  videoGrid.querySelectorAll(".tile").forEach((tile) => {
+    const id = tile.id.slice(5); // "tile-"の後ろ
+    const member = members[id];
+    let badge = tile.querySelector(".mbBadge");
+    const show = on && !!member && !member.buzzSpectator;
+    if (!show) { if (badge) badge.classList.remove("show"); return; }
+    if (!badge) {
+      badge = tile.ownerDocument.createElement("div");
+      badge.className = "mbBadge";
+      badge.title = "ドラッグで移動（ダブルクリックで右上に戻す）";
+      tile.appendChild(badge);
+      makeMbBadgeDraggable(badge, tile);
+    }
+    badge.dataset.name = member.name;
+    const html = mbBadgeHtml(buzzEntityStats(buzzEntityOf(id)));
+    if (badge.innerHTML !== html) badge.innerHTML = html;
+    badge.classList.add("show");
+    applyMbBadgePos(badge, member.name);
+  });
+}
+function makeMbBadgeDraggable(badge, tile) {
+  let drag = null;
+  badge.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); // タイルの移動にしない
+    if (layoutInteractionLocked()) return; // 追従中はリーダーの位置に従う
+    const tr = tile.getBoundingClientRect(), br = badge.getBoundingClientRect();
+    drag = { offX: e.clientX - br.left, offY: e.clientY - br.top, tr, bw: br.width, bh: br.height };
+    badge.classList.add("dragging");
+    badge.setPointerCapture(e.pointerId);
+  });
+  badge.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const { tr, bw, bh } = drag;
+    const left = Math.max(0, Math.min(tr.width - bw, e.clientX - drag.offX - tr.left));
+    const top = Math.max(0, Math.min(tr.height - bh, e.clientY - drag.offY - tr.top));
+    // タイルの左半分にあるときは左端から、右半分なら右端からの距離で持つ（○×が増えても内側へ伸びる）
+    const ax = left + bw / 2 < tr.width / 2 ? "l" : "r";
+    drag.pos = { ax, x: (ax === "l" ? left : tr.width - left - bw) / tr.width, y: top / tr.height };
+    badge.style.top = (drag.pos.y * 100) + "%";
+    badge.style.left = ax === "l" ? (drag.pos.x * 100) + "%" : "auto";
+    badge.style.right = ax === "l" ? "auto" : (drag.pos.x * 100) + "%";
+  });
+  const end = () => {
+    if (!drag) return;
+    const pos = drag.pos;
+    drag = null;
+    badge.classList.remove("dragging");
+    if (!pos) return; // クリックだけ
+    mbBadgePos[fbKey(badge.dataset.name)] = pos;
+    saveMbBadgePos();
+  };
+  badge.addEventListener("pointerup", end);
+  badge.addEventListener("pointercancel", end);
+  badge.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    if (layoutInteractionLocked()) return;
+    delete mbBadgePos[fbKey(badge.dataset.name)];
+    saveMbBadgePos();
+    applyMbBadgePos(badge, badge.dataset.name);
+  });
+}
+// 合成録画：画面に出ているバッジを、背景・文字の位置と色をそのまま写して描く
+function drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY) {
+  if (videoGrid.classList.contains("hideMbBadge")) return;
+  const badge = tile.querySelector(".mbBadge.show");
+  if (!badge) return;
+  const win = gridWin();
+  const r = badge.getBoundingClientRect();
+  if (!r.width) return;
+  const bx = (r.left - gridRect.left) * scaleX, by = (r.top - gridRect.top) * scaleY;
+  const cs = win.getComputedStyle(badge);
+  const rad = parseFloat(cs.borderTopLeftRadius) * scaleY || 0;
+  ctx.save();
+  ctx.fillStyle = cs.backgroundColor;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(bx, by, r.width * scaleX, r.height * scaleY, rad); else ctx.rect(bx, by, r.width * scaleX, r.height * scaleY);
+  ctx.fill();
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  badge.querySelectorAll("span").forEach((sp) => {
+    const sr = sp.getBoundingClientRect();
+    if (!sr.width) return;
+    const ss = win.getComputedStyle(sp);
+    const x = (sr.left - gridRect.left) * scaleX, y = (sr.top - gridRect.top) * scaleY;
+    if (sp.classList.contains("mbTag")) {
+      ctx.fillStyle = ss.backgroundColor;
+      ctx.fillRect(x, y, sr.width * scaleX, sr.height * scaleY);
+    }
+    ctx.font = `bold ${parseFloat(ss.fontSize) * scaleY}px system-ui, sans-serif`;
+    ctx.fillStyle = ss.color;
+    ctx.fillText(sp.textContent, x + (parseFloat(ss.paddingLeft) || 0) * scaleX, y + sr.height * scaleY / 2);
+  });
+  ctx.restore();
 }
 
 // ---------- イントロクイズ（早押しの追加機能） ----------
