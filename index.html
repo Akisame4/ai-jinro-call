@@ -159,14 +159,14 @@
   .tile.dragging { cursor: grabbing; z-index: 20; box-shadow: 0 0 0 2px #3a6ea5; }
   /* ○×制の各自の○×（カメラタイルの右上。ドラッグでタイル内を移動できる）。大きさはタイルの幅に合わせる */
   .tile { container-type: inline-size; }
-  .tile .mbBadge {
+  .tile .mbBadge, .tile .diceBadge {
     position: absolute; top: 3%; right: 2%; z-index: 7; display: none;
     padding: 0.15em 0.45em; border-radius: 0.35em; background: rgba(0,0,0,0.62);
     font: bold clamp(9px, 4.2cqw, 56px)/1.2 system-ui, sans-serif; text-align: right; white-space: nowrap;
     cursor: move; pointer-events: auto; touch-action: none; user-select: none;
   }
-  .tile .mbBadge.show { display: block; }
-  .tile .mbBadge.dragging { outline: 2px dashed #ffd54f; }
+  .tile .mbBadge.show, .tile .diceBadge.show { display: block; }
+  .tile .mbBadge.dragging, .tile .diceBadge.dragging { outline: 2px dashed #ffd54f; }
   .tile .mbBadge .maru { color: #ff5252; }
   .tile .mbBadge .batsu { color: #4fa3ff; }
   .tile .mbBadge .empty { color: rgba(255,255,255,0.28); }
@@ -174,6 +174,13 @@
   .tile .mbBadge .mbTag.win { background: #1e7a3c; }
   .tile .mbBadge .mbTag.out { background: #8a2020; }
   #videoGrid.hideMbBadge .mbBadge { display: none !important; }
+  /* サイコロ：各自のカメラの左上にその人が最後に振った出目（○×と同じくドラッグで移動できる） */
+  .tile .diceBadge { right: auto; left: 2%; text-align: left; }
+  .tile .diceBadge .dbHead { color: #ffd54f; font-size: 0.75em; }
+  .tile .diceBadge .dbFace { display: inline-block; margin: 0.1em 0.12em 0 0; padding: 0 0.3em; border-radius: 0.2em; background: #fff; color: #111; }
+  .tile .diceBadge .dbTotal { color: #ffd54f; margin-left: 0.15em; }
+  .tile .diceBadge.rolling .dbFace { background: #bbb; }
+  #videoGrid.hideDiceBadge .diceBadge { display: none !important; }
   .tile video {
     width: 100%; aspect-ratio: 16/9; background: #000; display: block; object-fit: cover;
     pointer-events: none;
@@ -420,6 +427,7 @@
         <label><input type="checkbox" id="buzzFxToggle" checked> 早押しの演出を表示</label>
         <label><input type="checkbox" id="diceFxToggle" checked> サイコロの出目を表示</label>
         <label title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）"><input type="checkbox" id="mbBadgeToggle" checked> ○×をカメラに表示</label>
+        <label title="サイコロを使っている間、各自のカメラの左上にその人が最後に振った出目を出します。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）"><input type="checkbox" id="diceBadgeToggle" checked> 出目をカメラに表示</label>
       </span>
       <span class="optionGroup">
         <label><input type="checkbox" id="gridSnapToggle"> グリッドにスナップ</label>
@@ -732,6 +740,7 @@ let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定
 let showBuzzFx = localStorage.getItem("showBuzzFx") !== "0"; // 早押しの演出（カットイン・○×・回答者の金枠）を配置エリアに出すか。既定はON
 let showDiceFx = localStorage.getItem("showDiceFx") !== "0"; // サイコロの出目を配置エリアに出すか。既定はON
 let showMbBadge = localStorage.getItem("showMbBadge") !== "0"; // ○×制の各自の○×をカメラタイルに出すか。既定はON
+let showDiceBadge = localStorage.getItem("showDiceBadge") !== "0"; // 各自が最後に振った出目をカメラタイルに出すか。既定はON
 function gridStepXPct() { return 100 / gridSnapCols; }
 function gridStepYPct() {
   const w = videoGrid.clientWidth, h = videoGrid.clientHeight;
@@ -829,6 +838,7 @@ screenAudioCheckbox.addEventListener("change", () => {
 const nameLabelToggle = document.getElementById("nameLabelToggle");
 const buzzFxToggle = document.getElementById("buzzFxToggle");
 const mbBadgeToggle = document.getElementById("mbBadgeToggle");
+const diceBadgeToggle = document.getElementById("diceBadgeToggle");
 const diceFxToggle = document.getElementById("diceFxToggle");
 const gridSnapToggle = document.getElementById("gridSnapToggle");
 const bgImageSelectBtn = document.getElementById("bgImageSelectBtn");
@@ -1162,6 +1172,13 @@ mbBadgeToggle.addEventListener("change", () => {
   showMbBadge = mbBadgeToggle.checked;
   localStorage.setItem("showMbBadge", showMbBadge ? "1" : "0");
   videoGrid.classList.toggle("hideMbBadge", !showMbBadge);
+});
+diceBadgeToggle.checked = showDiceBadge;
+videoGrid.classList.toggle("hideDiceBadge", !showDiceBadge);
+diceBadgeToggle.addEventListener("change", () => {
+  showDiceBadge = diceBadgeToggle.checked;
+  localStorage.setItem("showDiceBadge", showDiceBadge ? "1" : "0");
+  videoGrid.classList.toggle("hideDiceBadge", !showDiceBadge);
 });
 buzzFxToggle.addEventListener("change", () => {
   showBuzzFx = buzzFxToggle.checked;
@@ -2524,7 +2541,7 @@ async function publishLeaderLayout() {
   });
   try {
     const frame = { show: frameShowEnabled, off: [...frameOffTiles] };
-    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, mbBadge: mbBadgePos, updatedAt: serverTimestamp() });
+    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, mbBadge: mbBadgePos, diceBadge: diceBadgePos, updatedAt: serverTimestamp() });
   } catch (e) { console.warn("publishLeaderLayout failed", e); }
 }
 
@@ -2670,6 +2687,7 @@ function renderGrid() {
   applyCameraVisibility();
   applyFrameState();
   updateMbBadges();
+  updateDiceBadges();
 }
 
 // カメラがオフのタイルは真っ黒な枠を出さず、タイルごと非表示にする（音声は再生し続ける）。
@@ -3356,7 +3374,8 @@ function drawRecordFrame() {
       const r = overlay.getBoundingClientRect();
       ctx.drawImage(img,(r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
     }
-    drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY);
+    drawTileBadgeOnCanvas(ctx, tile, ".mbBadge.show", "hideMbBadge", gridRect, scaleX, scaleY);
+    drawTileBadgeOnCanvas(ctx, tile, ".diceBadge.show", "hideDiceBadge", gridRect, scaleX, scaleY);
   });
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
@@ -4455,9 +4474,6 @@ function renderBuzzer() {
 // layouts/{id}/mbBadge で配り、追従中の人はリーダーの位置を使う。位置は { ax: "l"|"r", x, y }（x＝左右どちらかの辺からの距離、y＝上からの距離。タイルに対する割合）
 const MB_BADGE_POS_KEY = "mbBadgePos";
 let mbBadgePos = (() => { try { return JSON.parse(localStorage.getItem(MB_BADGE_POS_KEY) || "{}") || {}; } catch (e) { return {}; } })();
-function effectiveMbBadgePos() {
-  return followingLayout && !isLayoutLeader() ? (followingLayout.mbBadge || {}) : mbBadgePos;
-}
 function saveMbBadgePos() {
   try { localStorage.setItem(MB_BADGE_POS_KEY, JSON.stringify(mbBadgePos)); } catch (e) {}
   if (isLayoutLeader()) publishLeaderLayout();
@@ -4474,16 +4490,22 @@ function mbBadgeHtml(st) {
   const tag = st.won ? `<div><span class="mbTag win">勝ち抜け</span></div>` : st.out ? `<div><span class="mbTag out">失格</span></div>` : "";
   return row(st.correct, buzzConfig.maruWin, "○", "maru") + row(st.wrong, buzzConfig.batsuOut, "×", "batsu") + tag;
 }
-function applyMbBadgePos(badge, name) {
+// バッジ（○×・サイコロの出目）の位置。pos が無ければCSSの既定位置（○×は右上・出目は左上）
+function applyTileBadgePos(badge, pos) {
   if (badge.classList.contains("dragging")) return;
-  const pos = effectiveMbBadgePos()[fbKey(name)];
   if (pos) {
     badge.style.top = (pos.y * 100) + "%";
     badge.style.left = pos.ax === "l" ? (pos.x * 100) + "%" : "auto";
     badge.style.right = pos.ax === "l" ? "auto" : (pos.x * 100) + "%";
   } else {
-    badge.style.top = badge.style.left = badge.style.right = ""; // 既定（右上）
+    badge.style.top = badge.style.left = badge.style.right = "";
   }
+}
+// 種類ごとの位置の持ち方（自分の保存先・追従中にリーダーから受け取る項目・保存）
+const mbBadgeKind = { posMap: () => mbBadgePos, syncField: "mbBadge", save: saveMbBadgePos };
+function applyBadgeKindPos(badge, kind) {
+  const map = followingLayout && !isLayoutLeader() ? (followingLayout[kind.syncField] || {}) : kind.posMap();
+  applyTileBadgePos(badge, map[fbKey(badge.dataset.name)]);
 }
 function updateMbBadges() {
   const on = !!buzzConfig.enabled && buzzIsMarubatsu();
@@ -4498,16 +4520,16 @@ function updateMbBadges() {
       badge.className = "mbBadge";
       badge.title = "ドラッグで移動（ダブルクリックで右上に戻す）";
       tile.appendChild(badge);
-      makeMbBadgeDraggable(badge, tile);
+      makeTileBadgeDraggable(badge, tile, mbBadgeKind);
     }
     badge.dataset.name = member.name;
     const html = mbBadgeHtml(buzzEntityStats(buzzEntityOf(id)));
     if (badge.innerHTML !== html) badge.innerHTML = html;
     badge.classList.add("show");
-    applyMbBadgePos(badge, member.name);
+    applyBadgeKindPos(badge, mbBadgeKind);
   });
 }
-function makeMbBadgeDraggable(badge, tile) {
+function makeTileBadgeDraggable(badge, tile, kind) {
   let drag = null;
   badge.addEventListener("pointerdown", (e) => {
     e.stopPropagation(); // タイルの移動にしない
@@ -4522,7 +4544,7 @@ function makeMbBadgeDraggable(badge, tile) {
     const { tr, bw, bh } = drag;
     const left = Math.max(0, Math.min(tr.width - bw, e.clientX - drag.offX - tr.left));
     const top = Math.max(0, Math.min(tr.height - bh, e.clientY - drag.offY - tr.top));
-    // タイルの左半分にあるときは左端から、右半分なら右端からの距離で持つ（○×が増えても内側へ伸びる）
+    // タイルの左半分にあるときは左端から、右半分なら右端からの距離で持つ（中身が増えても内側へ伸びる）
     const ax = left + bw / 2 < tr.width / 2 ? "l" : "r";
     drag.pos = { ax, x: (ax === "l" ? left : tr.width - left - bw) / tr.width, y: top / tr.height };
     badge.style.top = (drag.pos.y * 100) + "%";
@@ -4535,23 +4557,23 @@ function makeMbBadgeDraggable(badge, tile) {
     drag = null;
     badge.classList.remove("dragging");
     if (!pos) return; // クリックだけ
-    mbBadgePos[fbKey(badge.dataset.name)] = pos;
-    saveMbBadgePos();
+    kind.posMap()[fbKey(badge.dataset.name)] = pos;
+    kind.save();
   };
   badge.addEventListener("pointerup", end);
   badge.addEventListener("pointercancel", end);
   badge.addEventListener("dblclick", (e) => {
     e.stopPropagation();
     if (layoutInteractionLocked()) return;
-    delete mbBadgePos[fbKey(badge.dataset.name)];
-    saveMbBadgePos();
-    applyMbBadgePos(badge, badge.dataset.name);
+    delete kind.posMap()[fbKey(badge.dataset.name)];
+    kind.save();
+    applyBadgeKindPos(badge, kind);
   });
 }
-// 合成録画：画面に出ているバッジを、背景・文字の位置と色をそのまま写して描く
-function drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY) {
-  if (videoGrid.classList.contains("hideMbBadge")) return;
-  const badge = tile.querySelector(".mbBadge.show");
+// 合成録画：画面に出ているバッジを、背景・文字の位置と色をそのまま写して描く（背景色のあるspanは箱も描く）
+function drawTileBadgeOnCanvas(ctx, tile, selector, hideClass, gridRect, scaleX, scaleY) {
+  if (videoGrid.classList.contains(hideClass)) return;
+  const badge = tile.querySelector(selector);
   if (!badge) return;
   const win = gridWin();
   const r = badge.getBoundingClientRect();
@@ -4559,6 +4581,7 @@ function drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY) {
   const bx = (r.left - gridRect.left) * scaleX, by = (r.top - gridRect.top) * scaleY;
   const cs = win.getComputedStyle(badge);
   const rad = parseFloat(cs.borderTopLeftRadius) * scaleY || 0;
+  const hasBg = (c) => c && c !== "transparent" && !/rgba\(.*,\s*0\)$/.test(c);
   ctx.save();
   ctx.fillStyle = cs.backgroundColor;
   ctx.beginPath();
@@ -4571,9 +4594,12 @@ function drawMbBadgeOnCanvas(ctx, tile, gridRect, scaleX, scaleY) {
     if (!sr.width) return;
     const ss = win.getComputedStyle(sp);
     const x = (sr.left - gridRect.left) * scaleX, y = (sr.top - gridRect.top) * scaleY;
-    if (sp.classList.contains("mbTag")) {
+    if (hasBg(ss.backgroundColor)) {
       ctx.fillStyle = ss.backgroundColor;
-      ctx.fillRect(x, y, sr.width * scaleX, sr.height * scaleY);
+      ctx.beginPath();
+      const sRad = parseFloat(ss.borderTopLeftRadius) * scaleY || 0;
+      if (ctx.roundRect) ctx.roundRect(x, y, sr.width * scaleX, sr.height * scaleY, sRad); else ctx.rect(x, y, sr.width * scaleX, sr.height * scaleY);
+      ctx.fill();
     }
     ctx.font = `bold ${parseFloat(ss.fontSize) * scaleY}px system-ui, sans-serif`;
     ctx.fillStyle = ss.color;
@@ -5106,19 +5132,23 @@ function listenDice() {
     diceEnabledToggle.checked = diceEnabled;
     diceBody.style.display = diceEnabled ? "" : "none";
     if (!diceEnabled) hideDiceOverlay();
+    updateDiceBadges();
   });
   onValue(query(ref(db, `rooms/${ROOM_ID}/dice/log`), limitToLast(DICE_LOG_KEEP)), (snap) => {
     const list = [];
     snap.forEach((c) => { list.push({ id: c.key, ...c.val() }); });
     diceLog = list;
+    list.forEach((r) => { diceLatestByName[fbKey(r.name || "")] = r; }); // 古い順なので最後が最新
     if (diceSeenIds === null) {
       diceSeenIds = new Set(list.map((r) => r.id));
     } else {
       const fresh = list.filter((r) => !diceSeenIds.has(r.id));
       fresh.forEach((r) => diceSeenIds.add(r.id));
       if (fresh.length && diceEnabled) showDiceRoll(fresh[fresh.length - 1]);
+      fresh.forEach((r) => startDiceBadgeRoll(r));
     }
     renderDiceLog();
+    updateDiceBadges();
   });
 }
 
@@ -5197,6 +5227,63 @@ function hideDiceOverlay() {
   diceShow = null;
   diceOverlay.classList.remove("show", "rolling");
   diceOverlay.innerHTML = "";
+}
+
+// ---------- サイコロ：各自のカメラタイルにその人が最後に振った出目を出す ----------
+// サイコロを使っている間、カメラタイルの左上（既定）にその人の最新の出目を出し続ける。新しく振ったときはそのバッジも転がる演出をする。
+// 位置の持ち方・ドラッグ・レイアウト同期（layouts/{id}/diceBadge）・録画は○×のバッジと共通（makeTileBadgeDraggable/drawTileBadgeOnCanvas）。
+const DICE_BADGE_POS_KEY = "diceBadgePos";
+const DICE_BADGE_FACES_MAX = 10;   // これより多い個数は出目を並べず合計だけ
+let diceBadgePos = (() => { try { return JSON.parse(localStorage.getItem(DICE_BADGE_POS_KEY) || "{}") || {}; } catch (e) { return {}; } })();
+function saveDiceBadgePos() {
+  try { localStorage.setItem(DICE_BADGE_POS_KEY, JSON.stringify(diceBadgePos)); } catch (e) {}
+  if (isLayoutLeader()) publishLeaderLayout();
+}
+const diceBadgeKind = { posMap: () => diceBadgePos, syncField: "diceBadge", save: saveDiceBadgePos };
+const diceLatestByName = {};       // fbKey(名前) → その人の最新のログ
+const diceBadgeRollUntil = {};     // fbKey(名前) → 転がる演出の終わる時刻
+let diceBadgeTimer = null;
+function startDiceBadgeRoll(r) {
+  diceBadgeRollUntil[fbKey(r.name || "")] = Date.now() + DICE_ROLL_ANIM_MS;
+  if (diceBadgeTimer) return;
+  diceBadgeTimer = setInterval(() => {
+    updateDiceBadges();
+    const now = Date.now();
+    if (!Object.values(diceBadgeRollUntil).some((t) => t > now)) { clearInterval(diceBadgeTimer); diceBadgeTimer = null; updateDiceBadges(); }
+  }, 80);
+}
+function diceBadgeHtml(r, rolling) {
+  const vals = diceValuesOf(r);
+  const shown = rolling ? vals.map(() => 1 + Math.floor(Math.random() * r.m)) : vals;
+  const head = `<div><span class="dbHead">🎲 ${r.n}d${r.m}</span></div>`;
+  if (vals.length > DICE_BADGE_FACES_MAX) return head + `<div><span class="dbTotal">${rolling ? "…" : "= " + r.total}</span></div>`;
+  const faces = shown.map((v) => `<span class="dbFace">${v}</span>`).join("");
+  const total = vals.length > 1 ? `<span class="dbTotal">${rolling ? "= …" : "= " + r.total}</span>` : "";
+  return head + `<div>${faces}${total}</div>`;
+}
+function updateDiceBadges() {
+  const now = Date.now();
+  videoGrid.querySelectorAll(".tile").forEach((tile) => {
+    const id = tile.id.slice(5); // "tile-"の後ろ
+    const member = members[id];
+    const r = member && diceLatestByName[fbKey(member.name || "")];
+    let badge = tile.querySelector(".diceBadge");
+    if (!diceEnabled || !r) { if (badge) badge.classList.remove("show"); return; }
+    if (!badge) {
+      badge = tile.ownerDocument.createElement("div");
+      badge.className = "diceBadge";
+      badge.title = "ドラッグで移動（ダブルクリックで元の位置に戻す）";
+      tile.appendChild(badge);
+      makeTileBadgeDraggable(badge, tile, diceBadgeKind);
+    }
+    badge.dataset.name = member.name;
+    const rolling = (diceBadgeRollUntil[fbKey(member.name || "")] || 0) > now;
+    const html = diceBadgeHtml(r, rolling);
+    if (badge.innerHTML !== html) badge.innerHTML = html;
+    badge.classList.toggle("rolling", rolling);
+    badge.classList.add("show");
+    applyBadgeKindPos(badge, diceBadgeKind);
+  });
 }
 
 function drawDiceOverlayOnCanvas(ctx) {
