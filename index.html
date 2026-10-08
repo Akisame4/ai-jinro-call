@@ -167,7 +167,7 @@
     border-radius: 3px; pointer-events: none; max-width: calc(100% - 8px);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  #videoGrid.hideNames .nameLabel { display: none; }
+  .tile .nameLabel { display: none !important; } /* 名前表示は廃止（2026-10-09 UC指示） */
   /* 早押し・サイコロの演出を配置エリアに出さない（この端末のみ。操作パネル側は今までどおり使える） */
   #videoGrid.hideBuzzFx #buzzCutin, #videoGrid.hideBuzzFx #buzzJudgeMark, #videoGrid.hideDiceFx #diceOverlay { display: none !important; }
   .tile .frameOverlay {
@@ -428,12 +428,16 @@
   .splitBtn { display: inline-flex; }
   .splitBtn > button:first-child { border-radius: 8px 0 0 8px; }
   .splitBtn > button:last-child { border-radius: 0 8px 8px 0; border-left: 0; padding: 0 10px; }
-  #barBuzz #buzzBtn {
-    height: 54px; padding: 0 36px; font-size: 20px; font-weight: bold; border-radius: 12px;
+  #buzzPanel #buzzBtn {
+    width: 100%; height: 76px; padding: 0 16px; font-size: 24px; font-weight: bold; border-radius: 14px;
     background: var(--accent); color: #1a1406; border: 0;
   }
-  #barBuzz #buzzBtn small { display: inline; margin-left: 8px; font-size: 11px; font-weight: normal; }
-  #barBuzz #buzzBtn:disabled { background: #3a3220; color: #8c7a4b; }
+  #buzzPanel #buzzBtn small { display: block; font-size: 11px; font-weight: normal; }
+  #buzzPanel #buzzBtn:disabled { background: #3a3220; color: #8c7a4b; }
+  #barRecTargets { display: inline-flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; font-size: 13px; padding: 4px 12px; border: 1px solid var(--line2); border-radius: 8px; min-height: 46px; }
+  #barRecTargets label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  #barRecTargets input { width: 16px; height: 16px; }
+  .barRecLabel { color: var(--muted); font-size: 12px; }
   #recBtn { background: #8f1d22; border-color: #b3333b; color: #fff; font-weight: bold; }
   .popover {
     display: none; position: absolute; left: 16px; bottom: calc(100% + 8px); z-index: 10000;
@@ -533,12 +537,12 @@
           </div>
           <div id="buzzOffNote" class="hint">早押しは現在オフです（ホストがオンにすると表示されます）</div>
           <div id="buzzBody" style="display:none;">
+            <button id="buzzBtn">早押し！<small>スペースキーでも押せます</small></button>
             <div id="buzzMain">
               <div id="buzzStatusText"></div>
               <div id="buzzTimer"></div>
               <div id="introIndicator"></div>
             </div>
-            <div class="hint">早押しボタンは下のバー（スペースキーでも押せます）</div>
             <div id="buzzSelfRow">
               <label id="buzzTeamLabel" style="display:none;">チーム名: <input type="text" id="buzzTeamInput" placeholder="例: 赤チーム"></label>
               <span id="buzzRuleSummary" class="hint"></span>
@@ -587,6 +591,11 @@
               </div>
             </details>
           </div>
+          <div class="card">
+            <h3>配置エリアに出すもの（この端末だけ）</h3>
+            <label class="switchRow">早押しの演出<input type="checkbox" class="mirrorOf" data-of="buzzFxToggle" checked></label>
+            <label class="switchRow">○×をカメラに<input type="checkbox" class="mirrorOf" data-of="mbBadgeToggle" checked></label>
+          </div>
         </section>
 
         <section class="sidePane" data-pane="dice" id="dicePanel">
@@ -610,9 +619,14 @@
             <div class="diceRow">
               <label title="出目を配置エリアに表示しておく秒数">出目の表示 <input type="number" id="diceShowSec" min="1" max="600" step="1">秒</label>
             </div>
-            <span class="hint">個数は1〜100、面数は2〜10000。振った結果は全員の配置エリア（録画・別ウィンドウ表示にも）に出ます。下のバーの🎲でも振れます。</span>
+            <span class="hint">個数は1〜100、面数は2〜10000。振った結果は全員の配置エリア（録画・別ウィンドウ表示にも）に出ます。</span>
             <h3>履歴</h3>
             <div id="diceLog"></div>
+          </div>
+          <div class="card">
+            <h3>配置エリアに出すもの（この端末だけ）</h3>
+            <label class="switchRow">サイコロの演出<input type="checkbox" class="mirrorOf" data-of="diceFxToggle" checked></label>
+            <label class="switchRow">出目をカメラに<input type="checkbox" class="mirrorOf" data-of="diceBadgeToggle" checked></label>
           </div>
         </section>
 
@@ -638,7 +652,6 @@
           </div>
           <div class="card" title="配置エリア（別ウィンドウ表示・レイアウト録画も）に出すかどうか。この端末だけの設定です。早押し・サイコロ自体はOFFでも使えます">
             <h3>配置エリアに出すもの（この端末だけ）</h3>
-            <label class="switchRow">名前<input type="checkbox" id="nameLabelToggle" checked></label>
             <label class="switchRow">早押しの演出<input type="checkbox" id="buzzFxToggle" checked></label>
             <label class="switchRow">サイコロの演出<input type="checkbox" id="diceFxToggle" checked></label>
             <label class="switchRow" title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）">○×をカメラに<input type="checkbox" id="mbBadgeToggle" checked></label>
@@ -678,11 +691,9 @@
 
         <section class="sidePane" data-pane="rec">
           <div class="paneHead"><h2>録画</h2></div>
-          <div class="card" id="recControls" title="チェックしたものを同時に録画し、それぞれ別のファイルとして保存します">
-            <h3>録るもの（同時に録れる）</h3>
-            <label class="checkRow"><input type="checkbox" id="recTargetGrid" checked><span>レイアウト全体<small>合成映像＋全員の音声</small></span></label>
-            <label class="checkRow"><input type="checkbox" id="recTargetSelf"><span>自分のカメラ<small>音声は自分の声のみ</small></span></label>
-            <label class="checkRow"><input type="checkbox" id="recTargetScreen"><span>自分のPC画面<small>録画開始時に画面を選ぶ・音声は自分の声のみ</small></span></label>
+          <div class="card" id="recControls">
+            <h3>録るもの</h3>
+            <span class="hint">下のバーの「録るもの」で選びます（同時に録れます）。レイアウト全体＝合成映像＋全員の音声／自分のカメラ・自分のPC画面＝音声は自分の声のみ（PC画面は録画開始時に画面を選ぶ）</span>
           </div>
           <label class="checkRow"><input type="checkbox" id="recSystemAudioCheckbox"><span>レイアウト全体の音声はシステム音声（Discord通話など）を使う</span></label>
           <span class="hint" id="recSystemAudioHint" style="display:none;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音＋自分のマイク（ノイズ抑制後）を両方録音します）</span>
@@ -709,9 +720,12 @@
     </span>
     <button id="muteBtn" title="この端末で、相手の声・画面の音をすべて消します">🔊 全体ミュート</button>
     <span class="spacer"></span>
-    <span id="barBuzz" style="display:none;"><button id="buzzBtn">早押し！<small>スペースキー</small></button></span>
-    <span class="spacer"></span>
-    <button id="barDiceBtn" style="display:none;" title="サイコロタブの「振るダイス」で振ります">🎲 1d6</button>
+    <span id="barRecTargets" title="チェックしたものを同時に録画し、それぞれ別のファイルとして保存します">
+      <span class="barRecLabel">録るもの</span>
+      <label title="合成映像＋全員の音声"><input type="checkbox" id="recTargetGrid" checked> レイアウト全体</label>
+      <label title="自分のカメラの映像。音声は自分の声のみ"><input type="checkbox" id="recTargetSelf"> 自分のカメラ</label>
+      <label title="録画開始時に画面を選びます。音声は自分の声のみ"><input type="checkbox" id="recTargetScreen"> 自分のPC画面</label>
+    </span>
     <button id="recBtn">● 録画開始</button>
 
     <div class="popover" id="audioPopover">
@@ -925,7 +939,6 @@ let tilePositions = loadPositions();
 let gridSnapCols = Math.min(128, Math.max(4, parseInt(localStorage.getItem("aiJinroGridCols"), 10) || 32));
 let gridSnapEnabled = localStorage.getItem("aiJinroGridSnap") === "1";
 let gridLinesShown = localStorage.getItem("aiJinroGridLines") === "1";
-let showNameLabels = localStorage.getItem("aiJinroShowNames") !== "0"; // 既定はON
 let showBuzzFx = localStorage.getItem("showBuzzFx") !== "0"; // 早押しの演出（カットイン・○×・回答者の金枠）を配置エリアに出すか。既定はON
 let showDiceFx = localStorage.getItem("showDiceFx") !== "0"; // サイコロの出目を配置エリアに出すか。既定はON
 let showMbBadge = localStorage.getItem("showMbBadge") !== "0"; // ○×制の各自の○×をカメラタイルに出すか。既定はON
@@ -1024,7 +1037,6 @@ try { screenAudioCheckbox.checked = localStorage.getItem("screenShareAudio") ===
 screenAudioCheckbox.addEventListener("change", () => {
   try { localStorage.setItem("screenShareAudio", screenAudioCheckbox.checked ? "1" : "0"); } catch (e) {}
 });
-const nameLabelToggle = document.getElementById("nameLabelToggle");
 const buzzFxToggle = document.getElementById("buzzFxToggle");
 const mbBadgeToggle = document.getElementById("mbBadgeToggle");
 const diceBadgeToggle = document.getElementById("diceBadgeToggle");
@@ -1141,15 +1153,12 @@ document.addEventListener("keydown", (e) => {
 const barMicBtn = document.getElementById("barMicBtn");
 const barCamBtn = document.getElementById("barCamBtn");
 const audioSettingsBtn = document.getElementById("audioSettingsBtn");
-const barBuzz = document.getElementById("barBuzz");
-const barDiceBtn = document.getElementById("barDiceBtn");
 const roomChip = document.getElementById("roomChip");
 barMicBtn.innerHTML = `<span class="lbl">🎤 マイク</span><span class="barMeter"><span id="barMicMeter"></span></span>`;
 const barMicLabel = barMicBtn.querySelector(".lbl");
 const barMicMeter = document.getElementById("barMicMeter");
 barMicBtn.addEventListener("click", () => { if (myId) toggleMicFor(myId); });
 barCamBtn.addEventListener("click", () => { if (myId) toggleCamFor(myId); });
-barDiceBtn.addEventListener("click", () => rollDice(diceNotationInput.value));
 function updateControlBar() {
   const micOn = localStream?.getAudioTracks()[0]?.enabled ?? true;
   const camOn = localStream?.getVideoTracks()[0]?.enabled ?? true;
@@ -1166,10 +1175,24 @@ function updateAudioSettingsBtn() {
   audioSettingsBtn.classList.toggle("warn", warn);
   if (warn) audioSettingsBtn.textContent = "⚠ ノイズ抑制を確認";
 }
-function updateBarDice() {
-  barDiceBtn.style.display = diceEnabled ? "" : "none";
-  barDiceBtn.textContent = `🎲 ${diceNotationInput.value.trim() || "1d6"}`;
+// 同じ設定のチェックを複数のタブに置く（早押し・サイコロのタブにも「配置エリアに出すもの」）。
+// 処理は元のチェック（id付き）が持ち、写し（.mirrorOf[data-of=元のid]）はそれと同期するだけ
+function syncMirrorsOf(id) {
+  const orig = document.getElementById(id);
+  document.querySelectorAll(`.mirrorOf[data-of="${id}"]`).forEach((m) => { m.checked = orig.checked; });
 }
+document.querySelectorAll(".mirrorOf").forEach((m) => {
+  const orig = document.getElementById(m.dataset.of);
+  m.addEventListener("change", () => {
+    orig.checked = m.checked;
+    orig.dispatchEvent(new Event("change"));
+  });
+  if (!orig.dataset.mirrored) {
+    orig.dataset.mirrored = "1";
+    orig.addEventListener("change", () => syncMirrorsOf(orig.id));
+  }
+});
+
 // 背景・枠タブのプレビュー
 const bgPreview = document.getElementById("bgPreview");
 const frameCommonPreview = document.getElementById("frameCommonPreview");
@@ -1524,15 +1547,7 @@ scoreboardBtn.addEventListener("click", () => {
   set(ref(db, `rooms/${ROOM_ID}/scoreboard`), { on: !scoreboardOn });
 });
 
-// ---------- 表示オプション: 名前表示・グリッドスナップ・背景画像・枠画像 ----------
-nameLabelToggle.checked = showNameLabels;
-videoGrid.classList.toggle("hideNames", !showNameLabels);
-nameLabelToggle.addEventListener("change", () => {
-  showNameLabels = nameLabelToggle.checked;
-  localStorage.setItem("aiJinroShowNames", showNameLabels ? "1" : "0");
-  videoGrid.classList.toggle("hideNames", !showNameLabels);
-});
-
+// ---------- 表示オプション: グリッドスナップ・背景画像・枠画像 ----------
 // 早押しの演出・サイコロの出目を配置エリアに出すか（録画にも同じ条件で描く：drawBuzzerOverlayOnCanvas/drawDiceOverlayOnCanvas）
 buzzFxToggle.checked = showBuzzFx;
 diceFxToggle.checked = showDiceFx;
@@ -4716,7 +4731,6 @@ function renderBuzzer() {
   buzzOffNote.style.display = enabled ? "none" : "";
   buzzOffNote.textContent = host ? "チェックを入れると全員の画面に早押しパネルが表示されます" : "早押しは現在オフです（ホストがオンにすると表示されます）";
   buzzBody.style.display = enabled ? "" : "none";
-  barBuzz.style.display = enabled ? "" : "none";
   buzzHostControls.style.display = enabled && host ? "" : "none";
   // 曲の再生中は、ホストが交代しても流している本人が止められるように操作欄を残す
   introRow.style.display = enabled && (host || introPlaying) ? "" : "none";
@@ -5489,7 +5503,6 @@ function rollDice(text) {
   }
   diceError.textContent = "";
   diceNotationInput.value = `${d.n}d${d.m}`;
-  updateBarDice();
   try { localStorage.setItem("diceNotation", diceNotationInput.value); } catch (e) {}
   const values = Array.from({ length: d.n }, () => rollDie(d.m));
   const total = values.reduce((a, b) => a + b, 0);
@@ -5500,7 +5513,6 @@ diceEnabledToggle.addEventListener("change", () => {
   set(ref(db, `rooms/${ROOM_ID}/dice/config/enabled`), diceEnabledToggle.checked);
 });
 diceRollBtn.addEventListener("click", () => rollDice(diceNotationInput.value));
-diceNotationInput.addEventListener("input", updateBarDice);
 diceNotationInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") rollDice(diceNotationInput.value);
 });
@@ -5517,8 +5529,7 @@ function listenDice() {
     diceEnabled = !!snap.val()?.enabled;
     diceEnabledToggle.checked = diceEnabled;
     diceBody.style.display = diceEnabled ? "" : "none";
-    updateBarDice();
-    if (!diceEnabled) hideDiceOverlay();
+      if (!diceEnabled) hideDiceOverlay();
     updateDiceBadges();
   });
   onValue(query(ref(db, `rooms/${ROOM_ID}/dice/log`), limitToLast(DICE_LOG_KEEP)), (snap) => {
@@ -6029,7 +6040,7 @@ function escapeHtml(str) {
 }
 updateAudioSettingsBtn();
 updateFramePreviews();
-updateBarDice();
+document.querySelectorAll(".mirrorOf").forEach((m) => syncMirrorsOf(m.dataset.of));
 updateControlBar();
 </script>
 </body>

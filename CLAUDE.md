@@ -12,7 +12,10 @@ YouTube企画の撮影用WebRTCビデオ通話アプリ。単一HTMLファイル
   - 参加者：1人＝1枚のカード（`.pRow`、ドラッグで並び替えは従来どおり`swapOrder`）。マイク・カメラ・聞こえる音量だけ出し、枠ON/OFF・重なり順・ズーム・反転・共有の終了は「…」（`.pMore`、開いているものは`openMoreKeys`で再描画後も開いたまま）。
   - 早押し：ルール設定とイントロクイズは`<details class="fold">`で普段は閉じる（`#introRow`はdetails自体）。スコアボードのボタンもここ。
   - 配置：テンプレート・レイアウト同期・マス目・「配置エリアに出すもの」（名前・演出・バッジのON/OFF）。背景・枠：背景と共通の枠・自分の枠をプレビュー付きで（`updateBgPreview`/`updateFramePreviews`、`applyBgImage`/`applyFrameImageToAllTiles`から更新）。録画：録るもの・システム音声・保存したファイル・結果をコピー。
-- **下のバー（`#controlBar`）**：自分の操作。マイク（音量メーター付き、`barMicMeter`）、ノイズ抑制（押すと「音声の設定」の小窓。中にノイズ抑制のON/OFF・強さ・メーター・EQ。表示は`updateAudioSettingsBtn`、無音警告が出たら赤くなる）、カメラ、画面共有（▴で画質・画面の音の小窓）、全体ミュート、早押しボタン（`#buzzBtn`をここに移した。早押しを使う間だけ表示）、サイコロ（`#barDiceBtn`、「振るダイス」の指定で振る）、録画開始/停止（`#recBtn`）。下のバーのマイク・カメラは`toggleMicFor(myId)`/`toggleCamFor(myId)`、表示は`updateControlBar`（`renderControls`の最後）。
+- **下のバー（`#controlBar`）**：自分の操作。マイク（音量メーター付き、`barMicMeter`）、ノイズ抑制（押すと「音声の設定」の小窓。中にノイズ抑制のON/OFF・強さ・メーター・EQ。表示は`updateAudioSettingsBtn`、無音警告が出たら赤くなる）、カメラ、画面共有（▴で画質・画面の音の小窓）、全体ミュート、右端に「録るもの」のチェック（`#barRecTargets`の中に`recTargetGrid/Self/Screen`）と録画開始/停止（`#recBtn`）。下のバーのマイク・カメラは`toggleMicFor(myId)`/`toggleCamFor(myId)`、表示は`updateControlBar`（`renderControls`の最後）。
+- 早押しボタン（`#buzzBtn`）は早押しタブの上の方（UC指示 2026-10-09で下のバーから戻した）。サイコロの「振る」はサイコロタブだけ。
+- **同じチェックを複数のタブに置く**（UC指示 2026-10-09）：「配置エリアに出すもの」のうち早押しの演出・○×をカメラには早押しタブにも、サイコロの演出・出目をカメラにはサイコロタブにも置く。処理は配置タブの元のチェック（id付き）が持ち、写しは`<input class="mirrorOf" data-of="元のid">`。写しを変えると元を変えて`change`を出し、元が変わると`syncMirrorsOf`で写しを合わせる。
+- 名前表示は廃止（UC指示 2026-10-09）。タイルの`.nameLabel`は他の処理が名前を書き込むので要素は残し、CSSで常に非表示（録画にはもともと描いていない）。
 - **入室後のマイク・カメラの切り替え**（UC要望、2026-10-09）：下のバーのマイク・カメラの「▴」で「使うマイク／使うカメラ」の小窓（`#micPopover`/`#camPopover`、開くたびに一覧を取り直す）。選ぶと`switchMicDevice`/`switchCamDevice`：新しい機器を先に`getUserMedia`で取り（取れなければ今のまま・理由を表示）、`localStream`の古いトラックと入れ替えて`stop()`、ON/OFF（enabled）は引き継ぐ。マイクは`setupNoiseGate`を作り直して`audioSender.replaceTrack`、カメラは`setupCameraZoom`を作り直して自分のタイルと`videoSender.replaceTrack`（＋`applyCameraSenderParams`）。再交渉なし。選んだ機器は入室画面と同じキー（`aiJinroMicDeviceId`/`aiJinroCamDeviceId`）に保存。取得条件は入室と共通の`micConstraints`/`camConstraints`。自分のカメラ／PC画面の個人録画中は、録画中のトラックが止まるので切り替えない（マイクはself・screen、カメラはselfの録画中）。
 - 小窓を開くボタンは`.popToggle`（`data-pop`＝小窓のid、`data-onopen`のイベントを開いたときに出す）。押したボタンの上に出す。
 - 小窓（`.popover`）は外側クリック・Escで閉じる。画面の音が取れなかった注意（`showScreenAudioNote`）は画面共有の小窓を開いて見せる。
@@ -112,7 +115,7 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 
 ## 表示オプション（この端末のみ・localStorage保存。今は右パネルの「配置」「背景・枠」タブにある）
 
-- **名前表示ON/OFF**：`#videoGrid.hideNames`クラスで`.nameLabel`（各タイル右下）をCSSごと隠す。テキストは常にDOMへ設定しておき、表示/非表示だけを切り替える。
+- **（廃止）名前表示ON/OFF**：`#videoGrid.hideNames`クラスで`.nameLabel`（各タイル右下）をCSSごと隠す。テキストは常にDOMへ設定しておき、表示/非表示だけを切り替える。
 - **早押しの演出・サイコロの出目の表示ON/OFF**（UC要望、2026-10-04）：「早押しの演出を表示」「サイコロの出目を表示」（localStorage `showBuzzFx`/`showDiceFx`、既定ON）。OFFだと`#videoGrid.hideBuzzFx`/`.hideDiceFx`で、配置エリアのカットイン・○×・回答者の金枠（`#videoGrid:not(.hideBuzzFx) .tile.buzzAnswer`なので金枠とz-index: 50の最前面化の両方が止まる）／サイコロの出目を隠し、合成録画にも描かない。この端末だけの設定で、早押し・サイコロ自体（パネル・履歴・効果音）はそのまま使える。
 - **グリッドスナップ（正方形のマス目）**：横を`gridSnapCols`等分（「マス目 横○分割」4〜128、既定32、localStorage `aiJinroGridCols`）し、縦も同じピクセル幅で刻む（`snapX`/`snapY`。縦の刻み%＝横の刻み%×配置エリアの幅/高さ）。配置エリアが16:9なので、%で同じ刻みにすると長方形になってしまうため。「線を表示」で`#gridLinesOverlay`（CSSのlinear-gradient、pointer-events:none）にマス目を描く。録画（合成キャンバスは`.tile`だけ描く）には入らない。配置エリアのサイズが変わると`ResizeObserver`で線を引き直す。
 - **背景画像**：選択した画像をlocalStorageにdata URLで保存し、`#videoGrid`の`background-image`に設定（`applyBgImage`）。
