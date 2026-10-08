@@ -442,7 +442,10 @@
     box-shadow: 0 12px 32px rgba(0,0,0,0.55); flex-direction: column; gap: 12px;
   }
   .popover.open { display: flex; }
-  #sharePopover { width: 340px; }
+  #sharePopover, .devPopover { width: 360px; }
+  .devPopover select { width: 100%; height: 38px; }
+  .devStatus { font-size: 12px; color: #9fe0bd; }
+  .devStatus.err { color: #ff8a8a; }
   #sharePopover label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   .popHead { display: flex; align-items: center; justify-content: space-between; }
   .popHead h2 { margin: 0; font-size: 15px; }
@@ -694,11 +697,15 @@
 
   <!-- 下のバー：自分の操作（いつも同じ場所） -->
   <footer id="controlBar">
-    <button id="barMicBtn" title="自分のマイクのON/OFF">🎤 マイク</button>
-    <button id="audioSettingsBtn" title="ノイズ抑制・イコライザーの設定を開く">🎚 ノイズ抑制</button>
-    <button id="barCamBtn" title="自分のカメラのON/OFF">📷 カメラ</button>
     <span class="splitBtn">
-      <button id="shareBtn">🖥 画面共有</button><button id="shareOptBtn" title="画面共有の設定（画質・画面の音）" aria-label="画面共有の設定">▴</button>
+      <button id="barMicBtn" title="自分のマイクのON/OFF">🎤 マイク</button><button id="micOptBtn" class="popToggle" data-pop="micPopover" title="使うマイクを選ぶ" aria-label="使うマイクを選ぶ">▴</button>
+    </span>
+    <button id="audioSettingsBtn" class="popToggle" data-pop="audioPopover" title="ノイズ抑制・イコライザーの設定を開く">🎚 ノイズ抑制</button>
+    <span class="splitBtn">
+      <button id="barCamBtn" title="自分のカメラのON/OFF">📷 カメラ</button><button id="camOptBtn" class="popToggle" data-pop="camPopover" title="使うカメラを選ぶ" aria-label="使うカメラを選ぶ">▴</button>
+    </span>
+    <span class="splitBtn">
+      <button id="shareBtn">🖥 画面共有</button><button id="shareOptBtn" class="popToggle" data-pop="sharePopover" title="画面共有の設定（画質・画面の音）" aria-label="画面共有の設定">▴</button>
     </span>
     <button id="muteBtn" title="この端末で、相手の声・画面の音をすべて消します">🔊 全体ミュート</button>
     <span class="spacer"></span>
@@ -732,6 +739,18 @@
           <div id="eqBandsRow"></div>
         </div>
       </div>
+    </div>
+    <div class="popover devPopover" id="micPopover" data-onopen="refreshmics">
+      <div class="popHead"><h2>使うマイク</h2><button class="small ghost popClose" aria-label="閉じる">✕</button></div>
+      <select id="barMicSelect" aria-label="使うマイク"><option value="">既定のマイク</option></select>
+      <span class="devStatus" id="micSwitchStatus"></span>
+      <span class="hint">選ぶとすぐ切り替わります（ノイズ抑制・イコライザーはそのまま）。この端末に保存され、次回の入室でも使われます。NVIDIA BroadcastやKrispなどの仮想マイクも選べます。</span>
+    </div>
+    <div class="popover devPopover" id="camPopover" data-onopen="refreshcams">
+      <div class="popHead"><h2>使うカメラ</h2><button class="small ghost popClose" aria-label="閉じる">✕</button></div>
+      <select id="barCamSelect" aria-label="使うカメラ"><option value="">既定のカメラ</option></select>
+      <span class="devStatus" id="camSwitchStatus"></span>
+      <span class="hint">選ぶとすぐ切り替わります（ズーム・左右反転・ON/OFFはそのまま）。この端末に保存され、次回の入室でも使われます。</span>
     </div>
     <div class="popover" id="sharePopover">
       <div class="popHead"><h2>画面共有の設定</h2><button class="small ghost popClose" aria-label="閉じる">✕</button></div>
@@ -1098,11 +1117,20 @@ function togglePopover(pop) {
   document.querySelectorAll(".popover.open").forEach((p) => p.classList.remove("open"));
   pop.classList.toggle("open", open);
 }
-document.getElementById("audioSettingsBtn").addEventListener("click", (e) => { e.stopPropagation(); togglePopover(audioPopover); });
-document.getElementById("shareOptBtn").addEventListener("click", (e) => { e.stopPropagation(); togglePopover(sharePopover); });
+document.querySelectorAll(".popToggle").forEach((b) => b.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const pop = document.getElementById(b.dataset.pop);
+  togglePopover(pop);
+  if (!pop.classList.contains("open")) return;
+  // 押したボタンの上に出す（バーの右端からはみ出さない範囲で）
+  const bar = pop.offsetParent || pop.parentElement;
+  const barW = bar.clientWidth, btnLeft = (b.closest(".splitBtn") || b).getBoundingClientRect().left - bar.getBoundingClientRect().left;
+  pop.style.left = Math.max(16, Math.min(btnLeft, barW - pop.offsetWidth - 16)) + "px";
+  if (pop.dataset.onopen) window.dispatchEvent(new CustomEvent(pop.dataset.onopen));
+}));
 document.querySelectorAll(".popClose").forEach((b) => b.addEventListener("click", () => b.closest(".popover").classList.remove("open")));
 document.addEventListener("pointerdown", (e) => {
-  if (e.target.closest(".popover") || e.target.closest("#audioSettingsBtn") || e.target.closest("#shareOptBtn")) return;
+  if (e.target.closest(".popover") || e.target.closest(".popToggle")) return;
   document.querySelectorAll(".popover.open").forEach((p) => p.classList.remove("open"));
 });
 document.addEventListener("keydown", (e) => {
@@ -1184,8 +1212,101 @@ async function refreshDeviceOptions(kind, selectEl, storageKey, defaultLabel, la
     console.warn(`${labelPrefix}一覧の取得に失敗しました`, e);
   }
 }
-const refreshMicDeviceOptions = () => refreshDeviceOptions("audioinput", micDeviceSelect, SAVED_MIC_KEY, "既定のマイク", "マイク");
-const refreshCamDeviceOptions = () => refreshDeviceOptions("videoinput", camDeviceSelect, SAVED_CAM_KEY, "既定のカメラ", "カメラ");
+const barMicSelect = document.getElementById("barMicSelect");
+const barCamSelect = document.getElementById("barCamSelect");
+// 入室画面と下のバーの小窓、両方の選択欄に同じ一覧を出す
+const refreshMicDeviceOptions = () => Promise.all([
+  refreshDeviceOptions("audioinput", micDeviceSelect, SAVED_MIC_KEY, "既定のマイク", "マイク"),
+  refreshDeviceOptions("audioinput", barMicSelect, SAVED_MIC_KEY, "既定のマイク", "マイク")
+]);
+const refreshCamDeviceOptions = () => Promise.all([
+  refreshDeviceOptions("videoinput", camDeviceSelect, SAVED_CAM_KEY, "既定のカメラ", "カメラ"),
+  refreshDeviceOptions("videoinput", barCamSelect, SAVED_CAM_KEY, "既定のカメラ", "カメラ")
+]);
+function micConstraints(deviceId) {
+  const c = { noiseSuppression: true, echoCancellation: true, autoGainControl: true };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+// 個人録画（自分のカメラ）の画質のため高解像度で取る。通話へは applyCameraSenderParams で縮めて送る
+function camConstraints(deviceId) {
+  const c = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+
+// ---------- 入室後のマイク・カメラの切り替え（下のバーの「▴」） ----------
+// 新しい機器を先に取ってから古いトラックと入れ替える（取れなかったら今のまま）。ON/OFF（enabled）は引き継ぐ。
+// 相手へは replaceTrack（再交渉なし）。自分のカメラ・PC画面の個人録画中は、録画中のトラックが止まってしまうので切り替えない。
+function personalRecordingKinds() { return new Set(activeRecorders.map((r) => r.kind)); }
+function setDevStatus(el, text, isErr) {
+  el.textContent = text;
+  el.classList.toggle("err", !!isErr);
+}
+async function switchMicDevice(deviceId) {
+  const status = document.getElementById("micSwitchStatus");
+  if (!localStream) { localStorage.setItem(SAVED_MIC_KEY, deviceId); micDeviceSelect.value = deviceId; return; }
+  const rec = personalRecordingKinds();
+  if (rec.has("self") || rec.has("screen")) {
+    setDevStatus(status, "自分のカメラ／PC画面を録画中は切り替えできません（録画を止めてから選んでください）", true);
+    barMicSelect.value = localStorage.getItem(SAVED_MIC_KEY) || "";
+    return;
+  }
+  setDevStatus(status, "切り替え中…");
+  let newTrack;
+  try {
+    newTrack = (await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId) })).getAudioTracks()[0];
+  } catch (e) {
+    setDevStatus(status, "このマイクを使えませんでした: " + e.message, true);
+    barMicSelect.value = localStorage.getItem(SAVED_MIC_KEY) || "";
+    return;
+  }
+  const old = localStream.getAudioTracks()[0];
+  if (old) { newTrack.enabled = old.enabled; localStream.removeTrack(old); old.stop(); }
+  localStream.addTrack(newTrack);
+  outgoingAudioTrack = await setupNoiseGate(localStream, audioDest);
+  for (const entry of Object.values(peers)) {
+    if (entry.audioSender && outgoingAudioTrack) entry.audioSender.replaceTrack(outgoingAudioTrack).catch((e) => console.warn("マイクの差し替えに失敗", e));
+  }
+  localStorage.setItem(SAVED_MIC_KEY, deviceId);
+  micDeviceSelect.value = deviceId;
+  setDevStatus(status, `「${newTrack.label || "マイク"}」に切り替えました`);
+  renderControls(computeSlots());
+}
+async function switchCamDevice(deviceId) {
+  const status = document.getElementById("camSwitchStatus");
+  if (!localStream) { localStorage.setItem(SAVED_CAM_KEY, deviceId); camDeviceSelect.value = deviceId; return; }
+  if (personalRecordingKinds().has("self")) {
+    setDevStatus(status, "自分のカメラを録画中は切り替えできません（録画を止めてから選んでください）", true);
+    barCamSelect.value = localStorage.getItem(SAVED_CAM_KEY) || "";
+    return;
+  }
+  setDevStatus(status, "切り替え中…");
+  const old = localStream.getVideoTracks()[0];
+  let newTrack;
+  try {
+    newTrack = (await navigator.mediaDevices.getUserMedia({ video: camConstraints(deviceId) })).getVideoTracks()[0];
+  } catch (e) {
+    setDevStatus(status, "このカメラを使えませんでした（他のアプリで使用中の可能性があります）: " + e.message, true);
+    barCamSelect.value = localStorage.getItem(SAVED_CAM_KEY) || "";
+    return;
+  }
+  if (old) { newTrack.enabled = old.enabled; localStream.removeTrack(old); old.stop(); }
+  localStream.addTrack(newTrack);
+  camSendTrack = setupCameraZoom(newTrack); // 古い方のズーム処理は元のトラックが止まると終わる
+  attachStreamToTile(myId, camSendTrack ? new MediaStream([camSendTrack]) : localStream);
+  for (const entry of Object.values(peers)) {
+    if (!entry.videoSender) continue;
+    entry.videoSender.replaceTrack(camSendTrack || newTrack).then(() => applyCameraSenderParams(entry.videoSender)).catch((e) => console.warn("カメラの差し替えに失敗", e));
+  }
+  localStorage.setItem(SAVED_CAM_KEY, deviceId);
+  camDeviceSelect.value = deviceId;
+  setDevStatus(status, `「${newTrack.label || "カメラ"}」に切り替えました`);
+}
+barMicSelect.addEventListener("change", () => switchMicDevice(barMicSelect.value));
+barCamSelect.addEventListener("change", () => switchCamDevice(barCamSelect.value));
+window.addEventListener("refreshmics", () => { refreshMicDeviceOptions(); setDevStatus(document.getElementById("micSwitchStatus"), ""); });
+window.addEventListener("refreshcams", () => { refreshCamDeviceOptions(); setDevStatus(document.getElementById("camSwitchStatus"), ""); });
 refreshMicDeviceOptions();
 refreshCamDeviceOptions();
 micDeviceSelect.addEventListener("focus", refreshMicDeviceOptions);
@@ -1779,14 +1900,8 @@ async function joinRoom(name) {
     return;
   }
 
-  const selectedMicId = micDeviceSelect.value;
-  const audioConstraints = { noiseSuppression: true, echoCancellation: true, autoGainControl: true };
-  if (selectedMicId) audioConstraints.deviceId = { exact: selectedMicId };
-
-  const selectedCamId = camDeviceSelect.value;
-  // 個人録画（自分のカメラ）の画質のため高解像度で取る。通話へは applyCameraSenderParams で縮めて送る
-  const videoConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
-  if (selectedCamId) videoConstraints.deviceId = { exact: selectedCamId };
+  const audioConstraints = micConstraints(micDeviceSelect.value);
+  const videoConstraints = camConstraints(camDeviceSelect.value);
 
   try {
     localStream = await navigator.mediaDevices.getUserMedia({

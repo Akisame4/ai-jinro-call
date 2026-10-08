@@ -13,6 +13,8 @@ YouTube企画の撮影用WebRTCビデオ通話アプリ。単一HTMLファイル
   - 早押し：ルール設定とイントロクイズは`<details class="fold">`で普段は閉じる（`#introRow`はdetails自体）。スコアボードのボタンもここ。
   - 配置：テンプレート・レイアウト同期・マス目・「配置エリアに出すもの」（名前・演出・バッジのON/OFF）。背景・枠：背景と共通の枠・自分の枠をプレビュー付きで（`updateBgPreview`/`updateFramePreviews`、`applyBgImage`/`applyFrameImageToAllTiles`から更新）。録画：録るもの・システム音声・保存したファイル・結果をコピー。
 - **下のバー（`#controlBar`）**：自分の操作。マイク（音量メーター付き、`barMicMeter`）、ノイズ抑制（押すと「音声の設定」の小窓。中にノイズ抑制のON/OFF・強さ・メーター・EQ。表示は`updateAudioSettingsBtn`、無音警告が出たら赤くなる）、カメラ、画面共有（▴で画質・画面の音の小窓）、全体ミュート、早押しボタン（`#buzzBtn`をここに移した。早押しを使う間だけ表示）、サイコロ（`#barDiceBtn`、「振るダイス」の指定で振る）、録画開始/停止（`#recBtn`）。下のバーのマイク・カメラは`toggleMicFor(myId)`/`toggleCamFor(myId)`、表示は`updateControlBar`（`renderControls`の最後）。
+- **入室後のマイク・カメラの切り替え**（UC要望、2026-10-09）：下のバーのマイク・カメラの「▴」で「使うマイク／使うカメラ」の小窓（`#micPopover`/`#camPopover`、開くたびに一覧を取り直す）。選ぶと`switchMicDevice`/`switchCamDevice`：新しい機器を先に`getUserMedia`で取り（取れなければ今のまま・理由を表示）、`localStream`の古いトラックと入れ替えて`stop()`、ON/OFF（enabled）は引き継ぐ。マイクは`setupNoiseGate`を作り直して`audioSender.replaceTrack`、カメラは`setupCameraZoom`を作り直して自分のタイルと`videoSender.replaceTrack`（＋`applyCameraSenderParams`）。再交渉なし。選んだ機器は入室画面と同じキー（`aiJinroMicDeviceId`/`aiJinroCamDeviceId`）に保存。取得条件は入室と共通の`micConstraints`/`camConstraints`。自分のカメラ／PC画面の個人録画中は、録画中のトラックが止まるので切り替えない（マイクはself・screen、カメラはselfの録画中）。
+- 小窓を開くボタンは`.popToggle`（`data-pop`＝小窓のid、`data-onopen`のイベントを開いたときに出す）。押したボタンの上に出す。
 - 小窓（`.popover`）は外側クリック・Escで閉じる。画面の音が取れなかった注意（`showScreenAudioNote`）は画面共有の小窓を開いて見せる。
 - 要素のidは組み直し前と同じにしてあるので、各機能の処理はそのまま動く（`videoGridBar`・`displayOptionsBar`だけ廃止）。
 
