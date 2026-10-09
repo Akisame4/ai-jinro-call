@@ -5869,6 +5869,7 @@ function diceTotalText(vals, rolling) {
 
 function renderDiceOverlay(rolling) {
   if (!diceShow) return;
+  if (diceShow.use3d) return; // 立体ダイスのときはダイスだけを見せ、上の結果の箱は出さない
   const vals = diceDisplayValues(rolling);
   const faces = vals.length <= DICE_FACES_SHOWN_MAX
     ? `<div class="diceFaces">${vals.map((v) => `<span class="diceFace">${v}</span>`).join("")}</div>` : "";
@@ -5942,7 +5943,7 @@ function stackDiceBadgeUnderMb(badge, tile) {
 
 function drawDiceOverlayOnCanvas(ctx) {
   if (!diceShow || !showDiceFx || Date.now() >= diceShow.until) return;
-  if (diceShow.use3d) Dice3D.drawTo(ctx); // 立体ダイスのステージ（配置エリア全体）を先に描き、その上に箱
+  if (diceShow.use3d) { Dice3D.drawTo(ctx); return; } // 立体ダイスのときはステージ（配置エリア全体）だけで、結果の箱は描かない
   const rolling = Date.now() < diceShow.rollUntil;
   const vals = diceDisplayValues(rolling);
   const W = ctx.canvas.width, H = ctx.canvas.height;
