@@ -559,7 +559,7 @@
               <div class="buzzHostRow buzzJudgeRow">
                 <button id="buzzCorrectBtn">○ 正解</button>
                 <button id="buzzWrongBtn">× 不正解</button>
-                <button id="buzzRetryBtn" title="問題番号はそのままで、押した記録・回答権・誤答による押せない状態を消して全員押し直しにします（得点は変わりません）">↺ 押し直し</button>
+                <button id="buzzRetryBtn" title="問題番号はそのままで、押した記録・回答権を消して全員押し直しにします（得点は変わりません）">↺ 押し直し</button>
                 <button id="buzzResetBtn">▶ 次の問題へ</button>
               </div>
               <div class="buzzHostRow buzzClearRow">
@@ -4571,10 +4571,9 @@ async function hostJudgeBuzz(correct) {
     return;
   }
   await addBuzzScore(answererId, { points: -buzzConfig.ptsWrong, wrong: 1 });
-  const lockedOut = { ...(buzzState.lockedOut || {}), [buzzEntityOf(answererId).key]: true };
-  // 不正解 → 同じ問題のまま、誤答した人（チーム）以外で押し直し
+  // 不正解 → 同じ問題のまま全員で押し直し。誤答した人（チーム）も押せる（UC指示 2026-10-11で誤答ロックを廃止）
   await update(ref(db, `rooms/${ROOM_ID}/buzzer/state`), {
-    status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut, judge
+    status: "open", phase: (buzzState.phase || 1) + 1, answererId: null, answerDeadline: null, lockedOut: null, judge
   });
   // イントロクイズ：×の演出が終わってから曲を続きから再開する
   if (introAutoResume.checked && introPausedByBuzz && !introPlaying && !introEnded) {
