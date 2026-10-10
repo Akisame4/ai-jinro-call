@@ -4723,10 +4723,8 @@ function handleBuzzStateEffects(isInitialSnapshot) {
   buzzLastAnswerer = answerKey;
 }
 
+// 回答権が決まったときの演出。名前のカットインは出さない（UC指示 2026-10-11。誰が押したかは回答者タイルの金枠で分かる）
 function showBuzzCutin(peerId, silent = false) {
-  const name = buzzNameOf(peerId);
-  const team = buzzConfig.teamMode ? buzzTeamOf(peerId) : "";
-  showBuzzCutinText(team ? `${name}（${team}）` : name);
   // ピンポーン
   if (!silent) playBuzzTones([{ f: 1319, d: 0.18, type: "sine", g: 0.35 }, { f: 1047, d: 0.45, type: "sine", g: 0.35 }]);
 }
