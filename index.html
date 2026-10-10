@@ -1017,9 +1017,6 @@ const BUILTIN_TEMPLATES_PORTRAIT = {
 function builtinTemplates() { return stageAspect === "portrait" ? BUILTIN_TEMPLATES_PORTRAIT : BUILTIN_TEMPLATES; }
 let templates = loadTemplates();
 
-// 参加者の並び順（操作パネルでのドラッグ入れ替え用）。peerIdはセッションごとに変わるため保存はしない。
-// 未指定の参加者は入室順で末尾に追加される。
-let customOrder = [];
 
 // ローカルのみの表示制御（この端末の画面にだけ影響。相手には伝わらない）
 const locallyMutedPeers = new Set();      // 個別に音声を消している相手
@@ -2744,7 +2741,8 @@ function resetLayout() {
   if (layoutInteractionLocked()) return;
   tilePositions = {};
   savePositions();
-  customOrder = [];
+  slotByName = {}; // 誰がどのスロットかも忘れて入室順に並べ直す
+  saveSlotByName();
   const slots = computeSlots();
   renderGrid();
   renderControls(slots);
@@ -3050,7 +3048,7 @@ function applySyncedLayout(layoutData) {
 function snapshotLayoutIntoLocal(layoutData) {
   const tiles = layoutData?.tiles || {};
   const slots = computeSlots();
-  const newPositions = {};
+  const newPositions = { ...tilePositions }; // 今いない人のスロットの位置も残す（入り直したときに戻れるように）
   slots.forEach((s, idx) => {
     if (!s) return;
     const pos = tiles[s.key];
@@ -3110,38 +3108,70 @@ function renderLayoutSyncPanel() {
 
 // スロット配列は「カメラ枠（常にMAX_PEERS個・空きはnull）」＋「画面共有枠（共有中の人数分だけ末尾に追加）」で構成する。
 // 画面共有枠はpeerIdの昇順で並べる（開始/終了のたびに他の共有者の枠がガタつかないよう、順序を決定的にする）
+// タイルの配置はスロット番号ごとに保存しているので、誰がどのスロットかを名前で覚えておく（localStorage `slotByName`）。
+// 抜けた人のスロットは空けたまま（他の人を詰めない）にし、同じ名前で入り直したら元のスロット＝元の位置に戻る。
+// 画面共有は「名前#番号」、スコアボードは固定のキーで、カメラ（0〜MAX_PEERS-1）より後ろのスロットを同じように覚える
+const SLOT_BY_NAME_KEY = "slotByName";
+let slotByName = (() => { try { return JSON.parse(localStorage.getItem(SLOT_BY_NAME_KEY) || "{}") || {}; } catch (e) { return {}; } })();
+function saveSlotByName() { try { localStorage.setItem(SLOT_BY_NAME_KEY, JSON.stringify(slotByName)); } catch (e) {} }
+// items: [{ stable, slot }]（並びが優先順）。覚えているスロットが空いていればそこへ、なければ誰にも覚えられていない空きの先頭へ
+function assignStickySlots(items, from, to, slots) {
+  const end = to ?? from + 64;
+  const reserved = new Set(Object.values(slotByName));
+  let changed = false;
+  const pending = [];
+  for (const it of items) {
+    const want = slotByName[it.stable];
+    if (Number.isInteger(want) && want >= from && want < end && !slots[want]) slots[want] = it.slot;
+    else pending.push(it);
+  }
+  for (const it of pending) {
+    let idx = -1;
+    for (let i = from; i < end && idx < 0; i++) if (!slots[i] && !reserved.has(i)) idx = i;
+    for (let i = from; i < end && idx < 0; i++) if (!slots[i]) idx = i;
+    if (idx < 0) continue; // カメラ枠が満員
+    slots[idx] = it.slot;
+    // 同じ名前の人が2人いるときは、先に置いた人のスロットだけを覚える
+    if (!items.some((o) => o !== it && o.stable === it.stable && slots.indexOf(o.slot) >= 0)) {
+      if (slotByName[it.stable] !== idx) { slotByName[it.stable] = idx; changed = true; }
+      reserved.add(idx);
+    }
+  }
+  return changed;
+}
 function computeSlots() {
   const presentIds = Object.keys(members).filter((id) => members[id]?.joinedAt != null);
   const byJoin = presentIds.slice().sort((a, b) => members[a].joinedAt - members[b].joinedAt);
 
-  // customOrder に含まれる現存メンバーを先に、それ以外（新規参加者など）は入室順で末尾に追加
-  const orderedIds = customOrder.filter((id) => presentIds.includes(id));
-  for (const id of byJoin) {
-    if (!orderedIds.includes(id)) orderedIds.push(id);
-  }
+  const slots = new Array(MAX_PEERS).fill(null);
+  let changed = assignStickySlots(byJoin.map((id) => ({
+    stable: "c:" + (members[id].name || id),
+    slot: { id, key: id, kind: "camera", name: members[id].name, sharing: !!members[id].sharing }
+  })), 0, MAX_PEERS, slots);
 
-  const sorted = orderedIds.map((id) => ({ id, key: id, kind: "camera", name: members[id].name, sharing: !!members[id].sharing }));
-  const camSlots = sorted.slice(0, MAX_PEERS);
-  while (camSlots.length < MAX_PEERS) camSlots.push(null);
-
-  const sharingIds = presentIds.filter((id) => members[id]?.sharing).sort();
-  const screenSlots = sharingIds.flatMap((id) => memberScreenNums(members[id]).map((n) => (
-    { id, key: screenKey(id, n), kind: "screen", screenNum: n, name: members[id]?.name, sharing: true }
-  )));
-  const extraSlots = scoreboardOn ? [{ id: SCOREBOARD_KEY, key: SCOREBOARD_KEY, kind: "scoreboard", name: "スコアボード" }] : [];
-
-  return [...camSlots, ...screenSlots, ...extraSlots];
+  const sharingIds = byJoin.filter((id) => members[id]?.sharing);
+  const extras = sharingIds.flatMap((id) => memberScreenNums(members[id]).map((n) => ({
+    stable: `s:${members[id]?.name || id}#${n}`,
+    slot: { id, key: screenKey(id, n), kind: "screen", screenNum: n, name: members[id]?.name, sharing: true }
+  })));
+  if (scoreboardOn) extras.push({ stable: "scoreboard", slot: { id: SCOREBOARD_KEY, key: SCOREBOARD_KEY, kind: "scoreboard", name: "スコアボード" } });
+  changed = assignStickySlots(extras, MAX_PEERS, null, slots) || changed;
+  if (changed) saveSlotByName();
+  for (let i = 0; i < slots.length; i++) if (slots[i] === undefined) slots[i] = null;
+  return slots;
 }
 
 function swapOrder(idA, idB) {
   if (idA === idB) return;
   if (layoutInteractionLocked()) return;
   const slots = computeSlots();
-  const order = slots.filter((s) => s && s.kind === "camera").map((s) => s.id);
-  const iA = order.indexOf(idA), iB = order.indexOf(idB);
+  const iA = slots.findIndex((s) => s && s.kind === "camera" && s.id === idA);
+  const iB = slots.findIndex((s) => s && s.kind === "camera" && s.id === idB);
   if (iA === -1 || iB === -1) return;
-  [order[iA], order[iB]] = [order[iB], order[iA]];
-  customOrder = order;
+  // 2人の覚えているスロットを入れ替える（位置は元のスロットのまま、人が入れ替わる）
+  slotByName["c:" + (members[idA].name || idA)] = iB;
+  slotByName["c:" + (members[idB].name || idB)] = iA;
+  saveSlotByName();
   const newSlots = computeSlots();
   renderGrid();
   renderControls(newSlots);
