@@ -81,6 +81,14 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - 正解（または「次の問題へ」）で次の曲を頭出し（再生はホストが▶）。「押し直し」では曲はそのまま。
 - 曲名は流している端末にだけ表示する。他の人には`buzzer/music/playing`で「♪ 曲が流れています」とだけ出す。
 
+## 配置エリアの向き（横16:9／縦9:16＝ショート動画用）
+UC要望（2026-10-10）。「配置」タブの「画面の向き」で切り替える。この端末の設定（localStorage `stageAspect`＝`"landscape"`/`"portrait"`）。
+- 縦のときは`#videoGrid`/`#gridPlaceholder`に`.portrait`（aspect-ratio 9/16）。別ウィンドウも縦（540×960で開く・切替時は`resizeTo`）。カメラタイル自体は16:9のまま。
+- **配置・テンプレート・背景は向きごとに別保存**：`orientKey(base)`で縦は`aiJinroTilePositionsPctPortrait`／`aiJinroLayoutTemplatesPortrait`／`aiJinroBgImagePortrait`（横は従来のキーのまま）。切替は`switchLocalStageAspect`（配置・テンプレートを読み込み直す）。縦の既定配置は2列×3段で中央（`defaultPos`）、既定テンプレートは`BUILTIN_TEMPLATES_PORTRAIT`。
+- 表示する向きは`effectiveStageAspect()`（追従中はリーダーの`layouts/{id}/aspect`）。`renderGrid`の最初の`applyStageAspect()`で反映（変わったときだけ背景・マス目を引き直す）。追従を抜けたときは見ていた向きにこの端末も切り替えてから配置を引き継ぐ。リーダーは向きを変えたら配置と背景を配り直す。
+- レイアウト全体の録画は縦なら**1080×1920**（ファイル名は`日付_all_縦_時刻.mp4`）。録画中は向きを変えられない。
+- 立体ダイスは縦でも収まるよう列数を配置エリアの縦横比から決める。
+
 ## 配置エリアの別ウィンドウ表示（配信用）
 
 - 「🗗 配置エリアを別ウィンドウで表示」で`#videoGrid`の要素そのものを`window.open`したウィンドウへ移す（配置・枠・背景・名前表示・ドラッグ操作がそのまま使える）。メイン画面には`#gridPlaceholder`（元に戻すボタン）を出す。ウィンドウを閉じる（pagehide）か「元に戻す」で戻す。

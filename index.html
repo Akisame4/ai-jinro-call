@@ -333,6 +333,13 @@
     background: #0b0c10; border: 1px solid var(--line); border-radius: 8px;
   }
   .stageHint { font-size: 12px; color: var(--muted); text-align: center; }
+  /* 縦向き（9:16。ショート動画用）。配置・背景は横向きと別に保存する（stageAspect） */
+  #videoGrid.portrait, #gridPlaceholder.portrait {
+    aspect-ratio: 9 / 16; width: min(100%, calc((100vh - var(--topH) - var(--barH) - 72px) * 9 / 16)); min-width: 240px;
+  }
+  .aspectBtns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .aspectBtns button.active { background: #3a6ea5; border-color: #5a8ec5; color: #fff; font-weight: bold; }
+  .lookPreview.portrait { aspect-ratio: 9 / 16; max-height: 220px; margin: 0 auto; }
 
   #sidePanel { width: 390px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
   #sideTabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-bottom: 1px solid var(--line); flex: none; }
@@ -636,6 +643,11 @@
         <section class="sidePane" data-pane="layout">
           <div class="paneHead"><h2>配置</h2></div>
           <div class="card">
+            <h3>画面の向き</h3>
+            <div class="aspectBtns"><button class="small" id="aspectLandscapeBtn">横 16:9</button><button class="small" id="aspectPortraitBtn">縦 9:16（ショート）</button></div>
+            <span class="hint" id="aspectHint">配置エリア（別ウィンドウ・レイアウト録画も）の向き。配置・テンプレート・背景は向きごとに別々に保存されます。縦のレイアウト録画は1080×1920です</span>
+          </div>
+          <div class="card">
             <h3>テンプレート</h3>
             <div class="cardRow"><select id="templateSelect"></select><button class="small" id="deleteTemplateBtn">削除</button></div>
             <div class="cardRow"><input type="text" id="templateNameInput" placeholder="テンプレート名"><button class="small" id="saveTemplateBtn">この配置を保存</button></div>
@@ -936,6 +948,17 @@ const eqBandGainLabels = [];
 const COLS = 3;
 const TILE_W_PCT = 30, COL_GAP_PCT = 3, ROW_TOP_PCT = 50;
 const MIN_TILE_PCT = 10, MAX_TILE_PCT = 100;
+// 配置エリアの向き：横（16:9）／縦（9:16。ショート動画用）。この端末の設定で、配置・テンプレート・背景は向きごとに別々に保存する。
+// レイアウト同期で追従中はリーダーの向きに合わせる（layouts/{id}/aspect）
+const STAGE_ASPECT_KEY = "stageAspect";
+let stageAspect = (() => { try { return localStorage.getItem(STAGE_ASPECT_KEY) === "portrait" ? "portrait" : "landscape"; } catch (e) { return "landscape"; } })();
+function effectiveStageAspect() {
+  if (followingLayout && !isLayoutLeader()) return followingLayout.aspect === "portrait" ? "portrait" : "landscape";
+  return stageAspect;
+}
+function isPortraitStage() { return effectiveStageAspect() === "portrait"; }
+// 向きごとのlocalStorageキー（横は従来のキーのまま）
+function orientKey(base) { return stageAspect === "portrait" ? base + "Portrait" : base; }
 let tilePositions = loadPositions();
 // グリッドは正方形のマス目。横をgridSnapCols等分し、縦も同じピクセル幅で刻む
 // （配置エリアは16:9なので、%で同じ刻みにすると縦長・横長の長方形になってしまうため縦横で刻みを変える）
@@ -949,7 +972,7 @@ let showDiceBadge = localStorage.getItem("showDiceBadge") !== "0"; // 各自が�
 function gridStepXPct() { return 100 / gridSnapCols; }
 function gridStepYPct() {
   const w = videoGrid.clientWidth, h = videoGrid.clientHeight;
-  return gridStepXPct() * (w && h ? w / h : 16 / 9);
+  return gridStepXPct() * (w && h ? w / h : (isPortraitStage() ? 9 / 16 : 16 / 9));
 }
 function snapX(v) { return gridSnapEnabled ? Math.round(v / gridStepXPct()) * gridStepXPct() : v; }
 function snapY(v) { return gridSnapEnabled ? Math.round(v / gridStepYPct()) * gridStepYPct() : v; }
@@ -981,6 +1004,17 @@ const BUILTIN_TEMPLATES = {
     3: { left: 50, top: 50, width: 50 }
   }
 };
+// 縦向き用の既定（カメラは横長のままなので、2列か1列で縦に積む）
+const BUILTIN_TEMPLATES_PORTRAIT = {
+  "6人グリッド（初期配置）": {},
+  "4人（1列）": {
+    0: { left: 0, top: 4, width: 100 },
+    1: { left: 0, top: 28, width: 100 },
+    2: { left: 0, top: 52, width: 100 },
+    3: { left: 0, top: 76, width: 100 }
+  }
+};
+function builtinTemplates() { return stageAspect === "portrait" ? BUILTIN_TEMPLATES_PORTRAIT : BUILTIN_TEMPLATES; }
 let templates = loadTemplates();
 
 // 参加者の並び順（操作パネルでのドラッグ入れ替え用）。peerIdはセッションごとに変わるため保存はしない。
@@ -1205,7 +1239,8 @@ function setLookPreview(el, url) {
   el.classList.toggle("has", !!url);
 }
 function updateBgPreview() {
-  setLookPreview(bgPreview, followingBg !== undefined ? followingBg : localStorage.getItem(BG_IMAGE_KEY));
+  setLookPreview(bgPreview, followingBg !== undefined ? followingBg : myBgDataUrl());
+  bgPreview.classList.toggle("portrait", isPortraitStage());
 }
 function updateFramePreviews() {
   setLookPreview(frameCommonPreview, effectiveFrameSettings().url);
@@ -1543,6 +1578,45 @@ function drawEqSpectrum() {
 
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
+
+// ---------- 配置エリアの向き（横16:9／縦9:16） ----------
+const aspectLandscapeBtn = document.getElementById("aspectLandscapeBtn");
+const aspectPortraitBtn = document.getElementById("aspectPortraitBtn");
+let appliedStageAspect = null;
+// 実際に表示する向き（追従中はリーダーの向き）を配置エリアに反映する。renderGridの最初に毎回呼ぶ
+function applyStageAspect() {
+  const aspect = effectiveStageAspect();
+  aspectLandscapeBtn.classList.toggle("active", aspect === "landscape");
+  aspectPortraitBtn.classList.toggle("active", aspect === "portrait");
+  aspectLandscapeBtn.disabled = aspectPortraitBtn.disabled = layoutInteractionLocked(); // 追従中はリーダーの向き
+  if (aspect === appliedStageAspect) return;
+  appliedStageAspect = aspect;
+  videoGrid.classList.toggle("portrait", aspect === "portrait");
+  gridPlaceholder.classList.toggle("portrait", aspect === "portrait");
+  if (gridPopped && gridPopupWin && !gridPopupWin.closed) {
+    try { aspect === "portrait" ? gridPopupWin.resizeTo(540, 960) : gridPopupWin.resizeTo(1280, 720); } catch (e) {}
+  }
+  applyGridLines();
+  applyBgImage();
+}
+// この端末の向きを切り替え、その向きの配置・テンプレートを読み込み直す
+function switchLocalStageAspect(aspect) {
+  stageAspect = aspect;
+  try { localStorage.setItem(STAGE_ASPECT_KEY, aspect); } catch (e) {}
+  tilePositions = loadPositions();
+  templates = loadTemplates();
+  renderTemplateOptions();
+}
+function onAspectBtnClick(aspect) {
+  if (aspect === stageAspect || layoutInteractionLocked()) return;
+  if (recordLoopId) { showTemplateStatus("録画中は向きを変えられません"); return; }
+  switchLocalStageAspect(aspect);
+  renderGrid();
+  renderControls(computeSlots());
+  if (isLayoutLeader()) { publishLeaderLayout(); publishLeaderBg(); }
+}
+aspectLandscapeBtn.addEventListener("click", () => onAspectBtnClick("landscape"));
+aspectPortraitBtn.addEventListener("click", () => onAspectBtnClick("portrait"));
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
 popoutGridBtn.addEventListener("click", popOutGrid);
 popinGridBtn.addEventListener("click", popInGrid);
@@ -1610,8 +1684,9 @@ const BG_IMAGE_KEY = "aiJinroBgImage";
 // 背景画像。レイアウト同期で追従中はリーダーの背景（followingBg）を、それ以外はこの端末で設定した背景を表示する
 let followingBg;           // undefined=追従していない / null=リーダーは背景なし / 文字列=リーダーの背景
 const bgImageEl = new Image(); // 合成録画に背景を描くための画像
+function myBgDataUrl() { return localStorage.getItem(orientKey(BG_IMAGE_KEY)); } // 背景は向きごとに別（縦向き用は横向きと別に設定する）
 function applyBgImage() {
-  const dataUrl = followingBg !== undefined ? followingBg : localStorage.getItem(BG_IMAGE_KEY);
+  const dataUrl = followingBg !== undefined ? followingBg : myBgDataUrl();
   if (dataUrl) { if (bgImageEl.src !== dataUrl) bgImageEl.src = dataUrl; } else bgImageEl.removeAttribute("src");
   if (dataUrl) {
     videoGrid.style.backgroundImage = `url(${dataUrl})`;
@@ -1622,7 +1697,7 @@ function applyBgImage() {
   }
   updateBgPreview();
 }
-applyBgImage();
+applyStageAspect(); // 向きの反映（背景の読み込みもここで行う）
 bgImageSelectBtn.addEventListener("click", () => bgImageInput.click());
 bgImageInput.addEventListener("change", () => {
   const file = bgImageInput.files[0];
@@ -1631,7 +1706,7 @@ bgImageInput.addEventListener("change", () => {
   const reader = new FileReader();
   reader.onload = () => {
     try {
-      localStorage.setItem(BG_IMAGE_KEY, reader.result);
+      localStorage.setItem(orientKey(BG_IMAGE_KEY), reader.result);
       applyBgImage();
       if (isLayoutLeader()) publishLeaderBg();
     } catch (e) {
@@ -1641,7 +1716,7 @@ bgImageInput.addEventListener("change", () => {
   reader.readAsDataURL(file);
 });
 bgImageClearBtn.addEventListener("click", () => {
-  localStorage.removeItem(BG_IMAGE_KEY);
+  localStorage.removeItem(orientKey(BG_IMAGE_KEY));
   applyBgImage();
   if (isLayoutLeader()) publishLeaderBg();
 });
@@ -2640,13 +2715,22 @@ function removeRemoteScreenTiles(peerId, keepNums) {
 
 // ---------- UI: 映像グリッド（自由配置） ----------
 function loadPositions() {
-  try { return JSON.parse(localStorage.getItem("aiJinroTilePositionsPct") || "{}"); }
+  try { return JSON.parse(localStorage.getItem(orientKey("aiJinroTilePositionsPct")) || "{}"); }
   catch (e) { return {}; }
 }
 function savePositions() {
-  localStorage.setItem("aiJinroTilePositionsPct", JSON.stringify(tilePositions));
+  localStorage.setItem(orientKey("aiJinroTilePositionsPct"), JSON.stringify(tilePositions));
 }
 function defaultPos(index) {
+  if (isPortraitStage()) {
+    // 縦向き：カメラ6枠を2列×3段で中央に、画面共有・スコアボードは上の方に大きめに重ねる
+    if (index >= MAX_PEERS) {
+      const k = (index - MAX_PEERS) % 4;
+      return { left: 5 + k * 3, top: 8 + k * 3, width: 90 };
+    }
+    const col = index % 2, row = Math.floor(index / 2);
+    return { left: col * 50, top: 26 + row * 16.5, width: 50 };
+  }
   // カメラ枠（MAX_PEERS個・2段）より後ろの画面共有・スコアボードは、3段目だと配置エリアの外に出てしまうので
   // エリア中央付近に少しずつずらして重ねて置く（z-indexはスロット順で手前になる）
   if (index >= MAX_PEERS) {
@@ -2669,15 +2753,15 @@ function resetLayout() {
 
 // ---------- レイアウトテンプレート ----------
 function loadTemplates() {
-  try { return JSON.parse(localStorage.getItem("aiJinroLayoutTemplates") || "{}"); }
+  try { return JSON.parse(localStorage.getItem(orientKey("aiJinroLayoutTemplates")) || "{}"); }
   catch (e) { return {}; }
 }
 function saveTemplatesStorage() {
-  localStorage.setItem("aiJinroLayoutTemplates", JSON.stringify(templates));
+  localStorage.setItem(orientKey("aiJinroLayoutTemplates"), JSON.stringify(templates));
 }
 
 function renderTemplateOptions(selected) {
-  const builtinNames = Object.keys(BUILTIN_TEMPLATES);
+  const builtinNames = Object.keys(builtinTemplates());
   const customNames = Object.keys(templates);
   let html = '<option value="">レイアウトテンプレート...</option>';
   if (builtinNames.length) {
@@ -2699,7 +2783,7 @@ function applySelectedTemplate() {
   const name = templateSelect.value;
   if (!name) return;
   if (layoutInteractionLocked()) { showTemplateStatus("追従中は変更できません"); return; }
-  const tpl = Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name) ? BUILTIN_TEMPLATES[name] : templates[name];
+  const tpl = Object.prototype.hasOwnProperty.call(builtinTemplates(), name) ? builtinTemplates()[name] : templates[name];
   if (!tpl) return;
   tilePositions = JSON.parse(JSON.stringify(tpl));
   savePositions();
@@ -2711,7 +2795,7 @@ function applySelectedTemplate() {
 function saveCurrentAsTemplate() {
   const name = templateNameInput.value.trim();
   if (!name) { showTemplateStatus("テンプレート名を入力してください"); return; }
-  if (Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name)) {
+  if (Object.prototype.hasOwnProperty.call(builtinTemplates(), name)) {
     showTemplateStatus("既定テンプレートと同じ名前は使えません");
     return;
   }
@@ -2725,7 +2809,7 @@ function saveCurrentAsTemplate() {
 function deleteSelectedTemplate() {
   const name = templateSelect.value;
   if (!name) return;
-  if (Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name)) {
+  if (Object.prototype.hasOwnProperty.call(builtinTemplates(), name)) {
     showTemplateStatus("既定テンプレートは削除できません");
     return;
   }
@@ -2798,6 +2882,9 @@ function updateFollowingSubscription() {
     if (layoutFrameUnsub) { layoutFrameUnsub(); layoutFrameUnsub = null; }
     if (followingFrameImage !== undefined) { followingFrameImage = undefined; applyFrameImageToAllTiles(); applyFrameState(); } // 枠も自分の設定に戻す
     if (followingLayout) {
+      // 見ていた向きのまま自由操作に戻す（リーダーと向きが違ったら、この端末の向きもそちらに切り替える）
+      const followedAspect = followingLayout.aspect === "portrait" ? "portrait" : "landscape";
+      if (followedAspect !== stageAspect) switchLocalStageAspect(followedAspect);
       snapshotLayoutIntoLocal(followingLayout);
       followingLayout = null;
       renderGrid();
@@ -2841,10 +2928,10 @@ async function requestLayoutSync() {
 async function publishLeaderBg() {
   if (!isLayoutLeader()) return;
   const bgRef = ref(db, `rooms/${ROOM_ID}/layoutBg/${myId}`);
-  const src = localStorage.getItem(BG_IMAGE_KEY);
+  const src = myBgDataUrl();
   if (!src) { await set(bgRef, { dataUrl: null, updatedAt: serverTimestamp() }); return; }
   try {
-    const dataUrl = await shrinkImageDataUrl(src, 1920, 1080, 0.85);
+    const dataUrl = stageAspect === "portrait" ? await shrinkImageDataUrl(src, 1080, 1920, 0.85) : await shrinkImageDataUrl(src, 1920, 1080, 0.85);
     await set(bgRef, { dataUrl, updatedAt: serverTimestamp() });
   } catch (e) {
     console.warn("publishLeaderBg failed", e);
@@ -2934,7 +3021,7 @@ async function publishLeaderLayout() {
   });
   try {
     const frame = { show: frameShowEnabled, off: [...frameOffTiles] };
-    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, frame, mbBadge: mbBadgePos, diceBadge: diceBadgePos, updatedAt: serverTimestamp() });
+    await set(ref(db, `rooms/${ROOM_ID}/layouts/${myId}`), { tiles, aspect: stageAspect, frame, mbBadge: mbBadgePos, diceBadge: diceBadgePos, updatedAt: serverTimestamp() });
   } catch (e) { console.warn("publishLeaderLayout failed", e); }
 }
 
@@ -3072,6 +3159,7 @@ function syncVideoTiles(slots) {
 // グリッドの再配置窓口。追従中（かつ自分がリーダーでない）はリーダーのレイアウトをそのまま反映し、
 // それ以外はこの端末のローカル配置（tilePositions）を反映する
 function renderGrid() {
+  applyStageAspect();
   if (followingLayout && !isLayoutLeader()) {
     applySyncedLayout(followingLayout);
   } else {
@@ -4093,8 +4181,9 @@ async function startRecording() {
     if (kind === "grid") {
       // 画面上の表示サイズではなく、常に1920×1080で描く（配置エリアは16:9。小さく表示していても録画は高解像度）
       recordCanvas = document.createElement("canvas");
-      recordCanvas.width = REC_GRID_WIDTH;
-      recordCanvas.height = REC_GRID_HEIGHT;
+      // 縦向き（ショート用）のときは1080×1920
+      recordCanvas.width = isPortraitStage() ? REC_GRID_HEIGHT : REC_GRID_WIDTH;
+      recordCanvas.height = isPortraitStage() ? REC_GRID_WIDTH : REC_GRID_HEIGHT;
       drawRecordFrame();
       videoTracks = recordCanvas.captureStream(30).getVideoTracks();
       // システム音声（Discord等の相手の声）には自分の声は含まれないので、自分のマイクを合成する
@@ -4160,7 +4249,7 @@ function recordingFileName(kind, date, ext) {
   const ymd = `${date.getFullYear()}${p2(date.getMonth() + 1)}${p2(date.getDate())}`;
   const hm = `${p2(date.getHours())}-${p2(date.getMinutes())}`;
   const name = (myName || "名前なし").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim() || "名前なし";
-  const who = kind === "grid" ? "all" : kind === "screen" ? `${name}(PC画面)` : name;
+  const who = kind === "grid" ? (recordCanvas && recordCanvas.height > recordCanvas.width ? "all_縦" : "all") : kind === "screen" ? `${name}(PC画面)` : name;
   return `${ymd}_${who}_${hm}.${ext}`;
 }
 
@@ -5224,7 +5313,7 @@ function gridEl(id) {
 
 function popOutGrid() {
   if (gridPopped && gridPopupWin && !gridPopupWin.closed) { gridPopupWin.focus(); return; }
-  const win = window.open("", "gridPopup", "popup,width=1280,height=720");
+  const win = window.open("", "gridPopup", isPortraitStage() ? "popup,width=540,height=960" : "popup,width=1280,height=720");
   if (!win) { templateStatus.textContent = "ポップアップがブロックされました。ブラウザの設定で許可してください"; return; }
   const doc = win.document;
   doc.open();
@@ -5234,7 +5323,8 @@ function popOutGrid() {
   const extra = doc.createElement("style");
   extra.textContent = `html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
     body { display: flex; align-items: center; justify-content: center; }
-    #videoGrid { width: min(100vw, calc(100vh * 16 / 9)) !important; margin: 0 !important; }`;
+    #videoGrid { width: min(100vw, calc(100vh * 16 / 9)) !important; margin: 0 !important; }
+    #videoGrid.portrait { width: min(100vw, calc(100vh * 9 / 16)) !important; min-width: 0 !important; }`;
   doc.head.appendChild(extra);
   gridPopupWin = win;
   gridPopped = true;
@@ -5780,7 +5870,7 @@ const Dice3D = (() => {
       if (!W || !H) return false;
       stop(); removeItems(); gen++;
       // 録画（1920×1080）でもぼやけないよう、配置エリアが小さいときは解像度を上げて描く
-      renderer.setPixelRatio(Math.min(3, Math.max(window.devicePixelRatio || 1, 1920 / W)));
+      renderer.setPixelRatio(Math.min(3, Math.max(window.devicePixelRatio || 1, (W < H ? 1080 : 1920) / W)));
       renderer.setSize(W, H, false);
       const cam = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -4000, 4000);
       cam.position.set(0, -Math.sin(TH) * 1000, Math.cos(TH) * 1000); cam.lookAt(0, 0, 0);
@@ -5789,7 +5879,7 @@ const Dice3D = (() => {
       if (list.every((d) => SHAPE_OF[d.m] === "ball")) S = Math.min(S * 1.5, H * 0.14); // 100面は数字が小さいので大きめに
       const toCamera = new Q().setFromAxisAngle(new V3(1, 0, 0), TH); // 真上（+Z）→ カメラの方向
       const isBall = list.every((d) => SHAPE_OF[d.m] === "ball");
-      const cols = Math.ceil(Math.sqrt(n * 1.8)), rows = Math.ceil(n / cols), gap = S * (isBall ? 2.35 : 1.6);
+      const cols = Math.ceil(Math.sqrt(n * W / H)), rows = Math.ceil(n / cols), gap = S * (isBall ? 2.35 : 1.6);
       const k = sec / 1.9; // 1.9秒を基準に、転がる時間を合わせる
       let tEnd = 0;
       list.forEach((d, i) => {
