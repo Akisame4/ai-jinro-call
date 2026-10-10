@@ -4700,10 +4700,8 @@ function handleBuzzStateEffects(isInitialSnapshot) {
     buzzLastJudgeId = judgeId;
     showBuzzJudge(!!buzzState.judge.correct);
     const result = buzzState.judge.result;
-    if (result) { // 勝ち抜け・失格が決まったら○×の後にカットインで知らせる
-      const text = `${buzzState.judge.label || buzzState.judge.name} ${result === "win" ? "勝ち抜け！" : "失格…"}`;
+    if (result) { // 勝ち抜け・失格が決まったら○×の後に効果音で知らせる（カットインの表示はUC指示 2026-10-11で廃止）
       setTimeout(() => {
-        showBuzzCutinText(text);
         playBuzzTones(result === "win"
           ? [{ f: 1047, d: 0.12, type: "sine", g: 0.3 }, { f: 1319, d: 0.12, type: "sine", g: 0.3 }, { f: 1568, d: 0.4, type: "sine", g: 0.3 }]
           : [{ f: 330, d: 0.25, type: "triangle", g: 0.3 }, { f: 262, d: 0.25, type: "triangle", g: 0.3 }, { f: 196, d: 0.5, type: "triangle", g: 0.3 }]);
