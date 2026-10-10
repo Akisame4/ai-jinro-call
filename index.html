@@ -181,6 +181,16 @@
     border-top-left-radius: 4px;
   }
   .tile .resizeHandle:hover { background: rgba(255,255,255,0.4); }
+  /* トリミング：映像を切り抜いた範囲だけタイルに見せる（applyTileCrop。videoをはみ出させてタイルのoverflow: hiddenで隠す） */
+  .tile.cropped video { position: absolute; max-width: none; aspect-ratio: auto !important; object-fit: fill !important; }
+  .tile.cropEditing video { aspect-ratio: auto !important; object-fit: fill !important; }
+  .tile.cropEditing { z-index: 9500 !important; cursor: default; }
+  .tile .cropEditor { position: absolute; inset: 0; z-index: 40; touch-action: none; line-height: normal; overflow: hidden; border-radius: 6px; }
+  .cropEditor .cropRect { position: absolute; border: 2px dashed #ffd54f; box-shadow: 0 0 0 9999px rgba(0,0,0,0.6); cursor: move; box-sizing: border-box; }
+  .cropEditor .cropHandle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: #ffd54f; border: 1px solid #000; border-radius: 3px; }
+  .cropEditor .cropBar { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); display: flex; gap: 6px; white-space: nowrap; }
+  .cropEditor .cropBar button { font-size: 12px; padding: 4px 10px; }
+  .cropEditor .cropHint { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); font-size: 12px; color: #fff; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
   #videoGrid:fullscreen { width: 100vw; height: 100vh; background: #000; border: none; }
   #copyBtn { margin-top: 8px; }
   #copyToast {
@@ -1918,6 +1928,7 @@ controlsTable.addEventListener("click", (e) => {
   if (action === "mic") toggleMicFor(id);
   else if (action === "cam") toggleCamFor(id);
   else if (action === "front") { if (!layoutInteractionLocked()) bringTileKeyToFront(key); }
+  else if (action === "crop") startTileCrop(key);
   else if (action === "back") { if (!layoutInteractionLocked()) sendTileKeyToBack(key); }
 });
 
@@ -3014,7 +3025,8 @@ async function publishLeaderLayout() {
       left: (pos.left || 0) / 100,
       top: (pos.top || 0) / 100,
       width: (pos.width || TILE_W_PCT) / 100,
-      z: pos.z || idx + 1
+      z: pos.z || idx + 1,
+      crop: pos.crop || null
     };
   });
   try {
@@ -3040,6 +3052,7 @@ function applySyncedLayout(layoutData) {
     tile.style.top = (pos.top * 100) + "%";
     tile.style.width = (pos.width * 100) + "%";
     tile.style.zIndex = String(pos.z || 1);
+    applyTileCrop(tile, pos.crop || null);
   }
   applyCameraVisibility();
 }
@@ -3053,7 +3066,7 @@ function snapshotLayoutIntoLocal(layoutData) {
     if (!s) return;
     const pos = tiles[s.key];
     if (pos) {
-      newPositions[idx] = { left: pos.left * 100, top: pos.top * 100, width: pos.width * 100, z: pos.z || idx + 1 };
+      newPositions[idx] = { left: pos.left * 100, top: pos.top * 100, width: pos.width * 100, z: pos.z || idx + 1, ...(pos.crop ? { crop: pos.crop } : {}) };
     } else if (tilePositions[idx]) {
       newPositions[idx] = tilePositions[idx];
     }
@@ -3220,12 +3233,14 @@ function applyCameraVisibility() {
 }
 
 function positionTile(tile, idx) {
+  if (tile.classList.contains("cropEditing")) return; // トリミングの編集中は位置を動かさない（完了時に保存される）
   const pos = tilePositions[idx] || defaultPos(idx);
   tile.style.left = pos.left + "%";
   tile.style.top = pos.top + "%";
   tile.style.width = (pos.width || TILE_W_PCT) + "%";
   tile.style.zIndex = String(pos.z || idx + 1);
   tile.dataset.slot = String(idx);
+  applyTileCrop(tile, pos.crop);
   if (tile.dataset.aspect) fitTileInGrid(tile); // 映像の比率がスロット確定より先に分かっていた画面共有タイル
 }
 
@@ -3236,7 +3251,8 @@ function saveTileRect(tile) {
     left: parseFloat(tile.style.left) || 0,
     top: parseFloat(tile.style.top) || 0,
     width: parseFloat(tile.style.width) || TILE_W_PCT,
-    z: parseInt(tile.style.zIndex, 10) || 1
+    z: parseInt(tile.style.zIndex, 10) || 1,
+    ...(tile._crop ? { crop: tile._crop } : {})
   };
   savePositions();
   if (isLayoutLeader()) publishLeaderLayout();
@@ -3321,8 +3337,8 @@ function makeResizable(tile) {
     const dxPct = ((e.clientX - startX) / containerW) * 100;
     const leftPct = parseFloat(tile.style.left) || 0;
     let maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
-    // 画面共有タイル（縦長もありうる）は下にはみ出さない幅まで
-    const aspect = parseFloat(tile.dataset.aspect);
+    // 画面共有タイル（縦長もありうる）・トリミングしたタイルは下にはみ出さない幅まで
+    const aspect = parseFloat(tile.dataset.cropAspect) || parseFloat(tile.dataset.aspect);
     if (aspect && containerH) {
       const topPct = parseFloat(tile.style.top) || 0;
       maxWPct = Math.max(MIN_TILE_PCT, Math.min(maxWPct, (100 - topPct) * containerH * aspect / containerW));
@@ -3362,6 +3378,10 @@ function createVideoTile(peerId, name, isSelf) {
   }
   makeDraggable(tile);
   makeResizable(tile);
+  const tileVideo = tile.querySelector("video");
+  // トリミングは映像の元の縦横比から計算するので、解像度が分かった時・変わった時にかけ直す
+  tileVideo.addEventListener("loadedmetadata", () => applyTileCrop(tile, tile._crop));
+  tileVideo.addEventListener("resize", () => applyTileCrop(tile, tile._crop));
   if (peerId.includes("-screen")) {
     tile.classList.add("screenTile");
     const video = tile.querySelector("video");
@@ -3370,6 +3390,162 @@ function createVideoTile(peerId, name, isSelf) {
     video.addEventListener("resize", () => applyScreenAspect(tile, video));
   }
   renderGrid(); // ○×のバッジもここで付く（updateMbBadges）
+}
+
+// ---------- タイルのトリミング（カメラ・画面共有・スコアボード共通） ----------
+// 配置の一部としてスロットごとに保存する（tilePositions[idx].crop = {x, y, w, h}：映像の元の大きさに対する0〜1）。
+// 映像そのものは切らず、videoをタイルより大きく置いてはみ出しを隠す。タイルの縦横比は切り抜いた範囲の比率になる。
+// レイアウト同期（layouts/{id}/tiles/{key}/crop）・テンプレート・合成録画（タイルの範囲でclip）にもそのまま乗る
+function tileVideoSize(tile) {
+  const v = tile.querySelector("video");
+  return v && v.videoWidth && v.videoHeight ? [v.videoWidth, v.videoHeight] : null;
+}
+function normCrop(c) {
+  if (!c) return null;
+  const w = Math.min(1, Math.max(0.03, +c.w || 1)), h = Math.min(1, Math.max(0.03, +c.h || 1));
+  const x = Math.min(1 - w, Math.max(0, +c.x || 0)), y = Math.min(1 - h, Math.max(0, +c.y || 0));
+  if (w > 0.995 && h > 0.995) return null; // ほぼ全体ならトリミングなし
+  return { x, y, w, h };
+}
+function applyTileCrop(tile, crop) {
+  crop = normCrop(crop);
+  tile._crop = crop;
+  const video = tile.querySelector("video");
+  const size = tileVideoSize(tile);
+  if (!crop || !size || tile.classList.contains("cropEditing")) {
+    tile.classList.remove("cropped");
+    tile.style.aspectRatio = "";
+    delete tile.dataset.cropAspect;
+    if (video) video.style.width = video.style.height = video.style.left = video.style.top = "";
+    return;
+  }
+  const [vw, vh] = size;
+  const ar = (crop.w * vw) / (crop.h * vh);
+  tile.classList.add("cropped");
+  tile.style.aspectRatio = String(ar);
+  tile.dataset.cropAspect = String(ar);
+  video.style.width = (100 / crop.w) + "%";
+  video.style.height = (100 / crop.h) + "%";
+  video.style.left = (-crop.x / crop.w * 100) + "%";
+  video.style.top = (-crop.y / crop.h * 100) + "%";
+}
+
+// 編集：タイルを映像全体の大きさに広げ（切り抜いていた部分は今と同じ位置・大きさのまま）、黄色の枠で範囲を選ぶ
+function startTileCrop(key) {
+  if (layoutInteractionLocked()) return;
+  const tile = gridEl(`tile-${key}`);
+  if (!tile || tile.classList.contains("cropEditing") || tile.offsetParent === null) return;
+  if (!tileVideoSize(tile)) { showTemplateStatus("映像が届いてからトリミングできます"); return; }
+  const doc = tile.ownerDocument, win = doc.defaultView;
+  const gridH = videoGrid.getBoundingClientRect().height;
+  const before = tile._crop;
+  const orig = { left: tile.style.left, top: tile.style.top, width: tile.style.width };
+  let left = parseFloat(tile.style.left) || 0, top = parseFloat(tile.style.top) || 0, width = parseFloat(tile.style.width) || TILE_W_PCT;
+  if (before) {
+    const hPct = tile.offsetHeight / gridH * 100;
+    width = width / before.w;
+    left -= before.x * width;
+    top -= before.y * (hPct / before.h);
+  }
+  tile.classList.add("cropEditing");
+  applyTileCrop(tile, null);
+  tile._crop = before; // 編集中も元の値を覚えておく（やめたときに戻す）
+  tile.style.left = left + "%";
+  tile.style.top = top + "%";
+  tile.style.width = width + "%";
+
+  let cur = before ? { ...before } : { x: 0, y: 0, w: 1, h: 1 };
+  const ed = doc.createElement("div");
+  ed.className = "cropEditor";
+  ed.innerHTML = `<div class="cropHint">黄色の枠をドラッグで移動・四隅と辺でサイズ変更</div>
+    <div class="cropRect">${["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((d) => `<div class="cropHandle" data-dir="${d}"></div>`).join("")}</div>
+    <div class="cropBar"><button class="small" data-crop="done">✔ 完了</button><button class="small" data-crop="full">全体に戻す</button><button class="small" data-crop="cancel">やめる</button></div>`;
+  tile.appendChild(ed);
+  const rect = ed.querySelector(".cropRect");
+  const HANDLE_POS = { nw: [0, 0], n: [50, 0], ne: [100, 0], e: [100, 50], se: [100, 100], s: [50, 100], sw: [0, 100], w: [0, 50] };
+  ed.querySelectorAll(".cropHandle").forEach((h) => {
+    const [px, py] = HANDLE_POS[h.dataset.dir];
+    h.style.left = px + "%"; h.style.top = py + "%";
+    h.style.cursor = `${h.dataset.dir}-resize`;
+  });
+  const draw = () => {
+    rect.style.left = cur.x * 100 + "%"; rect.style.top = cur.y * 100 + "%";
+    rect.style.width = cur.w * 100 + "%"; rect.style.height = cur.h * 100 + "%";
+  };
+  draw();
+
+  let drag = null;
+  ed.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); // タイルの移動・カメラのズーム操作にしない
+    const handle = e.target.closest(".cropHandle");
+    if (!handle && !e.target.closest(".cropRect")) return;
+    e.preventDefault();
+    drag = { dir: handle ? handle.dataset.dir : "move", sx: e.clientX, sy: e.clientY, start: { ...cur }, W: ed.clientWidth, H: ed.clientHeight };
+    ed.setPointerCapture(e.pointerId);
+  });
+  ed.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = (e.clientX - drag.sx) / drag.W, dy = (e.clientY - drag.sy) / drag.H;
+    const st = drag.start, MIN = 0.05;
+    let { x, y, w, h } = st;
+    if (drag.dir === "move") {
+      x = Math.min(1 - w, Math.max(0, st.x + dx));
+      y = Math.min(1 - h, Math.max(0, st.y + dy));
+    } else {
+      if (drag.dir.includes("w")) { x = Math.min(st.x + st.w - MIN, Math.max(0, st.x + dx)); w = st.x + st.w - x; }
+      if (drag.dir.includes("e")) w = Math.min(1 - st.x, Math.max(MIN, st.w + dx));
+      if (drag.dir.includes("n")) { y = Math.min(st.y + st.h - MIN, Math.max(0, st.y + dy)); h = st.y + st.h - y; }
+      if (drag.dir.includes("s")) h = Math.min(1 - st.y, Math.max(MIN, st.h + dy));
+    }
+    cur = { x, y, w, h };
+    draw();
+  });
+  const endDrag = () => { drag = null; };
+  ed.addEventListener("pointerup", endDrag);
+  ed.addEventListener("pointercancel", endDrag);
+  ed.addEventListener("wheel", (e) => e.stopPropagation());
+  ed.addEventListener("dblclick", (e) => e.stopPropagation());
+
+  const finish = (mode) => {
+    ed.remove();
+    tile.classList.remove("cropEditing");
+    if (mode === "cancel") {
+      Object.assign(tile.style, orig);
+      applyTileCrop(tile, before);
+      return;
+    }
+    const crop = normCrop(cur);
+    if (crop) {
+      // 選んだ範囲が、編集中に見えていた位置・大きさのままタイルになるようにする
+      const hPct = tile.offsetHeight / gridH * 100;
+      const newW = Math.max(MIN_TILE_PCT, width * crop.w);
+      tile.style.width = newW + "%";
+      tile.style.left = Math.max(0, Math.min(100 - newW, left + crop.x * width)) + "%";
+      tile.style.top = Math.max(0, top + crop.y * hPct) + "%";
+    } else {
+      tile.style.left = Math.max(0, Math.min(100 - width, left)) + "%";
+      tile.style.top = Math.max(0, top) + "%";
+      tile.style.width = Math.min(MAX_TILE_PCT, width) + "%";
+    }
+    applyTileCrop(tile, crop);
+    fitTileInGrid(tile);
+    saveTileRect(tile);
+  };
+  ed.querySelector(".cropBar").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-crop]");
+    if (!b) return;
+    if (b.dataset.crop === "full") { cur = { x: 0, y: 0, w: 1, h: 1 }; draw(); return; }
+    finish(b.dataset.crop);
+  });
+  const onKey = (e) => {
+    if (!tile.classList.contains("cropEditing")) { win.removeEventListener("keydown", onKey, true); return; }
+    if (e.key === "Escape" || e.key === "Enter") {
+      e.preventDefault(); e.stopPropagation();
+      win.removeEventListener("keydown", onKey, true);
+      finish(e.key === "Enter" ? "done" : "cancel");
+    }
+  };
+  win.addEventListener("keydown", onKey, true);
 }
 
 // 画面共有タイルの縦横比を共有元（16:9以外のウィンドウ・縦長の画面など）に合わせる。
@@ -3489,7 +3665,8 @@ function renderControls(slots) {
   const frameLocked = followingFrameImage !== undefined;
   const frameBtn = (s) => s.kind === "scoreboard" ? ""
     : `<span class="pMoreLabel">枠</span><button class="small ctrlBtn" data-action="frame" data-key="${s.key}"${frameLocked ? " disabled" : ""} title="${frameLocked ? "レイアウト同期中はリーダーの設定に従います" : "このタイルの枠を表示/非表示"}">${frameOff.has(frameTileId(s)) ? "OFF" : "ON"}</button>`;
-  const orderBtns = (s) => `<span class="pMoreLabel">重なり順</span><button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆ 最前面</button><button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇ 最背面</button>`;
+  const orderBtns = (s) => `<span class="pMoreLabel">重なり順</span><button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆ 最前面</button><button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇ 最背面</button>`
+    + `<span class="pMoreLabel">トリミング</span><button class="small ctrlBtn" data-action="crop" data-key="${s.key}"${layoutInteractionLocked() ? " disabled" : ""} title="配置エリアのこのタイルで、映像の見せる範囲を選びます（配置と一緒に保存・レイアウト同期・録画にも反映）">✂ トリミング</button>`;
   const moreBtn = (s) => `<button class="small ctrlBtn" data-action="more" data-key="${s.key}" title="その他の操作" aria-label="その他の操作">…</button>`;
   const rowCls = (s) => `pRow${openMoreKeys.has(s.key) ? " open" : ""}`;
   for (const s of slots) {
@@ -3884,7 +4061,17 @@ function drawRecordFrame() {
     const vw = vRect.width * scaleX;
     const vh = vRect.height * scaleY;
 
-    ctx.drawImage(video, vx, vy, vw, vh);
+    if (tile.classList.contains("cropped")) { // トリミング：はみ出した映像をタイルの範囲で切る
+      const tr = tile.getBoundingClientRect();
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect((tr.left - gridRect.left) * scaleX, (tr.top - gridRect.top) * scaleY, tr.width * scaleX, tr.height * scaleY);
+      ctx.clip();
+      ctx.drawImage(video, vx, vy, vw, vh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(video, vx, vy, vw, vh);
+    }
 
     const overlay = drawFrames && !tile.classList.contains("frameOff") && tile.querySelector(".frameOverlay.hasImage");
     const img = tile.frameImage; // タイルごとの枠（自分の枠 or 共通の枠。applyFrameImageToTile）
