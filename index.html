@@ -3713,6 +3713,7 @@ function ensureAudioGraph() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
     audioDest = audioCtx.createMediaStreamDestination();
+    loadBuzzJudgeSounds();
   }
 }
 function connectAudioSource(id, stream) {
@@ -4626,11 +4627,42 @@ function showBuzzJudge(correct) {
   buzzJudgeMark.className = "show " + (correct ? "correct" : "wrong");
   buzzJudgeUntil = Date.now() + BUZZ_JUDGE_MARK_MS;
   setTimeout(() => { if (Date.now() >= buzzJudgeUntil) buzzJudgeMark.className = ""; }, BUZZ_JUDGE_MARK_MS);
+  // 正解・不正解はリポジトリのMP3を鳴らす（読み込めていなければ従来の合成音）
+  if (playBuzzSample(correct ? "correct" : "wrong")) return;
   if (correct) {
     playBuzzTones([{ f: 988, d: 0.15, type: "sine", g: 0.35 }, { f: 1319, d: 0.4, type: "sine", g: 0.35 }]);
   } else {
     playBuzzTones([{ f: 150, d: 0.7, type: "sawtooth", g: 0.25 }]);
   }
+}
+
+// 正解・不正解の効果音（index.htmlと同じ場所に置いたMP3）。AudioContextを作ったときに一度だけ読み込んでおく
+const BUZZ_JUDGE_SOUND_FILES = { correct: "クイズ正解2.mp3", wrong: "クイズ不正解1.mp3" };
+const buzzJudgeBuffers = {};
+function loadBuzzJudgeSounds() {
+  for (const [key, file] of Object.entries(BUZZ_JUDGE_SOUND_FILES)) {
+    if (buzzJudgeBuffers[key]) continue;
+    buzzJudgeBuffers[key] = fetch(encodeURIComponent(file))
+      .then((res) => { if (!res.ok) throw new Error(res.status); return res.arrayBuffer(); })
+      .then((buf) => audioCtx.decodeAudioData(buf))
+      .then((decoded) => (buzzJudgeBuffers[key] = decoded))
+      .catch((e) => { console.warn("buzz judge sound load failed", file, e); buzzJudgeBuffers[key] = null; });
+  }
+}
+// 読み込み済みなら鳴らしてtrue。スピーカーと合成録画の音声ミックスの両方に出す（playBuzzTonesと同じ）
+function playBuzzSample(key) {
+  try {
+    ensureAudioGraph();
+    const buffer = buzzJudgeBuffers[key];
+    if (!(buffer instanceof AudioBuffer)) return false;
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(audioCtx.destination);
+    src.connect(audioDest);
+    src.start();
+    return true;
+  } catch (e) { console.warn("buzz sample failed", e); return false; }
 }
 
 // 効果音はスピーカーと合成録画の音声ミックスの両方に出す（同期合図のビープと同じ）
