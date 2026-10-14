@@ -204,6 +204,16 @@
     padding: 6px 10px; border-radius: 4px; display: inline-block; width: fit-content;
   }
   #recDownloads a:hover { text-decoration: underline; }
+  /* 途中で終わった録画の復元 */
+  #recRecoveryBanner {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10000;
+    max-width: min(640px, calc(100vw - 32px)); background: #3a2a0c; border: 1px solid #f5b83d; color: #ffe2a3;
+    border-radius: 8px; padding: 10px 14px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.5);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #recRecoveryBanner .recRecHead { font-weight: bold; line-height: 1.5; }
+  #recRecoveryBanner .recRecRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #recRecoveryBanner .recRecRow span { flex: 1; min-width: 200px; }
   /* 早押し */
   #buzzPanel h3 { font-size: 13px; margin: 8px 0 4px; color: #ccc; }
   #buzzMain { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -722,7 +732,7 @@
           </div>
           <label class="checkRow"><input type="checkbox" id="recSystemAudioCheckbox"><span>レイアウト全体の音声はシステム音声（Discord通話など）を使う</span></label>
           <span class="hint" id="recSystemAudioHint" style="display:none;">録画開始時に出る画面共有ダイアログで「画面全体」を選び、「システムの音声を共有」にチェックを入れてください（Discordなど、このアプリの外で鳴っている音＋自分のマイク（ノイズ抑制後）を両方録音します）</span>
-          <span class="hint">録画の開始・停止は下のバーのボタンで。停止するとそれぞれ別のファイルで保存されます（複数同時だとPCの負荷とメモリ使用量が増えます）。</span>
+          <span class="hint">録画の開始・停止は下のバーのボタンで。停止するとそれぞれ別のファイルで保存されます（複数同時だとPCの負荷が増えます）。録画は1秒ごとにPCへ書き込んでいるので、途中で通話から落ちても、次に開いたときに上に出る案内から保存できます。</span>
           <h3>保存したファイル</h3>
           <div id="recDownloads"></div>
           <div class="cardRow"><button class="small" id="copyBtn">結果をコピー（早押し・サイコロの記録）</button><span id="copyToast" style="display:none;">コピーしました</span></div>
@@ -1893,9 +1903,12 @@ templateSelect.addEventListener("change", applySelectedTemplate);
 saveTemplateBtn.addEventListener("click", saveCurrentAsTemplate);
 deleteTemplateBtn.addEventListener("click", deleteSelectedTemplate);
 renderTemplateOptions();
-recBtn.addEventListener("click", () => {
-  if (!activeRecorders.length) startRecording();
-  else stopRecording();
+let recStarting = false; // 開始の準備中（画面の選択・書き込み先の用意）に二重に押されないように
+recBtn.addEventListener("click", async () => {
+  if (recStarting) return;
+  if (activeRecorders.length) { stopRecording(); return; }
+  recStarting = true;
+  try { await startRecording(); } finally { recStarting = false; }
 });
 // 録画対象のチェックは次回も同じにする
 for (const [id, def] of [["recTargetGrid", true], ["recTargetSelf", false], ["recTargetScreen", false]]) {
@@ -4208,11 +4221,24 @@ async function remuxFragmentedMp4(src) {
       track.nextTime = time;
     }
   }
+  // 途中で落ちた録画（復元）は最後の断片が欠けていることがあるので、mdatの外を指すサンプル以降は捨てる
+  const mdats = top.filter((x) => x.type === "mdat");
+  const findMdat = (off) => { // mdatはファイル内の順に並んでいるので二分探索
+    let lo = 0, hi = mdats.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1, d = mdats[mid];
+      if (off < d.body) hi = mid - 1; else if (off >= d.end) lo = mid + 1; else return d;
+    }
+    return null;
+  };
+  for (const t of tracks) {
+    const bad = t.samples.findIndex((x) => { const d = findMdat(x.offset); return !d || x.offset + x.size > d.end; });
+    if (bad >= 0) t.samples.length = bad;
+  }
   const usable = tracks.filter((t) => t.samples.length);
   if (!usable.length) return null;
 
   // 出力のmdatは元のmdatの中身をそのまま順に連結する（サンプルの並び＝元の交互配置のまま）
-  const mdats = top.filter((x) => x.type === "mdat");
   let acc = 0;
   for (const d of mdats) { d.outPos = acc; acc += d.end - d.body; }
   const mdatPayloadSize = acc;
@@ -4313,7 +4339,7 @@ async function remuxFragmentedMp4(src) {
   const moovSize = buildMoov(zeroOffsets).length;
   const dataStart = ftyp.length + moovSize + mdatHeaderSize;
   const mapOffset = (orig) => {
-    const d = mdats.find((x) => orig >= x.body && orig < x.end);
+    const d = findMdat(orig);
     if (!d) throw new Error("サンプルがmdatの外にあります");
     return dataStart + d.outPos + (orig - d.body);
   };
@@ -4348,6 +4374,7 @@ const REC_GRID_WIDTH = 1920, REC_GRID_HEIGHT = 1080;
 // ブラウザ既定のビットレートは低く画質が落ちるので明示する
 const REC_VIDEO_BPS = { grid: 8000000, self: 4000000, screen: 8000000 };
 const REC_AUDIO_BPS = 128000;
+const REC_KEYFRAME_MS = 2000;
 const REC_KIND_LABELS = { grid: "レイアウト全体", self: "自分のカメラ", screen: "自分のPC画面" };
 
 // チェックした対象（レイアウト全体／自分のカメラ／自分のPC画面）を同時に録画し、停止時にそれぞれ別ファイルにする
@@ -4416,34 +4443,63 @@ async function startRecording() {
     streams[kind] = new MediaStream([...videoTracks, ...audioTracks]);
   }
 
-  activeRecorders = kinds.map((kind) => {
+  const sessionId = `${Date.now()}`;
+  const recs = kinds.map((kind) => {
     const rec = {
       recorder: new MediaRecorder(streams[kind], {
-        mimeType: pickMimeType(), videoBitsPerSecond: REC_VIDEO_BPS[kind], audioBitsPerSecond: REC_AUDIO_BPS
+        mimeType: pickMimeType(), videoBitsPerSecond: REC_VIDEO_BPS[kind], audioBitsPerSecond: REC_AUDIO_BPS,
+        // キーフレームを2秒ごとに入れる。指定しないとChromeはMP4の断片を停止まで出さず（＝全部メモリに抱える）、
+        // ディスクへ逐次書けない。落ちたときに失うのも最後の約2秒で済む
+        videoKeyFrameIntervalDuration: REC_KEYFRAME_MS
       }),
-      chunks: [], kind
+      chunks: [], kind, disk: null, writeChain: Promise.resolve()
     };
-    rec.recorder.ondataavailable = (e) => { if (e.data.size > 0) rec.chunks.push(e.data); };
+    const isMp4 = rec.recorder.mimeType.startsWith("video/mp4");
+    rec.ext = isMp4 ? "mp4" : "webm";
+    rec.who = recordingWho(kind);
+    // 録画データはメモリに溜めず、1秒ごとにディスク（OPFS）へ書き出す。ディスクが使えない・書き込みに
+    // 失敗したときだけ、それ以降をメモリに溜める（停止時はディスクの分＋メモリの分を順につなぐ）
+    rec.recorder.ondataavailable = (e) => {
+      if (!(e.data.size > 0)) return;
+      rec.writeChain = rec.writeChain.then(async () => {
+        if (rec.disk && !rec.diskFailed) {
+          try { await rec.disk.write(e.data); return; } catch (err) {
+            rec.diskFailed = true;
+            console.warn("録画のディスク書き込みに失敗。以降はメモリに溜めます", err);
+            recIndicator.textContent += "（⚠ ディスクに書けないためメモリに保存中）";
+          }
+        }
+        rec.chunks.push(e.data);
+      });
+    };
     rec.recorder.onstop = async () => {
-      const isMp4 = rec.recorder.mimeType.startsWith("video/mp4");
-      let blob = new Blob(rec.chunks, { type: isMp4 ? "video/mp4" : "video/webm" });
+      await rec.writeChain;
+      let parts = rec.chunks;
+      if (rec.disk) {
+        await rec.disk.close().catch(() => {});
+        try { parts = [await rec.disk.getFile(), ...rec.chunks]; } catch (e) { console.warn("録画ファイルを読めません", e); }
+      }
+      let blob = new Blob(parts, { type: isMp4 ? "video/mp4" : "video/webm" });
       if (isMp4) {
         // DaVinci Resolve等で読み込めるよう通常のMP4に並べ替える（失敗したら元のまま保存）
         try { blob = (await remuxFragmentedMp4(blob)) || blob; } catch (e) { console.warn("MP4の変換に失敗したため、そのまま保存します", e); }
       }
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = recordingFileName(kind, recordingEndedAt || new Date(), isMp4 ? "mp4" : "webm");
-      a.textContent = `📥 ${a.download}（${REC_KIND_LABELS[kind]}）`;
-      recDownloads.prepend(a);
-      a.click(); // 停止したら自動でダウンロードする（リンクは取り直し用に残す）
+      addRecordingDownload(blob, recordingFileNameFor(rec.who, recordingEndedAt || new Date(), rec.ext), REC_KIND_LABELS[kind]);
+      if (rec.disk) markRecordingFileDone(rec.disk.name); // ファイルは次に開いたときに消す（今のダウンロードがまだ読むため）
       rec.done = true;
       if (activeRecorders.every((r) => r.done)) finishRecordingSession();
     };
     return rec;
   });
-  // 全部同時に開始する（編集で並べたときに頭が揃うように）
-  activeRecorders.forEach((r) => r.recorder.start());
+  // ディスクの書き込み先を用意してから開始する（使えなければメモリに溜める従来の方式）
+  await Promise.all(recs.map(async (rec) => {
+    rec.disk = await openRecordingFile(`${sessionId}_${rec.kind}.${rec.ext}`, {
+      kind: rec.kind, who: rec.who, ext: rec.ext, startedAt: Date.now()
+    });
+  }));
+  activeRecorders = recs;
+  // 全部同時に開始する（編集で並べたときに頭が揃うように）。1秒ごとにデータを受け取ってディスクへ書く
+  activeRecorders.forEach((r) => r.recorder.start(1000));
   // 画面の選択を「共有を停止」で終えたら、録画全体も止める
   displayStream?.getVideoTracks()[0]?.addEventListener("ended", () => { if (activeRecorders.length) stopRecording(); });
   recBtn.textContent = "■ 録画停止";
@@ -4461,13 +4517,218 @@ function finishRecordingSession() {
 // YYYYMMDD_名前(PC画面)_HH-MM（自分のPC画面。同時録画でカメラと同名にならないように区別）。
 // 時刻は録画終了時刻（ローカル時刻）。Windowsではファイル名に「:」を使えないので「-」で区切る
 let recordingEndedAt = null;
-function recordingFileName(kind, date, ext) {
+function recordingWho(kind) {
+  const name = (myName || "名前なし").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim() || "名前なし";
+  return kind === "grid" ? (recordCanvas && recordCanvas.height > recordCanvas.width ? "all_縦" : "all") : kind === "screen" ? `${name}(PC画面)` : name;
+}
+function recordingFileNameFor(who, date, ext) {
   const p2 = (n) => String(n).padStart(2, "0");
   const ymd = `${date.getFullYear()}${p2(date.getMonth() + 1)}${p2(date.getDate())}`;
   const hm = `${p2(date.getHours())}-${p2(date.getMinutes())}`;
-  const name = (myName || "名前なし").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim() || "名前なし";
-  const who = kind === "grid" ? (recordCanvas && recordCanvas.height > recordCanvas.width ? "all_縦" : "all") : kind === "screen" ? `${name}(PC画面)` : name;
   return `${ymd}_${who}_${hm}.${ext}`;
+}
+
+function addRecordingDownload(blob, fileName, label) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  a.textContent = `📥 ${a.download}（${label}）`;
+  recDownloads.prepend(a);
+  a.click(); // 自動でダウンロードする（リンクは取り直し用に残す）
+}
+
+// ---------- 録画: ディスク（OPFS）への逐次書き込みと、落ちたときの復元 ----------
+// 録画をメモリに溜めると、長時間・同時録画でタブがメモリ不足で落ち、録画も全部消える。
+// そこでブラウザ専用の保存領域（OPFS）の rec/ フォルダへ1秒ごとに書き足していく。書き込みは
+// Workerの同期アクセスハンドル（その場で書き込まれる。createWritableは閉じるまで確定しない）で行い、
+// 数秒ごとにflushする。各ファイルの情報は localStorage `recFiles` に置き、録画中はWeb Lock
+// `rec:{ファイル名}` を持つ（別タブが録画中のファイルを「途中で終わった録画」と誤認しないように）。
+// 次に開いたとき、保存済み（done）のファイルは消し、doneでないもの＝途中で落ちた録画は復元を出す。
+const REC_DIR = "rec";
+const REC_FILES_KEY = "recFiles";
+const REC_WORKER_SRC = `
+let h = null, pos = 0, lastFlush = 0, q = Promise.resolve();
+async function handle(m) {
+  if (m.op === "open") {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle(m.dir, { create: true });
+    const fh = await dir.getFileHandle(m.name, { create: true });
+    h = await fh.createSyncAccessHandle();
+    h.truncate(0); pos = 0;
+  } else if (m.op === "write") {
+    const buf = new Uint8Array(m.buf);
+    let off = 0;
+    while (off < buf.length) {
+      const n = h.write(buf.subarray(off), { at: pos + off });
+      if (!n) throw new Error("書き込めません（空き容量不足の可能性）");
+      off += n;
+    }
+    pos += buf.length;
+    if (Date.now() - lastFlush > 3000) { h.flush(); lastFlush = Date.now(); }
+  } else if (m.op === "close") {
+    if (h) { h.flush(); h.close(); h = null; }
+  }
+  return pos;
+}
+onmessage = (e) => {
+  q = q.then(() => handle(e.data)).then(
+    (size) => postMessage({ id: e.data.id, ok: true, size }),
+    (err) => postMessage({ id: e.data.id, ok: false, error: String((err && err.message) || err) }));
+};`;
+let recWorkerUrl = null;
+
+function readRecFiles() {
+  try { return JSON.parse(localStorage.getItem(REC_FILES_KEY) || "{}") || {}; } catch (e) { return {}; }
+}
+function writeRecFiles(map) {
+  try { localStorage.setItem(REC_FILES_KEY, JSON.stringify(map)); } catch (e) {}
+}
+function markRecordingFileDone(name) {
+  const map = readRecFiles();
+  if (map[name]) { map[name].done = true; writeRecFiles(map); }
+}
+function forgetRecordingFile(name) {
+  const map = readRecFiles();
+  delete map[name];
+  writeRecFiles(map);
+}
+async function recDirHandle() {
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(REC_DIR, { create: true });
+}
+
+// 書き込み先を開く。使えない環境・開けないときは null（呼び出し側はメモリに溜める）
+async function openRecordingFile(name, info) {
+  if (!navigator.storage?.getDirectory || !window.Worker || !navigator.locks) return null;
+  let worker = null, releaseLock = null;
+  try {
+    // 録画中であることを示すロック（タブが落ちると自動で外れる）
+    await new Promise((resolve) => {
+      navigator.locks.request(`rec:${name}`, () => new Promise((release) => { releaseLock = release; resolve(); }));
+    });
+    recWorkerUrl ||= URL.createObjectURL(new Blob([REC_WORKER_SRC], { type: "text/javascript" }));
+    worker = new Worker(recWorkerUrl);
+    let seq = 0;
+    const pending = new Map();
+    worker.onmessage = (e) => {
+      const p = pending.get(e.data.id);
+      if (!p) return;
+      pending.delete(e.data.id);
+      e.data.ok ? p.resolve(e.data.size) : p.reject(new Error(e.data.error));
+    };
+    const call = (msg, transfer) => new Promise((resolve, reject) => {
+      const id = ++seq;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ ...msg, id }, transfer || []);
+    });
+    await call({ op: "open", dir: REC_DIR, name });
+    const map = readRecFiles();
+    map[name] = { ...info, done: false };
+    writeRecFiles(map);
+    let closed = false;
+    return {
+      name,
+      async write(blob) {
+        const buf = await blob.arrayBuffer();
+        await call({ op: "write", buf }, [buf]);
+      },
+      async close() {
+        if (closed) return;
+        closed = true;
+        try { await call({ op: "close" }); } finally { worker.terminate(); releaseLock?.(); }
+      },
+      async getFile() { return (await (await recDirHandle()).getFileHandle(name)).getFile(); }
+    };
+  } catch (e) {
+    console.warn("録画をディスクに書けないため、メモリに溜めます", e);
+    worker?.terminate();
+    releaseLock?.();
+    return null;
+  }
+}
+
+// 起動時：保存済みの録画ファイルを片付け、途中で終わった録画があれば復元の案内を出す
+async function checkLeftoverRecordings() {
+  if (!navigator.storage?.getDirectory || !navigator.locks) return;
+  try {
+    const held = new Set(((await navigator.locks.query()).held || []).map((l) => l.name));
+    const dir = await recDirHandle();
+    const map = readRecFiles();
+    const leftovers = [];
+    const seen = new Set();
+    for await (const [name, handle] of dir.entries()) {
+      seen.add(name);
+      if (held.has(`rec:${name}`)) continue; // 別のタブで録画中
+      const info = map[name];
+      if (!info || info.done) {
+        // 保存したばかりのものは、別タブのダウンロードがまだ読んでいるかもしれないので30分は残す
+        if (info?.done && Date.now() - (await handle.getFile()).lastModified < 30 * 60 * 1000) continue;
+        await dir.removeEntry(name).catch(() => {});
+        forgetRecordingFile(name);
+        continue;
+      }
+      const file = await handle.getFile();
+      if (!file.size) { await dir.removeEntry(name).catch(() => {}); forgetRecordingFile(name); continue; }
+      leftovers.push({ name, info, file });
+    }
+    // 情報だけ残ってファイルが無いもの
+    for (const name of Object.keys(map)) {
+      if (!seen.has(name) && !held.has(`rec:${name}`)) forgetRecordingFile(name);
+    }
+    if (leftovers.length) showRecoveryBanner(leftovers.sort((a, b) => a.name.localeCompare(b.name)));
+  } catch (e) {
+    console.warn("前回の録画の確認に失敗", e);
+  }
+}
+
+function showRecoveryBanner(items) {
+  let banner = document.getElementById("recRecoveryBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "recRecoveryBanner";
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "recRecHead";
+  head.textContent = "⚠ 前回の録画が途中で終わっています（通話から落ちた・タブが閉じた等）。ここから保存できます";
+  banner.appendChild(head);
+  const fmtTime = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+  const fmtSize = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : `${Math.max(1, Math.round(n / 1e6))}MB`;
+  let remaining = items.length;
+  const doneOne = (row) => { row.remove(); if (--remaining <= 0) banner.remove(); };
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "recRecRow";
+    const label = document.createElement("span");
+    label.textContent = `${REC_KIND_LABELS[item.info.kind] || item.info.kind}　${fmtTime(item.info.startedAt)}〜${fmtTime(item.file.lastModified)}（${fmtSize(item.file.size)}）`;
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "small";
+    saveBtn.textContent = "保存";
+    const delBtn = document.createElement("button");
+    delBtn.className = "small";
+    delBtn.textContent = "削除";
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = delBtn.disabled = true;
+      saveBtn.textContent = "変換中…";
+      let blob = item.file;
+      if (item.info.ext === "mp4") {
+        try { blob = (await remuxFragmentedMp4(item.file)) || item.file; } catch (e) { console.warn("MP4の変換に失敗したため、そのまま保存します", e); }
+      }
+      blob = new Blob([blob], { type: item.info.ext === "mp4" ? "video/mp4" : "video/webm" });
+      addRecordingDownload(blob, recordingFileNameFor(item.info.who || item.info.kind, new Date(item.file.lastModified), item.info.ext), `${REC_KIND_LABELS[item.info.kind] || ""}・復元`);
+      markRecordingFileDone(item.name); // 次に開いたときに消す
+      doneOne(row);
+    };
+    delBtn.onclick = async () => {
+      if (!confirm("この録画を削除します。元に戻せません。よろしいですか？")) return;
+      try { await (await recDirHandle()).removeEntry(item.name); } catch (e) {}
+      forgetRecordingFile(item.name);
+      doneOne(row);
+    };
+    row.append(label, saveBtn, delBtn);
+    banner.appendChild(row);
+  }
 }
 
 function stopRecording() {
@@ -6410,6 +6671,11 @@ updateAudioSettingsBtn();
 updateFramePreviews();
 document.querySelectorAll(".mirrorOf").forEach((m) => syncMirrorsOf(m.dataset.of));
 updateControlBar();
+checkLeftoverRecordings();
+// 録画中にタブを閉じる・再読み込みしようとしたら確認する（閉じても録画は次回開いたときに復元できる）
+window.addEventListener("beforeunload", (e) => {
+  if (activeRecorders.some((r) => r.recorder.state === "recording")) { e.preventDefault(); e.returnValue = ""; }
+});
 </script>
 </body>
 </html>

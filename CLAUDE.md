@@ -128,7 +128,14 @@ UC要望（2026-10-10）。「配置」タブの「画面の向き」で切り�
 - 画質：カメラは1920×1080・30fps（ideal）で取り込み、通話へは`applyCameraSenderParams`で`scaleResolutionDownBy`（取り込み高さ/360）・`maxFramerate`24・400kbpsに縮めて送る（通話の送信量は以前の640×360取り込みと同じ。自分のカメラの録画だけ高画質になる）。レイアウト全体は表示サイズに関係なく常に1920×1080のキャンバスに描く。ビットレートは明示（レイアウト8Mbps・カメラ4Mbps・PC画面8Mbps、音声128kbps。ブラウザ既定だと低い）。
 - 形式はMP4（H.264 High@L4.0 `avc1.640028`＋AAC `mp4a.40.2`、`pickMimeType`）。編集ソフトで読めるようにするためのUC要望（2026-09-27）。ChromeのMediaRecorderが書くMP4は**フラグメント形式**（moof/mdatの繰り返し）でDaVinci Resolve（無料版）が読み込めないため、停止時に`remuxFragmentedMp4`で通常のMP4（ftyp→moov→mdat、moovにstts/ctts/stss/stsc/stsz/co64、1チャンク＝1サンプル、トラックの開始差はelstの空編集）へ並べ替えてから保存する。再エンコードなし・元Blobを`slice()`で参照するのでメモリはほぼ増えない。変換に失敗したら元のBlobを保存。PyAV（FFmpeg）で元ファイルと同じフレーム数・PTSでデコードできることを確認済み。MP4非対応ブラウザではWebMにフォールバックし、拡張子も`recorder.mimeType`に合わせる。
 - 停止すると各ファイルを自動でダウンロードする（`onstop`でリンクを`click()`）。リンクは取り直し用に一覧へ残す。同時録画で複数ファイルになるとき、Chromeは初回だけ「複数ファイルのダウンロード」の許可を求める。
-- 録画データはメモリに溜める方式のまま（同時録画はメモリ使用量が増える）。
+- **録画データはディスク（OPFS）に逐次書き込む**（UC報告 2026-10-15「録画中に通話から落ちて録画が取れない」への対策）：以前はメモリに溜めていたため、長時間・同時録画（8+4+8Mbpsで1時間約9GB）でタブがメモリ不足で落ち、録画も全部消えていた。
+  - `recorder.start(1000)`で1秒ごとにデータを受け取り、録画ごとのWorker（`REC_WORKER_SRC`、Blob URL）が`createSyncAccessHandle`でOPFSの`rec/{開始時刻}_{kind}.{ext}`へその場で書き足す（3秒ごとにflush）。`createWritable`は閉じるまで確定しない（落ちると消える）ので使わない。書き込みの順番は`rec.writeChain`で保つ。
+  - **`videoKeyFrameIntervalDuration: 2000`が必須**（`REC_KEYFRAME_MS`）。指定しないとChrome（154で確認）はMP4の断片を停止まで出さず、timesliceを付けても最初の1KBしか届かない＝全部メモリに抱える。落ちたときに失うのは最後の約2秒。
+  - 停止時はOPFSの`File`（ディスク上）を`remuxFragmentedMp4`に渡す（`slice`で読むのでメモリは増えない）。OPFSが使えない・開けない・書き込みに失敗したときは、それ以降をメモリ（`rec.chunks`）に溜め、停止時に「ディスクの分＋メモリの分」をつなぐ（`openRecordingFile`がnullを返す）。
+  - ファイルの情報はlocalStorage `recFiles`（`{名前: {kind, who, ext, startedAt, done}}`）。録画中はWeb Lock `rec:{名前}`を持つ（同じPCの別タブが録画中のファイルを消したり「途中で終わった録画」と誤認したりしないように）。
+  - 起動時の`checkLeftoverRecordings`：保存済み（done）のファイルは30分以上たったものから消す（直後はダウンロードがまだ読んでいる可能性）。doneでない＝途中で落ちた録画は画面上部に案内（`#recRecoveryBanner`、`showRecoveryBanner`）を出し、「保存」で並べ替えてダウンロード（ファイル名の時刻はファイルの最終更新時刻）、「削除」で消す。末尾が欠けたファイルは`remuxFragmentedMp4`がmdatの外を指すサンプル以降を捨てて読める部分だけにする（`findMdat`は二分探索）。
+  - 録画中にタブを閉じる・再読み込みしようとすると`beforeunload`で確認を出す。録画開始の準備中は`recStarting`で二重開始を防ぐ。
+  - テスト：puppeteerで録画中に`chrome://crash`へ移動するとタブが落ちる。開き直して案内から保存し、PyAVで通常のMP4（ftyp→moov）としてデコードできることを確認済み（途中で切ったファイルも）。
 
 ## 一括録画（廃止）
 
