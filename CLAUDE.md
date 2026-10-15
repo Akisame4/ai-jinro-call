@@ -44,6 +44,15 @@ rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
 rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, diffMs}] }
 ```
 
+## 切断からの自動復帰（UC報告 2026-10-15「通話から外れる。自分以外の画面が固まって声が聞こえなくなる」）
+- 原因：回線が一瞬切れるとFirebaseのサーバーが`onDisconnect`で`members/{自分}`を消し、相手は自分との接続を閉じる。以前は入り直す処理も、WebRTCが切れたときにつなぎ直す処理も無く、本人の画面は相手の映像が止まったままになっていた。
+- **自分の再登録**（`rejoinRoom`）：`listenMembers`で自分の`members`が無い（または名前・joinedAtが無い＝`update()`だけが書かれた残骸、`isMyMemberValid`）のを見たら、自分の接続を全部閉じ（タイルは残す）、最後に見た自分の内容（`myMemberCache`）に**前と同じjoinedAt**（ホスト判定・接続の向きを変えない）と新しい`conn`を付けて`set`し直す。`.info/connected`の監視（`listenDbConnection`）で、つながり直したら`onDisconnect`を掛け直し（サーバーで一度実行されると消える。`armMyDisconnectCleanup`）・`publishMyFrame`。切れている間は画面上部に赤い案内（`#reconnectNotice`）。
+- **相手側**：`members/{id}/conn`（接続の世代）が`peers[id].conn`と変わったら、その人との接続を閉じて作り直す。後から入室した側がofferを出す既存のルールのまま。
+- **WebRTCだけ切れたとき**（Firebaseはつながったまま。`watchPeerHealth`、`onconnectionstatechange`から）：offerを出す側（`isInitiator`＝後から入室した側）だけが動く。disconnected/failedが4秒続いたら`restartIce()`、20秒戻らなければ`reset`シグナルを送って接続ごと作り直す（`rebuildPeerConnection`。受け側は`reset`で接続を閉じ、続くofferで新しく作る。相手ごとのシグナルは順番に処理されるので順序は保たれる）。
+- 録画は自分のタブの中で続く（接続を作り直すと`ontrack`で映像・音声がタイルと合成録画に付き直す）。
+- テスト：mockdb.jsに`.info/connected`と`__mockDrop()`（未接続にしてonDisconnectを実行）／`__mockReconnect()`を足し、テスト用コピーだけで`window.__t = { peers, rebuildPeerConnection, members }`を出して2タブで確認（どちらが落ちても映像が動き出し音声トラックがlive、録画は1本で続く）。
+- 未対応：レイアウト同期のリーダーが落ちると同期は解除される（各自の配置は直前のまま残る）。TURNサーバーは無い（STUNのみ）。
+
 ## 画面共有（カメラと別タイル表示）
 
 - カメラ映像と画面共有映像は別々の `RTCRtpSender`（`addTrack`/`removeTrack`）で送信する。`replaceTrack`は使わない。

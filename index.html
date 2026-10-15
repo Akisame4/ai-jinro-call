@@ -204,6 +204,11 @@
     padding: 6px 10px; border-radius: 4px; display: inline-block; width: fit-content;
   }
   #recDownloads a:hover { text-decoration: underline; }
+  #reconnectNotice {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10001;
+    max-width: calc(100vw - 32px); background: #4a1414; border: 1px solid #ff6b6b; color: #ffd6d6;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: bold; box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  }
   /* 途中で終わった録画の復元 */
   #recRecoveryBanner {
     position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10000;
@@ -2050,15 +2055,16 @@ async function joinRoom(name) {
   let savedTeam = "";
   try { savedTeam = localStorage.getItem("buzzTeam") || ""; } catch (e) {}
   buzzTeamInput.value = savedTeam;
+  myConn = crypto.randomUUID();
   await set(myMemberRef, {
     name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn(),
-    buzzSpectator: false, buzzTeam: savedTeam
+    buzzSpectator: false, buzzTeam: savedTeam, conn: myConn
   });
-  onDisconnect(myMemberRef).remove();
-  onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
-  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
+  armMyDisconnectCleanup();
+  inCall = true;
 
   listenMembers();
+  listenDbConnection();
   listenSignals();
   listenStatus();
   listenLayoutSync();
@@ -2072,7 +2078,86 @@ async function joinRoom(name) {
   publishMyFrame();
 }
 
+// ---------- 切断からの自動復帰 ----------
+// 回線が一瞬切れると、Firebaseのサーバーが onDisconnect で members/{自分} を消し、相手は自分との接続を閉じる。
+// 以前は入り直す処理が無く、本人の画面は相手の映像が止まったまま・声も聞こえないままになっていた。
+// ・自分のmembersが消えたのを見たら（再接続後）、前と同じ joinedAt で登録し直す（rejoinRoom）。
+//   その際 conn（接続の世代）を新しくし、自分の側の接続も全部作り直す。
+// ・相手は members/{id}/conn が変わったら、その人との接続を閉じて作り直す（listenMembers）。
+// ・Firebaseはつながったままでも、映像・音声の経路だけ切れることがある（Wi-Fiの切り替え等）。
+//   その場合はofferを出す側（後から入室した側）がICEを張り直し、それでも戻らなければ
+//   "reset" を送って接続ごと作り直す（watchPeerHealth）。
+let inCall = false;
+let leavingPage = false;
+let myConn = null;          // 自分の接続の世代（登録し直すたびに変わる）
+let myMemberCache = null;   // 最後に見た自分のmembersの内容（登録し直すときに使う）
+let dbWasDisconnected = false;
+let rejoining = false;
+
+function armMyDisconnectCleanup() {
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/members/${myId}`)).remove();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/status/${myId}`)).remove();
+  onDisconnect(ref(db, `rooms/${ROOM_ID}/layoutSync/followers/${myId}`)).remove();
+}
+
+function listenDbConnection() {
+  onValue(ref(db, ".info/connected"), (snap) => {
+    if (snap.val() === true) {
+      if (dbWasDisconnected) {
+        dbWasDisconnected = false;
+        // onDisconnect はサーバーで一度実行されると消えるので、つながり直したら掛け直す
+        armMyDisconnectCleanup();
+        publishMyFrame();
+        if (!isMyMemberValid(members[myId])) rejoinRoom();
+      }
+      showReconnectNotice(false);
+    } else if (inCall) {
+      dbWasDisconnected = true;
+      showReconnectNotice(true);
+    }
+  });
+}
+
+// cameraOn等のupdate()だけが書かれて名前・入室時刻が無い状態も「消えた」とみなす
+function isMyMemberValid(m) { return !!(m && m.name && m.joinedAt != null); }
+
+async function rejoinRoom() {
+  if (rejoining || leavingPage || !inCall) return;
+  rejoining = true;
+  try {
+    console.warn("自分の参加情報が消えていたため、登録し直して接続を作り直します");
+    // 今の接続は相手側で既に閉じられているので全部閉じる（タイルは残す。作り直した接続の映像に差し替わる）
+    for (const id of Object.keys(peers)) closePeerConnection(id);
+    myConn = crypto.randomUUID();
+    const base = myMemberCache || {};
+    await set(ref(db, `rooms/${ROOM_ID}/members/${myId}`), {
+      ...base,
+      name: myName,
+      joinedAt: base.joinedAt ?? serverTimestamp(), // 入室順（ホスト・接続の向き）を変えない
+      cameraOn: isMyCameraOn(),
+      conn: myConn
+    });
+    armMyDisconnectCleanup();
+    publishMyFrame();
+  } catch (e) {
+    console.warn("再登録に失敗", e);
+  } finally {
+    rejoining = false;
+  }
+}
+
+function showReconnectNotice(show) {
+  let el = document.getElementById("reconnectNotice");
+  if (!show) { el?.remove(); return; }
+  if (el) return;
+  el = document.createElement("div");
+  el.id = "reconnectNotice";
+  el.textContent = "⚠ 通信が切れました。自動で再接続しています…（録画は続いています）";
+  document.body.appendChild(el);
+}
+
 window.addEventListener("beforeunload", () => {
+  leavingPage = true;
   try {
     remove(ref(db, `rooms/${ROOM_ID}/members/${myId}`));
     remove(ref(db, `rooms/${ROOM_ID}/status/${myId}`));
@@ -2089,6 +2174,13 @@ function listenMembers() {
     const prevIds = new Set(Object.keys(members));
     members = data;
     const currentIds = new Set(Object.keys(members));
+    if (isMyMemberValid(data[myId])) myMemberCache = data[myId];
+    else if (inCall && !leavingPage) rejoinRoom(); // 回線が切れてサーバーに消された → 登録し直す
+
+    // 相手が登録し直した（接続の世代が変わった）ら、その人との古い接続を閉じて作り直す
+    for (const id of currentIds) {
+      if (id !== myId && peers[id] && peers[id].conn !== members[id]?.conn) closePeerConnection(id);
+    }
 
     for (const id of prevIds) {
       if (!currentIds.has(id) && id !== myId) {
@@ -2164,6 +2256,43 @@ function listenSignals() {
 async function handleSignal(fromId, type, payload) {
   if (type === "offer" || type === "answer") await handleDescription(fromId, type, payload);
   else if (type === "candidate") await handleCandidate(fromId, payload);
+  else if (type === "reset") closePeerConnection(fromId); // 相手が接続ごと作り直す。続くofferで新しい接続を作る
+}
+
+// 映像・音声の経路が切れたときの復帰。offerを出す側（後から入室した側）だけが動く（両側が同時に動くと衝突するため）。
+// disconnected/failed が4秒続いたらICEを張り直し、それでも20秒戻らなければ接続ごと作り直す
+const PEER_ICE_RESTART_MS = 4000;
+const PEER_REBUILD_MS = 20000;
+function watchPeerHealth(peerId) {
+  const entry = peers[peerId];
+  if (!entry) return;
+  const st = entry.pc.connectionState;
+  clearTimeout(entry.healthTimer);
+  if (st === "connected" || st === "new" || st === "connecting" || st === "closed") {
+    if (st === "connected") entry.badSince = null;
+    if (st !== "connecting" || !entry.badSince) return;
+  }
+  if (!entry.badSince) entry.badSince = Date.now();
+  if (!entry.isInitiator) return; // 受け側は相手のICE再起動・作り直しを待つ
+  const bad = Date.now() - entry.badSince;
+  if (bad >= PEER_REBUILD_MS) {
+    rebuildPeerConnection(peerId);
+    return;
+  }
+  if (st !== "connecting" && bad >= PEER_ICE_RESTART_MS && Date.now() - entry.iceRestartedAt > 8000) {
+    entry.iceRestartedAt = Date.now();
+    console.warn("接続が切れたためICEを張り直します", peerId);
+    try { entry.pc.restartIce(); } catch (e) { console.warn("restartIce failed", e); }
+  }
+  entry.healthTimer = setTimeout(() => { if (peers[peerId] === entry) watchPeerHealth(peerId); }, 2000);
+}
+
+async function rebuildPeerConnection(peerId) {
+  if (!members[peerId] || !isMyMemberValid(members[myId])) return;
+  console.warn("接続が戻らないため作り直します", peerId);
+  closePeerConnection(peerId);
+  try { await sendSignal(peerId, "reset", {}); } catch (e) { return; }
+  if (!peers[peerId] && members[peerId]) createPeerConnection(peerId, true);
 }
 
 // Perfect Negotiation: 通話中の再交渉（画面共有トラック追加など）で双方が同時にofferを出す
@@ -2239,6 +2368,11 @@ function createPeerConnection(peerId, isInitiator) {
     remoteStreamKinds: {}, // MediaStream.id -> "camera" | "screen"
     remoteScreenNums: {},  // MediaStream.id -> 画面番号（旧バージョンの相手は送ってこないので1とみなす）
     pendingCandidates: [],
+    conn: members[peerId]?.conn,
+    isInitiator,
+    badSince: null,
+    iceRestartedAt: 0,
+    healthTimer: null,
     statsInterval: null,
     prevStats: { bytesReceived: 0, packetsLost: 0, packetsReceived: 0, timestamp: 0 },
     lastStats: null,
@@ -2309,6 +2443,7 @@ function createPeerConnection(peerId, isInitiator) {
 
   pc.onconnectionstatechange = () => {
     writeMyStatus(peerId, pc.connectionState);
+    if (peers[peerId] === entry) watchPeerHealth(peerId);
     if (pc.connectionState === "connected" && !entry.statsInterval) {
       entry.statsInterval = setInterval(() => updateStats(peerId), 2000);
     }
@@ -2555,6 +2690,7 @@ function closePeerConnection(peerId) {
   const entry = peers[peerId];
   if (!entry) return;
   if (entry.statsInterval) clearInterval(entry.statsInterval);
+  clearTimeout(entry.healthTimer);
   disconnectAudioSource(peerId);
   for (let n = 1; n <= MAX_SCREENS_PER_PERSON; n++) disconnectAudioSource(screenKey(peerId, n));
   try { entry.pc.close(); } catch (e) {}
