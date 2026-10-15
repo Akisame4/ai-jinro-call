@@ -129,6 +129,18 @@
     line-height: 0;
   }
   .tile.dragging { cursor: grabbing; z-index: 20; box-shadow: 0 0 0 2px #3a6ea5; }
+  /* 選択中のタイル（画面だけ。録画はタイルの映像しか描かないので映らない）。オレンジ＝サイズ合わせの基準 */
+  .tile.selected { outline: 2px solid #4da3ff; outline-offset: 1px; }
+  .tile.selected.selAnchor { outline: 3px solid #ffa94d; }
+  #videoGrid.popped .tile.selected { outline: none; }
+  #selMarquee {
+    position: absolute; z-index: 8500; pointer-events: none; display: none;
+    border: 1px solid #4da3ff; background: rgba(77,163,255,0.15);
+  }
+  /* ガイドライン（画面だけ・録画に映らない。別ウィンドウ＝配信用には出さない） */
+  #guideLayer, #smartGuideLayer { position: absolute; inset: 0; pointer-events: none; z-index: 8000; }
+  #guideLayer svg, #smartGuideLayer svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  #videoGrid.popped #guideLayer, #videoGrid.popped #smartGuideLayer, #videoGrid.popped #selMarquee { display: none !important; }
   /* ○×制の各自の○×（カメラタイルの右上。ドラッグでタイル内を移動できる）。大きさはタイルの幅に合わせる */
   .tile { container-type: inline-size; }
   .tile .mbBadge, .tile .diceBadge {
@@ -384,6 +396,14 @@
   .paneHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
   .card { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
   .cardRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  /* 整列 */
+  .alignCount { font-weight: normal; color: var(--accent); margin-left: 6px; }
+  .alignBtns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .alignBtns button { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 4px; font-size: 12px; }
+  .alignBtns button svg { width: 18px; height: 18px; flex: none; }
+  .alignBtns.two { grid-template-columns: repeat(2, 1fr); }
+  .alignLabel { font-size: 11px; color: var(--muted); }
+  #guideMarginInput { width: 52px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 1px 4px; }
   .cardRow.spread { justify-content: space-between; }
   .cardRow select, .cardRow input[type="text"] { flex: 1; min-width: 0; }
   .switchRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; cursor: pointer; }
@@ -536,8 +556,8 @@
     <main id="stageArea">
       <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
       <div id="popAudioContainer"></div>
-      <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div><div id="diceOverlay"></div></div>
-      <div class="stageHint">タイルはドラッグで移動・右下の■でサイズ変更（この端末のみに保存）。配置の保存・マス目は「配置」タブ、背景と枠は「背景・枠」タブ</div>
+      <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="guideLayer"></div><div id="smartGuideLayer"></div><div id="selMarquee"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div><div id="diceOverlay"></div></div>
+      <div class="stageHint">タイルはドラッグで移動・右下の■でサイズ変更（この端末のみに保存）。Ctrl＋クリック・囲んで複数選択。整列・ガイドライン・マス目は「配置」タブ、背景と枠は「背景・枠」タブ</div>
     </main>
 
     <!-- 右：タブで切り替えるパネル -->
@@ -667,6 +687,32 @@
 
         <section class="sidePane" data-pane="layout">
           <div class="paneHead"><h2>配置</h2></div>
+          <div class="card" id="alignCard">
+            <h3>整列・サイズ<span class="alignCount" id="alignCount">未選択</span></h3>
+            <span class="hint">配置エリアのタイルをクリックで選択、Ctrl（またはShift）＋クリックで追加・解除、何もない所をドラッグで囲んで選択。選んだタイルはまとめて動かせます（矢印キーで少しずつ、Shift＋矢印で大きく）。</span>
+            <span class="alignLabel">揃える（1つだけ選んだときは配置エリアに対して）</span>
+            <div class="alignBtns">
+              <button class="small alignBtn" data-op="left" title="左揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="1" x2="2" y2="17"/><rect x="3" y="4" width="8" height="4" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="3" y="10" width="13" height="4" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>左</span></button><button class="small alignBtn" data-op="hcenter" title="左右中央揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="9" y1="1" x2="9" y2="17"/><rect x="5" y="4" width="8" height="4" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="2.5" y="10" width="13" height="4" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>左右中央</span></button><button class="small alignBtn" data-op="right" title="右揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="16" y1="1" x2="16" y2="17"/><rect x="7" y="4" width="8" height="4" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="2" y="10" width="13" height="4" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>右</span></button>
+              <button class="small alignBtn" data-op="top" title="上揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="1" y1="2" x2="17" y2="2"/><rect x="4" y="3" width="4" height="8" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="10" y="3" width="4" height="13" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>上</span></button><button class="small alignBtn" data-op="vcenter" title="上下中央揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="1" y1="9" x2="17" y2="9"/><rect x="4" y="5" width="4" height="8" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="10" y="2.5" width="4" height="13" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>上下中央</span></button><button class="small alignBtn" data-op="bottom" title="下揃え"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="1" y1="16" x2="17" y2="16"/><rect x="4" y="7" width="4" height="8" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="10" y="2" width="4" height="13" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>下</span></button>
+            </div>
+            <span class="alignLabel">均等に並べる（2つ以下のときは配置エリアいっぱいに）</span>
+            <div class="alignBtns two">
+              <button class="small alignBtn" data-op="distH" title="左右に整列（間隔を均等にする）"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="1" y1="2" x2="1" y2="16"/><line x1="17" y1="2" x2="17" y2="16"/><rect x="3" y="5" width="3" height="8" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="7.5" y="3" width="3" height="12" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="12" y="6" width="3" height="6" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>左右に均等</span></button><button class="small alignBtn" data-op="distV" title="上下に整列（間隔を均等にする）"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="1" x2="16" y2="1"/><line x1="2" y1="17" x2="16" y2="17"/><rect x="5" y="3" width="8" height="3" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="3" y="7.5" width="12" height="3" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="6" y="12" width="6" height="3" rx="1" fill="currentColor" fill-opacity=".35"/></svg><span>上下に均等</span></button>
+            </div>
+            <span class="alignLabel">大きさを揃える（オレンジ枠＝最初に選んだタイルに合わせる）</span>
+            <div class="alignBtns two">
+              <button class="small alignBtn" data-op="sameW" title="最初に選んだタイルと同じ幅にする（同じ形のタイルなら同じ大きさになる）"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="14" height="4" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="2" y="11" width="14" height="5" rx="1" fill="currentColor" fill-opacity=".35"/><line x1="2" y1="9" x2="16" y2="9"/></svg><span>幅を揃える</span></button><button class="small alignBtn" data-op="sameH" title="最初に選んだタイルと同じ高さにする"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2" width="4" height="14" rx="1" fill="currentColor" fill-opacity=".35"/><rect x="10" y="2" width="5" height="14" rx="1" fill="currentColor" fill-opacity=".35"/><line x1="9" y1="2" x2="9" y2="16"/></svg><span>高さを揃える</span></button>
+            </div>
+            <label class="switchRow" title="ONにすると、2つ以上選んでいても配置エリアの端・中央に揃えます（均等も配置エリアいっぱいに並べます）">配置エリアに合わせる<input type="checkbox" id="alignToStageToggle"></label>
+            <div class="cardRow"><button class="small" id="selectAllTilesBtn">全部選択</button><button class="small" id="clearTileSelBtn">選択解除</button><button class="small" id="undoLayoutBtn" title="Ctrl+Z">↶ 元に戻す</button></div>
+          </div>
+          <div class="card" id="guideCard" title="配置用の目安です。この端末の画面にだけ出て、録画・別ウィンドウ（配信用）には映りません">
+            <h3>ガイドライン（録画には映らない）</h3>
+            <label class="switchRow">外周の余白線<span class="cardRow" style="gap:4px;margin-left:auto;margin-right:8px;">端から<input type="number" id="guideMarginInput" min="1" max="30" step="0.5">%</span><input type="checkbox" id="guideMarginToggle"></label>
+            <label class="switchRow">中央の十字線<input type="checkbox" id="guideCenterToggle"></label>
+            <label class="switchRow">三分割線<input type="checkbox" id="guideThirdsToggle"></label>
+            <label class="switchRow" title="ドラッグ中、他のタイルの端・中央や配置エリアの中央・表示中のガイド線に近づくと赤い線が出て吸い付きます。Altキーを押しながらドラッグすると吸い付きません">ドラッグ中のスマートガイド<input type="checkbox" id="smartGuideToggle"></label>
+          </div>
           <div class="card">
             <h3>画面の向き</h3>
             <div class="aspectBtns"><button class="small" id="aspectLandscapeBtn">横 16:9</button><button class="small" id="aspectPortraitBtn">縦 9:16（ショート）</button></div>
@@ -2646,7 +2692,7 @@ function attachCamZoomHandlers(tile) {
   }, { passive: false });
   let pan = null;
   tile.addEventListener("pointerdown", (e) => {
-    if (!e.shiftKey || !camZoomSupported() || camZoomLocked || e.target.closest(".resizeHandle")) return;
+    if (!e.shiftKey || !camZoomSupported() || camZoomLocked || camZoom.z <= 1.001 || e.target.closest(".resizeHandle")) return;
     e.stopImmediatePropagation(); // タイルの移動（makeDraggable）はしない
     pan = { x: e.clientX, y: e.clientY, cx: camZoom.cx, cy: camZoom.cy, r: video.getBoundingClientRect() };
     try { tile.setPointerCapture(e.pointerId); } catch (err) {}
@@ -3361,6 +3407,7 @@ function renderGrid() {
   applyFrameState();
   updateMbBadges();
   updateDiceBadges();
+  renderTileSelection();
 }
 
 // カメラがオフのタイルは真っ黒な枠を出さず、タイルごと非表示にする（音声は再生し続ける）。
@@ -3424,42 +3471,83 @@ function bringTileToFront(tile) {
 }
 
 function makeDraggable(tile) {
-  let dragging = false, startX = 0, startY = 0, origLeftPct = 0, origTopPct = 0, containerW = 0, containerH = 0;
+  let drag = null;
 
   tile.addEventListener("pointerdown", (e) => {
     if (layoutInteractionLocked()) return;
-    if (e.target.closest(".resizeHandle")) return;
-    dragging = true;
-    tile.classList.add("dragging");
+    if (e.target.closest(".resizeHandle") || e.button > 0) return;
+    if (tile.classList.contains("cropEditing")) return;
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    if (additive) {
+      toggleTileSelection(tile.id);
+      if (!selectedTileIds.includes(tile.id)) return; // 選択を外しただけ（ドラッグしない）
+    } else if (!selectedTileIds.includes(tile.id)) {
+      setTileSelection([tile.id]);
+    }
     bringTileToFront(tile);
-    const rect = videoGrid.getBoundingClientRect();
-    containerW = rect.width; containerH = rect.height;
-    startX = e.clientX; startY = e.clientY;
-    origLeftPct = parseFloat(tile.style.left) || 0;
-    origTopPct = parseFloat(tile.style.top) || 0;
+    const g = gridSize();
+    if (!g.w || !g.h) return;
+    // 選んでいるタイルをまとめて動かす
+    const group = selectedTiles();
+    if (!group.includes(tile)) group.push(tile);
+    const groupSet = new Set(group);
+    drag = {
+      g, startX: e.clientX, startY: e.clientY, moved: false,
+      // 複数選択中に修飾キーなしで押して動かさずに離したら、そのタイルだけの選択にする（パワポと同じ）
+      selectOnlyOnClick: !additive && selectedTileIds.length > 1,
+      group: group.map((t) => ({ t, r: tileRectPct(t, g) })),
+      others: selectableTiles().filter((t) => !groupSet.has(t)).map((t) => tileRectPct(t, g)),
+      lead: tileRectPct(tile, g)
+    };
+    tile.classList.add("dragging");
     tile.setPointerCapture(e.pointerId);
   });
 
   tile.addEventListener("pointermove", (e) => {
-    if (!dragging || !containerW || !containerH) return;
-    const dxPct = ((e.clientX - startX) / containerW) * 100;
-    const dyPct = ((e.clientY - startY) / containerH) * 100;
-    const tileWPct = parseFloat(tile.style.width) || TILE_W_PCT;
-    const tileHPct = (tile.offsetHeight / containerH) * 100;
-    let newLeft = Math.max(0, Math.min(100 - tileWPct, origLeftPct + dxPct));
-    let newTop = Math.max(0, Math.min(100 - tileHPct, origTopPct + dyPct));
-    newLeft = Math.max(0, Math.min(100 - tileWPct, snapX(newLeft)));
-    newTop = Math.max(0, Math.min(100 - tileHPct, snapY(newTop)));
-    tile.style.left = newLeft + "%";
-    tile.style.top = newTop + "%";
+    if (!drag) return;
+    const { g } = drag;
+    let dx = ((e.clientX - drag.startX) / g.w) * 100;
+    let dy = ((e.clientY - drag.startY) / g.h) * 100;
+    if (!drag.moved) {
+      if (Math.abs(e.clientX - drag.startX) < 3 && Math.abs(e.clientY - drag.startY) < 3) return;
+      drag.moved = true;
+      pushLayoutUndo();
+    }
+    // グリッドスナップはつかんだタイルの左上で合わせる
+    if (gridSnapEnabled) {
+      dx = snapX(drag.lead.l + dx) - drag.lead.l;
+      dy = snapY(drag.lead.t + dy) - drag.lead.t;
+    }
+    const bb = rectsBBox(drag.group.map((x) => x.r));
+    // スマートガイド（Altで一時的に無効）
+    let lines = null;
+    if (smartGuidesOn && !e.altKey) {
+      const res = smartSnap({ l: bb.l + dx, t: bb.t + dy, r: bb.r + dx, b: bb.b + dy }, drag.others, g);
+      dx += res.dx; dy += res.dy; lines = res.lines;
+    }
+    // まとめて配置エリアからはみ出さない範囲に
+    dx = Math.max(-bb.l, Math.min(100 - bb.r, dx));
+    dy = Math.max(-bb.t, Math.min(100 - bb.b, dy));
+    for (const { t, r } of drag.group) {
+      t.style.left = (r.l + dx) + "%";
+      t.style.top = (r.t + dy) + "%";
+    }
+    drawSmartGuides(lines);
     if (isLayoutLeader()) scheduleLayoutPublish();
   });
 
   const endDrag = (e) => {
-    if (!dragging) return;
-    dragging = false;
+    if (!drag) return;
+    const d = drag;
+    drag = null;
     tile.classList.remove("dragging");
-    saveTileRect(tile);
+    drawSmartGuides(null);
+    if (!d.moved) {
+      if (d.selectOnlyOnClick) setTileSelection([tile.id]);
+      saveTileRect(tile); // 最前面化を保存
+      return;
+    }
+    for (const { t } of d.group) saveTileRect(t);
   };
   tile.addEventListener("pointerup", endDrag);
   tile.addEventListener("pointercancel", endDrag);
@@ -3478,6 +3566,7 @@ function makeResizable(tile) {
     containerH = rect.height;
     startX = e.clientX;
     startWPct = parseFloat(tile.style.width) || TILE_W_PCT;
+    pushLayoutUndo();
     handle.setPointerCapture(e.pointerId);
   });
 
@@ -3506,6 +3595,289 @@ function makeResizable(tile) {
   handle.addEventListener("pointerup", endResize);
   handle.addEventListener("pointercancel", endResize);
 }
+
+// ---------- タイルの選択・整列・ガイドライン ----------
+// UC要望（2026-10-15）。パワポのように、タイルを複数選んで揃える・均等に並べる・大きさを揃える。
+// 操作ボタンは右パネルの「配置」タブ（UCの選択）。選択の枠・ガイド線は画面だけで、録画（タイルの映像だけ描く）や
+// 別ウィンドウ（配信用、#videoGrid.popped）には出さない。
+const selectedTileIds = []; // 選んだ順。先頭＝大きさを揃えるときの基準
+function gridSize() { const r = videoGrid.getBoundingClientRect(); return { w: r.width, h: r.height }; }
+// タイルの位置・大きさ（配置エリアに対する%）。高さは映像の比率で決まるので実際の大きさから求める
+function tileRectPct(t, g) {
+  const l = parseFloat(t.style.left) || 0, top = parseFloat(t.style.top) || 0;
+  const w = parseFloat(t.style.width) || TILE_W_PCT;
+  const h = g.h ? (t.offsetHeight / g.h) * 100 : 0;
+  return { l, t: top, w, h, r: l + w, b: top + h };
+}
+function rectsBBox(rs) {
+  return { l: Math.min(...rs.map((r) => r.l)), t: Math.min(...rs.map((r) => r.t)), r: Math.max(...rs.map((r) => r.r)), b: Math.max(...rs.map((r) => r.b)) };
+}
+function selectableTiles() {
+  return [...videoGrid.querySelectorAll(".tile")].filter((t) => t.dataset.slot != null && t.style.display !== "none" && t.offsetWidth > 0);
+}
+function selectedTiles() {
+  return selectedTileIds.map((id) => gridEl(id)).filter((t) => t && t.dataset.slot != null && t.style.display !== "none" && t.offsetWidth > 0);
+}
+function setTileSelection(ids) { selectedTileIds.splice(0, selectedTileIds.length, ...ids); renderTileSelection(); }
+function toggleTileSelection(id) {
+  const i = selectedTileIds.indexOf(id);
+  if (i >= 0) selectedTileIds.splice(i, 1); else selectedTileIds.push(id);
+  renderTileSelection();
+}
+// 消えた・隠れたタイルを選択から外して、枠と整列ボタンの状態を合わせる（renderGridの最後からも呼ぶ）
+function renderTileSelection() {
+  if (layoutInteractionLocked()) selectedTileIds.length = 0;
+  const live = new Set(selectedTiles().map((t) => t.id));
+  for (let i = selectedTileIds.length - 1; i >= 0; i--) if (!live.has(selectedTileIds[i])) selectedTileIds.splice(i, 1);
+  videoGrid.querySelectorAll(".tile").forEach((t) => {
+    const on = selectedTileIds.includes(t.id);
+    t.classList.toggle("selected", on);
+    t.classList.toggle("selAnchor", on && selectedTileIds.length > 1 && selectedTileIds[0] === t.id);
+  });
+  const n = selectedTileIds.length;
+  const countEl = document.getElementById("alignCount");
+  if (countEl) countEl.textContent = layoutInteractionLocked() ? "（追従中は使えません）" : n ? `${n}個選択中` : "未選択";
+  document.querySelectorAll(".alignBtn").forEach((b) => {
+    const op = b.dataset.op;
+    b.disabled = !n || ((op === "sameW" || op === "sameH") && n < 2);
+  });
+}
+
+// 元に戻す（整列・ドラッグ・サイズ変更の前の配置を覚える。向きを変えたら使わない）
+const layoutUndoStack = [];
+function pushLayoutUndo() {
+  layoutUndoStack.push({ aspect: stageAspect, positions: JSON.stringify(tilePositions) });
+  if (layoutUndoStack.length > 40) layoutUndoStack.shift();
+}
+function undoLayout() {
+  if (layoutInteractionLocked()) return;
+  while (layoutUndoStack.length) {
+    const snap = layoutUndoStack.pop();
+    if (snap.aspect !== stageAspect) continue;
+    tilePositions = JSON.parse(snap.positions);
+    savePositions();
+    renderGrid();
+    if (isLayoutLeader()) publishLeaderLayout();
+    return;
+  }
+}
+
+// タイルを置く（配置エリアからはみ出さないように）
+function placeTilePct(t, l, top, g) {
+  const r = tileRectPct(t, g);
+  t.style.left = Math.max(0, Math.min(100 - r.w, l)) + "%";
+  t.style.top = Math.max(0, Math.min(100 - r.h, top)) + "%";
+}
+
+function runAlignOp(op) {
+  if (layoutInteractionLocked()) return;
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
+  const g = gridSize();
+  if (!g.w || !g.h) return;
+  pushLayoutUndo();
+  const toStage = document.getElementById("alignToStageToggle")?.checked;
+  const rects = tiles.map((t) => tileRectPct(t, g));
+  if (["left", "hcenter", "right", "top", "vcenter", "bottom"].includes(op)) {
+    const box = tiles.length === 1 || toStage ? { l: 0, t: 0, r: 100, b: 100 } : rectsBBox(rects);
+    tiles.forEach((t, i) => {
+      const r = rects[i];
+      let l = r.l, top = r.t;
+      if (op === "left") l = box.l;
+      else if (op === "hcenter") l = (box.l + box.r) / 2 - r.w / 2;
+      else if (op === "right") l = box.r - r.w;
+      else if (op === "top") top = box.t;
+      else if (op === "vcenter") top = (box.t + box.b) / 2 - r.h / 2;
+      else if (op === "bottom") top = box.b - r.h;
+      placeTilePct(t, l, top, g);
+    });
+  } else if (op === "distH" || op === "distV") {
+    const H = op === "distH";
+    const items = tiles.map((t, i) => ({ t, r: rects[i] })).sort((a, b) => H ? a.r.l - b.r.l || a.r.t - b.r.t : a.r.t - b.r.t || a.r.l - b.r.l);
+    const size = (r) => H ? r.w : r.h;
+    const n = items.length;
+    let start, end;
+    if (toStage || n < 3) { start = 0; end = 100; } // 2つ以下は配置エリアいっぱいに
+    else { start = H ? items[0].r.l : items[0].r.t; end = H ? items[n - 1].r.r : items[n - 1].r.b; }
+    const total = items.reduce((a, x) => a + size(x.r), 0);
+    if (n === 1) {
+      const pos = start + (end - start - total) / 2;
+      placeTilePct(items[0].t, H ? pos : items[0].r.l, H ? items[0].r.t : pos, g);
+    } else {
+      const gap = (end - start - total) / (n - 1);
+      let pos = start;
+      for (const { t, r } of items) {
+        placeTilePct(t, H ? pos : r.l, H ? r.t : pos, g);
+        pos += size(r) + gap;
+      }
+    }
+  } else if (op === "sameW" || op === "sameH") {
+    const ref = rects[0];
+    tiles.slice(1).forEach((t, k) => {
+      const r = rects[k + 1];
+      let w = ref.w;
+      if (op === "sameH") w = r.w * (ref.h / (r.h || ref.h)); // 高さを揃える＝そのタイルの比率のまま幅を決める
+      w = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, w));
+      t.style.width = w + "%";
+      placeTilePct(t, r.l, r.t, g); // 左上はそのまま（はみ出す分だけずらす）
+    });
+  }
+  for (const t of tiles) saveTileRect(t);
+}
+
+// ---- ガイドライン ----
+let guideMarginOn = localStorage.getItem("guideMargin") !== "0";   // 既定ON
+let guideMarginPct = Math.min(30, Math.max(1, parseFloat(localStorage.getItem("guideMarginPct")) || 5));
+let guideCenterOn = localStorage.getItem("guideCenter") !== "0";   // 既定ON
+let guideThirdsOn = localStorage.getItem("guideThirds") === "1";   // 既定OFF
+let smartGuidesOn = localStorage.getItem("smartGuides") !== "0";   // 既定ON
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgLine(x1, y1, x2, y2, color, dash) {
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="1" vector-effect="non-scaling-stroke"${dash ? ` stroke-dasharray="${dash}"` : ""}/>`;
+}
+function applyGuides() {
+  const layer = gridEl("guideLayer");
+  if (!layer) return;
+  let body = "";
+  if (guideThirdsOn) {
+    for (const v of [100 / 3, 200 / 3]) {
+      body += svgLine(v, 0, v, 100, "rgba(255,255,255,0.35)", "2 4") + svgLine(0, v, 100, v, "rgba(255,255,255,0.35)", "2 4");
+    }
+  }
+  if (guideCenterOn) body += svgLine(50, 0, 50, 100, "rgba(255,120,220,0.75)", "6 4") + svgLine(0, 50, 100, 50, "rgba(255,120,220,0.75)", "6 4");
+  if (guideMarginOn) {
+    const m = guideMarginPct;
+    body += `<rect x="${m}" y="${m}" width="${100 - 2 * m}" height="${100 - 2 * m}" fill="none" stroke="#4fc3f7" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="6 4"/>`;
+  }
+  layer.innerHTML = body ? `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${body}</svg>` : "";
+}
+// スマートガイド：動かしている範囲の端・中央を、他のタイルの端・中央／配置エリアの端・中央／表示中のガイド線に吸い付ける
+function smartSnap(box, others, g) {
+  const tolX = (6 / g.w) * 100, tolY = (6 / g.h) * 100;
+  const xs = [0, 50, 100], ys = [0, 50, 100];
+  if (guideMarginOn) { xs.push(guideMarginPct, 100 - guideMarginPct); ys.push(guideMarginPct, 100 - guideMarginPct); }
+  if (guideThirdsOn) { xs.push(100 / 3, 200 / 3); ys.push(100 / 3, 200 / 3); }
+  for (const o of others) { xs.push(o.l, (o.l + o.r) / 2, o.r); ys.push(o.t, (o.t + o.b) / 2, o.b); }
+  const best = (edges, lines, tol) => {
+    let hit = null;
+    for (const e of edges) for (const v of lines) {
+      const d = v - e;
+      if (Math.abs(d) <= tol && (!hit || Math.abs(d) < Math.abs(hit.d))) hit = { d, v };
+    }
+    return hit;
+  };
+  const hx = best([box.l, (box.l + box.r) / 2, box.r], xs, tolX);
+  const hy = best([box.t, (box.t + box.b) / 2, box.b], ys, tolY);
+  return { dx: hx ? hx.d : 0, dy: hy ? hy.d : 0, lines: { x: hx ? hx.v : null, y: hy ? hy.v : null } };
+}
+function drawSmartGuides(lines) {
+  const layer = gridEl("smartGuideLayer");
+  if (!layer) return;
+  let body = "";
+  if (lines?.x != null) body += svgLine(lines.x, 0, lines.x, 100, "#ff4d4d");
+  if (lines?.y != null) body += svgLine(0, lines.y, 100, lines.y, "#ff4d4d");
+  layer.innerHTML = body ? `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${body}</svg>` : "";
+}
+
+// 何もない所をドラッグして囲んで選択（クリックだけなら選択解除）
+videoGrid.addEventListener("pointerdown", (e) => {
+  if (e.target !== videoGrid || e.button > 0 || layoutInteractionLocked()) return;
+  const g = gridSize();
+  const gr = videoGrid.getBoundingClientRect();
+  const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+  const base = additive ? [...selectedTileIds] : [];
+  const marquee = gridEl("selMarquee");
+  const sx = e.clientX - gr.left, sy = e.clientY - gr.top;
+  let moved = false;
+  const onMove = (ev) => {
+    const cx = ev.clientX - gr.left, cy = ev.clientY - gr.top;
+    if (!moved && Math.abs(cx - sx) < 3 && Math.abs(cy - sy) < 3) return;
+    moved = true;
+    const l = Math.min(sx, cx), t = Math.min(sy, cy), w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+    Object.assign(marquee.style, { display: "block", left: l + "px", top: t + "px", width: w + "px", height: h + "px" });
+    const box = { l: (l / g.w) * 100, t: (t / g.h) * 100, r: ((l + w) / g.w) * 100, b: ((t + h) / g.h) * 100 };
+    const hit = selectableTiles().filter((tile) => {
+      const r = tileRectPct(tile, g);
+      return r.l < box.r && r.r > box.l && r.t < box.b && r.b > box.t;
+    }).map((tile) => tile.id);
+    setTileSelection([...base, ...hit.filter((id) => !base.includes(id))]);
+  };
+  const onUp = () => {
+    videoGrid.removeEventListener("pointermove", onMove);
+    videoGrid.removeEventListener("pointerup", onUp);
+    videoGrid.removeEventListener("pointercancel", onUp);
+    marquee.style.display = "none";
+    if (!moved && !additive) setTileSelection([]);
+  };
+  videoGrid.setPointerCapture(e.pointerId);
+  videoGrid.addEventListener("pointermove", onMove);
+  videoGrid.addEventListener("pointerup", onUp);
+  videoGrid.addEventListener("pointercancel", onUp);
+});
+
+// キー操作：矢印で少しずつ動かす（Shiftで大きく）・Ctrl+Zで元に戻す・Ctrl+Aで全部選択・Escで選択解除
+let lastNudgeUndoAt = 0;
+function onLayoutKey(e) {
+  const el = e.target;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+  if (layoutInteractionLocked() || videoGrid.querySelector(".cropEditing")) return;
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undoLayout(); return; }
+  if (ctrl && (e.key === "a" || e.key === "A") && callScreen.style.display !== "none") { e.preventDefault(); setTileSelection(selectableTiles().map((t) => t.id)); return; }
+  if (!selectedTileIds.length) return;
+  if (e.key === "Escape") { setTileSelection([]); return; }
+  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!dir) return;
+  e.preventDefault();
+  const g = gridSize();
+  if (!g.w || !g.h) return;
+  if (Date.now() - lastNudgeUndoAt > 1000) pushLayoutUndo(); // 押し続けた分は1回で戻せるように
+  lastNudgeUndoAt = Date.now();
+  // 1回の移動量：マス目ON時は1マス、OFF時は1px相当（Shiftで10倍）
+  const k = e.shiftKey ? 10 : 1;
+  const stepX = gridSnapEnabled ? gridStepXPct() : (100 / g.w), stepY = gridSnapEnabled ? gridStepYPct() : (100 / g.h);
+  const tiles = selectedTiles();
+  const bb = rectsBBox(tiles.map((t) => tileRectPct(t, g)));
+  const dx = Math.max(-bb.l, Math.min(100 - bb.r, dir[0] * stepX * k));
+  const dy = Math.max(-bb.t, Math.min(100 - bb.b, dir[1] * stepY * k));
+  for (const t of tiles) {
+    t.style.left = (parseFloat(t.style.left) || 0) + dx + "%";
+    t.style.top = (parseFloat(t.style.top) || 0) + dy + "%";
+    saveTileRect(t);
+  }
+}
+document.addEventListener("keydown", onLayoutKey);
+
+function setupAlignPanel() {
+  document.querySelectorAll(".alignBtn").forEach((b) => b.addEventListener("click", () => runAlignOp(b.dataset.op)));
+  const toStage = document.getElementById("alignToStageToggle");
+  toStage.checked = localStorage.getItem("alignToStage") === "1";
+  toStage.addEventListener("change", () => { try { localStorage.setItem("alignToStage", toStage.checked ? "1" : "0"); } catch (e) {} });
+  document.getElementById("selectAllTilesBtn").addEventListener("click", () => setTileSelection(selectableTiles().map((t) => t.id)));
+  document.getElementById("clearTileSelBtn").addEventListener("click", () => setTileSelection([]));
+  document.getElementById("undoLayoutBtn").addEventListener("click", undoLayout);
+  const bind = (id, get, set, key) => {
+    const cb = document.getElementById(id);
+    cb.checked = get();
+    cb.addEventListener("change", () => { set(cb.checked); try { localStorage.setItem(key, cb.checked ? "1" : "0"); } catch (e) {} applyGuides(); });
+  };
+  bind("guideMarginToggle", () => guideMarginOn, (v) => { guideMarginOn = v; }, "guideMargin");
+  bind("guideCenterToggle", () => guideCenterOn, (v) => { guideCenterOn = v; }, "guideCenter");
+  bind("guideThirdsToggle", () => guideThirdsOn, (v) => { guideThirdsOn = v; }, "guideThirds");
+  bind("smartGuideToggle", () => smartGuidesOn, (v) => { smartGuidesOn = v; }, "smartGuides");
+  const mi = document.getElementById("guideMarginInput");
+  mi.value = String(guideMarginPct);
+  mi.addEventListener("change", () => {
+    const v = parseFloat(mi.value);
+    guideMarginPct = Math.min(30, Math.max(1, isFinite(v) ? v : 5));
+    mi.value = String(guideMarginPct);
+    try { localStorage.setItem("guideMarginPct", String(guideMarginPct)); } catch (e) {}
+    applyGuides();
+  });
+  applyGuides();
+  renderTileSelection();
+}
+setupAlignPanel();
 
 function createVideoTile(peerId, name, isSelf) {
   if (gridEl(`tile-${peerId}`)) return;
@@ -5943,6 +6315,8 @@ function popOutGrid() {
   resumeGridVideos();
   gridPlaceholder.classList.add("show");
   doc.addEventListener("keydown", onBuzzHotkey);
+  doc.addEventListener("keydown", onLayoutKey);
+  videoGrid.classList.add("popped"); // 配信用なのでガイド線・選択の枠は出さない
   win.addEventListener("pagehide", () => { if (gridPopupWin === win) popInGrid(); });
   if (recordLoopId) { // 録画中なら描画ループを新しいウィンドウ側に付け替える
     recordLoopWin.cancelAnimationFrame(recordLoopId);
@@ -5958,6 +6332,7 @@ function popInGrid() {
   const wasRecording = !!recordLoopId;
   if (wasRecording) { try { recordLoopWin.cancelAnimationFrame(recordLoopId); } catch (e) {} }
   gridPlaceholder.after(videoGrid);
+  videoGrid.classList.remove("popped");
   gridPlaceholder.classList.remove("show");
   gridPopped = false;
   gridPopupWin = null;
