@@ -872,10 +872,11 @@ import {
 const ROOM_ID = "test1";
 const MAX_PEERS = 6;
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
-const VIDEO_MAX_BITRATE = 400000;  // bps（通常のカメラ映像）
+const VIDEO_MAX_BITRATE = 500000;  // bps（通常のカメラ映像。30fpsで1コマあたりの画質が24fps・400kbpsと同じくらいになる量）
 const SCREEN_AUDIO_BITRATE = 128000; // bps（画面の音。音楽・ゲーム音を想定して声より高め）
 // カメラは個人録画用に高解像度で取り込み、通話にはこの高さ・fpsまで縮めて送る（送信量を増やさないため）
-const CAMERA_SEND_HEIGHT = 360, CAMERA_SEND_FPS = 24;
+// fpsはレイアウト録画（30fps）と揃える。24fpsだと30fpsの録画に入れたとき4コマに1回同じ絵が続き、相手の映像がかくついて見えた
+const CAMERA_SEND_HEIGHT = 360, CAMERA_SEND_FPS = 30;
 // 画面共有の画質。contentHint="detail"は解像度を保って（必要ならfpsを落として）文字をくっきりさせ、
 // "motion"はfpsを保つ（ゲーム等の動き向け）。メッシュ接続なので送信量は「ビットレート×相手の人数」になる点に注意
 const SCREEN_QUALITY_PRESETS = {
@@ -2709,7 +2710,7 @@ function attachCamZoomHandlers(tile) {
   tile.addEventListener("pointercancel", endPan);
 }
 
-// カメラ送信：ビットレート上限に加えて、取り込み解像度・fpsから通話用（360p・24fps）に縮める
+// カメラ送信：ビットレート上限に加えて、取り込み解像度・fpsから通話用（360p・30fps）に縮める
 function applyCameraSenderParams(sender) {
   try {
     const params = sender.getParameters();
