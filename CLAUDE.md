@@ -53,6 +53,15 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - テスト：mockdb.jsに`.info/connected`と`__mockDrop()`（未接続にしてonDisconnectを実行）／`__mockReconnect()`を足し、テスト用コピーだけで`window.__t = { peers, rebuildPeerConnection, members }`を出して2タブで確認（どちらが落ちても映像が動き出し音声トラックがlive、録画は1本で続く）。
 - 未対応：レイアウト同期のリーダーが落ちると同期は解除される（各自の配置は直前のまま残る）。TURNサーバーは無い（STUNのみ）。
 
+## 声のルーム（ブレイクアウト。UC要望 2026-10-17「画面は共有したまま、AルームBルームみたいに音声だけ分けたい」）
+- 参加者タブの「🔈 声のルーム」で**各自が**ルームを選ぶ（全体／A〜D、`VOICE_ROOMS`）。`members/{id}/voiceRoom`（""＝全体）。入室時は全体。映像・画面共有・配置・早押しは今までどおり全員で共有。
+- 声は**送る側で**切り分ける：相手ごとの`entry.audioSender`を`replaceTrack`で、同じルームならマイク（`micTrackToSend()`）、違うルームならイントロクイズの曲だけのトラック（`getIntroOnlyTrack()`＝`introBus`→専用のdestination。曲が無ければ無音）に差し替える（`applyVoiceRouting`、つなぎ直しなし）。受け取り側で消す方式ではないので、レイアウト録画の音声は自然に「その人に聞こえている声」になる（UCの選択）。
+- 判定は`sendsVoiceTo(peerId)`：同じルーム／相手がホスト（ホストは全部のルームが聞こえる）／自分がホストで「📢 全体に話す」ON（`members/{hostId}/voiceAll`、ホストにだけスイッチを表示）。ホストは`roomHostId()`（`isRoomHost()`と同じ決め方）。
+- 早押しの効果音は各端末で鳴らしているので影響なし。イントロクイズの曲は違うルームの人にも曲だけのトラックで届く（UCの選択「全員に流す」）。画面共有の音は別のsenderなので全員に届く。
+- 振り分け直しのきっかけ：membersの変化（`listenMembers`の最後）・`buzzer/host`の変化・マイクの切り替え・ノイズ抑制の作り直し（以前は各所で`audioSender.replaceTrack(outgoingAudioTrack)`していたのを`applyVoiceRouting()`に一本化）。新しい接続は`createPeerConnection`で最初から`audioTrackFor(peerId)`を`addTrack`する。
+- 誰かがルームに分かれている間だけ上のバーに`#voiceRoomChip`（「🔈 声: Aルーム」、ホストが全体に話し中ならその旨）。
+- テスト（2026-10-17）：mockdbのテスト用コピーで3タブ（A=ホスト・B・C）。送信トラック（mic/intro）と受信側の`totalAudioEnergy`の増え方で、全体→BだけAルーム→ホストが全体に話す→ホストが曲（オシレーターを`introBus`へ）→B・CがAルーム→全員全体、の各段階で想定どおり聞こえる／無音になることを確認。偽マイクのビープはRNNoiseで消えるので、テストではノイズ抑制をOFFにする。
+
 ## 画面共有（カメラと別タイル表示）
 
 - カメラ映像と画面共有映像は別々の `RTCRtpSender`（`addTrack`/`removeTrack`）で送信する。`replaceTrack`は使わない。

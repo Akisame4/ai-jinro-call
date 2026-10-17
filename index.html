@@ -406,6 +406,11 @@
   #guideMarginInput { width: 52px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 1px 4px; }
   .cardRow.spread { justify-content: space-between; }
   .cardRow select, .cardRow input[type="text"] { flex: 1; min-width: 0; }
+  .voiceRoomRow { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; }
+  .voiceRoomRow.mine { border-color: var(--accent); background: rgba(255, 196, 80, .08); }
+  .voiceRoomRow button { min-width: 62px; }
+  .voiceRoomRow .vrNames { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .voiceRoomRow.mine .vrNames { color: inherit; }
   .switchRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; cursor: pointer; }
   .switchRow input[type="checkbox"] { width: 18px; height: 18px; }
   .switchRow input[type="number"] { width: 70px; }
@@ -543,6 +548,7 @@
   <header id="topBar">
     <h1>遊ぶところ撮影ツール</h1>
     <span class="chip" id="roomChip">ルーム test1</span>
+    <span class="chip" id="voiceRoomChip" style="display:none;" title="声が聞こえるのは同じルームの人だけです（参加者タブで切り替え）"></span>
     <span class="chip recChip" id="recIndicator">● 録画中</span>
     <span class="spacer"></span>
     <button class="ghost" id="fullscreenGridBtn" title="配置エリアをフルスクリーンにします">⛶ 全画面</button>
@@ -576,6 +582,12 @@
           <div class="paneHead"><h2>参加者</h2><span class="hint">行をドラッグで並び替え</span></div>
           <div id="controlsTable"></div>
           <div class="hint">「…」の中：枠のON/OFF・最前面へ／最背面へ。自分の行はズーム・左右反転も。「📷」は自分ならカメラのON/OFF、相手ならこの端末だけ映像を隠します</div>
+          <div class="card" id="voiceRoomCard">
+            <h3>🔈 声のルーム</h3>
+            <span class="hint">同じルームの人どうしだけ声が聞こえます（映像・画面共有・早押しは全員のまま）。ホストは全部のルームの声が聞こえます。早押しの効果音・イントロクイズの曲は全員に流れます。</span>
+            <div id="voiceRoomList"></div>
+            <label class="switchRow" id="voiceAllRow" style="display:none;" title="ONの間、ホストの声が全部のルームに届きます">📢 全体に話す（ホスト）<input type="checkbox" id="voiceAllToggle"></label>
+          </div>
         </section>
 
         <section class="sidePane" data-pane="buzz" id="buzzPanel">
@@ -1395,9 +1407,7 @@ async function switchMicDevice(deviceId) {
   if (old) { newTrack.enabled = old.enabled; localStream.removeTrack(old); old.stop(); }
   localStream.addTrack(newTrack);
   outgoingAudioTrack = await setupNoiseGate(localStream, audioDest);
-  for (const entry of Object.values(peers)) {
-    if (entry.audioSender && outgoingAudioTrack) entry.audioSender.replaceTrack(outgoingAudioTrack).catch((e) => console.warn("マイクの差し替えに失敗", e));
-  }
+  applyVoiceRouting();
   localStorage.setItem(SAVED_MIC_KEY, deviceId);
   micDeviceSelect.value = deviceId;
   setDevStatus(status, `「${newTrack.label || "マイク"}」に切り替えました`);
@@ -2105,7 +2115,7 @@ async function joinRoom(name) {
   myConn = crypto.randomUUID();
   await set(myMemberRef, {
     name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn(),
-    buzzSpectator: false, buzzTeam: savedTeam, conn: myConn
+    buzzSpectator: false, buzzTeam: savedTeam, conn: myConn, voiceRoom: "", voiceAll: false
   });
   armMyDisconnectCleanup();
   inCall = true;
@@ -2257,6 +2267,7 @@ function listenMembers() {
     const slots = computeSlots();
     renderGrid();
     renderControls(slots);
+    applyVoiceRouting(); // 声のルーム・ホストが変わったら、相手ごとに送る音声を切り替える
     if (isLayoutLeader()) publishLeaderLayout(); // 参加者の増減・画面共有の開始終了もフォロワーに反映する
     refreshNameLabels();
     renderBuzzer();
@@ -2434,8 +2445,9 @@ function createPeerConnection(peerId, isInitiator) {
     entry.videoSender = videoSender;
     applyCameraSenderParams(videoSender);
   }
-  // マイクはノイズゲート後の音声を送信する（未対応時は生のマイク音声にフォールバック）
-  const audioTrackToSend = outgoingAudioTrack || localStream.getAudioTracks()[0];
+  // マイクはノイズゲート後の音声を送信する（未対応時は生のマイク音声にフォールバック）。
+  // 声のルームが違う相手には声を送らず、イントロクイズの曲だけのトラックを送る（audioTrackFor）
+  const audioTrackToSend = audioTrackFor(peerId) || micTrackToSend();
   if (audioTrackToSend) entry.audioSender = pc.addTrack(audioTrackToSend, localStream);
   // 既に画面共有中に参加してきた相手にも、最初から画面共有トラックを追加しておく
   for (const n of myScreens.keys()) addScreenTrackToPeer(entry, n);
@@ -4418,9 +4430,7 @@ async function applyGateThreshold(db) {
   if (!localStream) return; // 入室前は次回setupNoiseGate時に反映されるだけでよい
   const newTrack = await setupNoiseGate(localStream, audioDest);
   outgoingAudioTrack = newTrack;
-  for (const entry of Object.values(peers)) {
-    if (entry.audioSender && newTrack) entry.audioSender.replaceTrack(newTrack);
-  }
+  applyVoiceRouting();
 }
 
 function dbToMeterPercent(db) {
@@ -5262,10 +5272,77 @@ function earliestMemberId() {
   if (!presentIds.length) return null;
   return presentIds.sort((a, b) => members[a].joinedAt - members[b].joinedAt)[0];
 }
+function roomHostId() {
+  if (isHostNamePresent()) return Object.keys(members).find((id) => members[id]?.joinedAt != null && members[id].name === buzzHostName) || null;
+  return earliestMemberId();
+}
 function isRoomHost() {
   if (isHostNamePresent()) return members[myId]?.name === buzzHostName;
   return earliestMemberId() === myId;
 }
+
+// ---------- 声のルーム（ブレイクアウト） ----------
+// members/{id}/voiceRoom: ""（全体）| "A"〜"D"。各自が選ぶ。声は同じルームの人にだけ送る（受け取り側で消すのではなく、
+// 相手ごとの送信トラックを差し替える。つなぎ直しは不要）。ホストには全員が声を送り（ホストは全部聞こえる）、
+// ホストが「全体に話す」（members/{hostId}/voiceAll）をONにするとホストの声も全員に届く。
+// 違うルームの相手にはイントロクイズの曲だけのトラックを送る（曲は全員に流す）。早押しの効果音は各端末で鳴らしているので影響なし
+const VOICE_ROOMS = ["", "A", "B", "C", "D"];
+let introOnlyTrack = null;
+function voiceRoomOf(id) { const r = members[id]?.voiceRoom; return VOICE_ROOMS.includes(r) ? r : ""; }
+function voiceRoomLabel(r) { return r ? `${r}ルーム` : "全体"; }
+function sendsVoiceTo(peerId) {
+  if (voiceRoomOf(peerId) === voiceRoomOf(myId)) return true;
+  const host = roomHostId();
+  if (peerId === host) return true;
+  return host === myId && !!members[myId]?.voiceAll;
+}
+function micTrackToSend() { return outgoingAudioTrack || localStream?.getAudioTracks()[0] || null; }
+function getIntroOnlyTrack() {
+  if (!introOnlyTrack) {
+    const dest = audioCtx.createMediaStreamDestination();
+    getIntroBus().connect(dest);
+    introOnlyTrack = dest.stream.getAudioTracks()[0];
+  }
+  return introOnlyTrack;
+}
+function audioTrackFor(peerId) { return sendsVoiceTo(peerId) ? micTrackToSend() : getIntroOnlyTrack(); }
+function applyVoiceRouting() {
+  for (const [id, entry] of Object.entries(peers)) {
+    if (!entry.audioSender) continue;
+    const t = audioTrackFor(id);
+    if (t && entry.audioSender.track !== t) entry.audioSender.replaceTrack(t).catch((e) => console.warn("声のルームの切り替えに失敗", e));
+  }
+  renderVoiceRooms();
+}
+function renderVoiceRooms() {
+  const list = document.getElementById("voiceRoomList");
+  const mine = voiceRoomOf(myId), host = roomHostId();
+  const present = Object.keys(members).filter((id) => members[id]?.joinedAt != null)
+    .sort((a, b) => members[a].joinedAt - members[b].joinedAt);
+  list.innerHTML = VOICE_ROOMS.map((r) => {
+    const names = present.filter((id) => voiceRoomOf(id) === r)
+      .map((id) => escapeHtml(members[id].name || "") + (id === host ? "（ホスト）" : "")).join("、");
+    return `<div class="voiceRoomRow${r === mine ? " mine" : ""}"><button class="small${r === mine ? " active" : ""}" data-voice-room="${r}"${r === mine ? " disabled" : ""}>${voiceRoomLabel(r)}</button><span class="vrNames">${names || "—"}</span></div>`;
+  }).join("");
+  const iAmHost = host === myId;
+  document.getElementById("voiceAllRow").style.display = iAmHost ? "" : "none";
+  document.getElementById("voiceAllToggle").checked = iAmHost && !!members[myId]?.voiceAll;
+  // 誰かがルームに分かれている間だけ、上のバーに自分のルームを出す
+  const chip = document.getElementById("voiceRoomChip");
+  const split = present.some((id) => voiceRoomOf(id) !== "");
+  const hostAll = host && host !== myId && members[host]?.voiceAll;
+  chip.style.display = split ? "" : "none";
+  chip.textContent = `🔈 声: ${voiceRoomLabel(mine)}` + (hostAll ? "（📢 ホストが全体に話し中）" : "");
+}
+document.getElementById("voiceRoomList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-voice-room]");
+  if (!btn || !inCall) return;
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { voiceRoom: btn.dataset.voiceRoom });
+});
+document.getElementById("voiceAllToggle").addEventListener("change", (e) => {
+  if (!inCall) return;
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { voiceAll: e.target.checked });
+});
 
 // ---------- 早押し ----------
 // rooms/{ROOM_ID}/buzzer/config: { enabled, scoreMode: "points"|"marubatsu", ptsCorrect, ptsWrong, answerSec, winPts, maxWrong, maruWin, batsuOut, teamMode }
@@ -5402,6 +5479,7 @@ function listenBuzzer() {
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/host`), (snap) => {
     buzzHostName = snap.val()?.name || null;
     renderBuzzer();
+    applyVoiceRouting(); // ホストが変わると声の届け先も変わる
   });
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/config`), (snap) => {
     buzzConfig = { ...BUZZ_DEFAULT_CONFIG, ...(snap.val() || {}) };
