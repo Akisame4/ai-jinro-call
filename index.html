@@ -584,8 +584,9 @@
           <div class="hint">「…」の中：枠のON/OFF・最前面へ／最背面へ。自分の行はズーム・左右反転も。「📷」は自分ならカメラのON/OFF、相手ならこの端末だけ映像を隠します</div>
           <div class="card" id="voiceRoomCard">
             <h3>🔈 声のルーム</h3>
-            <span class="hint">同じルームの人どうしだけ声が聞こえます（映像・画面共有・早押しは全員のまま）。ホストは全部のルームの声が聞こえます。早押しの効果音・イントロクイズの曲は全員に流れます。</span>
+            <span class="hint">同じルームの人どうしだけ声が聞こえます（映像・画面共有・早押しは全員のまま）。ホストは「全部のルームを聞く」がONなら全部のルームの声が聞こえます。早押しの効果音・イントロクイズの曲は全員に流れます。</span>
             <div id="voiceRoomList"></div>
+            <label class="switchRow" id="hearAllRow" style="display:none;" title="ONの間、ホストには全部のルームの声が聞こえます。OFFにすると自分のルームの声だけになります">👂 全部のルームを聞く（ホスト）<input type="checkbox" id="hearAllToggle"></label>
             <label class="switchRow" id="voiceAllRow" style="display:none;" title="ONの間、ホストの声が全部のルームに届きます">📢 全体に話す（ホスト）<input type="checkbox" id="voiceAllToggle"></label>
           </div>
         </section>
@@ -2115,7 +2116,7 @@ async function joinRoom(name) {
   myConn = crypto.randomUUID();
   await set(myMemberRef, {
     name: myName, joinedAt: serverTimestamp(), sharing: false, cameraOn: isMyCameraOn(),
-    buzzSpectator: false, buzzTeam: savedTeam, conn: myConn, voiceRoom: "", voiceAll: false
+    buzzSpectator: false, buzzTeam: savedTeam, conn: myConn, voiceRoom: "", voiceAll: false, hearAll: true
   });
   armMyDisconnectCleanup();
   inCall = true;
@@ -5283,7 +5284,8 @@ function isRoomHost() {
 
 // ---------- 声のルーム（ブレイクアウト） ----------
 // members/{id}/voiceRoom: ""（全体）| "A"〜"D"。各自が選ぶ。声は同じルームの人にだけ送る（受け取り側で消すのではなく、
-// 相手ごとの送信トラックを差し替える。つなぎ直しは不要）。ホストには全員が声を送り（ホストは全部聞こえる）、
+// 相手ごとの送信トラックを差し替える。つなぎ直しは不要）。ホストが「全部のルームを聞く」（members/{hostId}/hearAll、既定ON）なら
+// ホストには全員が声を送り、
 // ホストが「全体に話す」（members/{hostId}/voiceAll）をONにするとホストの声も全員に届く。
 // 違うルームの相手にはイントロクイズの曲だけのトラックを送る（曲は全員に流す）。早押しの効果音は各端末で鳴らしているので影響なし
 const VOICE_ROOMS = ["", "A", "B", "C", "D"];
@@ -5293,7 +5295,7 @@ function voiceRoomLabel(r) { return r ? `${r}ルーム` : "全体"; }
 function sendsVoiceTo(peerId) {
   if (voiceRoomOf(peerId) === voiceRoomOf(myId)) return true;
   const host = roomHostId();
-  if (peerId === host) return true;
+  if (peerId === host && members[host]?.hearAll !== false) return true;
   return host === myId && !!members[myId]?.voiceAll;
 }
 function micTrackToSend() { return outgoingAudioTrack || localStream?.getAudioTracks()[0] || null; }
@@ -5326,6 +5328,8 @@ function renderVoiceRooms() {
   }).join("");
   const iAmHost = host === myId;
   document.getElementById("voiceAllRow").style.display = iAmHost ? "" : "none";
+  document.getElementById("hearAllRow").style.display = iAmHost ? "" : "none";
+  document.getElementById("hearAllToggle").checked = members[myId]?.hearAll !== false;
   document.getElementById("voiceAllToggle").checked = iAmHost && !!members[myId]?.voiceAll;
   // 誰かがルームに分かれている間だけ、上のバーに自分のルームを出す
   const chip = document.getElementById("voiceRoomChip");
@@ -5338,6 +5342,10 @@ document.getElementById("voiceRoomList").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-voice-room]");
   if (!btn || !inCall) return;
   update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { voiceRoom: btn.dataset.voiceRoom });
+});
+document.getElementById("hearAllToggle").addEventListener("change", (e) => {
+  if (!inCall) return;
+  update(ref(db, `rooms/${ROOM_ID}/members/${myId}`), { hearAll: e.target.checked });
 });
 document.getElementById("voiceAllToggle").addEventListener("change", (e) => {
   if (!inCall) return;
