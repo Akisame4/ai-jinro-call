@@ -151,8 +151,7 @@
   }
   .tile .mbBadge.show, .tile .diceBadge.show { display: block; }
   /* 点数制のときは「○3 ×1」の1行で右下に出す（UC指示 2026-10-21） */
-  .tile .mbBadge.pointsMode { top: auto; bottom: 4%; }
-  .tile .mbBadge.pointsMode .batsu { margin-left: 0.4em; }
+  .tile .mbBadge.pointsMode { top: auto; bottom: 4%; font-size: clamp(18px, 8.4cqw, 112px); text-align: left; } /* 縦積み・○×制の約2倍（UC指示 2026-10-22） */
   .tile .mbBadge.dragging, .tile .diceBadge.dragging { outline: 2px dashed #ffd54f; }
   .tile .mbBadge .maru { color: #ff5252; }
   .tile .mbBadge .batsu { color: #4fa3ff; }
@@ -595,7 +594,7 @@
         </section>
 
         <section class="sidePane" data-pane="buzz" id="buzzPanel">
-          <div class="paneHead"><h2>早押し</h2><button class="small" id="scoreboardBtn" title="早押しのスコアを、画面共有と同じように全員の配置エリアへタイルとして表示します">📊 スコアボード</button></div>
+          <div class="paneHead"><h2>早押し</h2></div>
           <div id="buzzRoleRow">
             <label><input type="checkbox" id="buzzHostClaimToggle"> ホスト（司会）になる</label>
             <label><input type="checkbox" id="buzzSpectatorToggle"> 観戦者として参加（ボタンを使わない）</label>
@@ -959,8 +958,6 @@ let recordLoopWin = window;
 // 配置エリアの別ウィンドウ表示とスコアボードタイル（関数より先に宣言しておく。読み込み中に呼ばれても参照できるように）
 let gridPopupWin = null;
 let gridPopped = false;
-const SCOREBOARD_KEY = "scoreboard";
-let scoreboardOn = false;
 
 // マイクのノイズ抑制（RNNoise）。声とタイピング音を波形の特徴から区別して、
 // 発話中でもタイピング音だけを抑えられる（単純な音量ゲートでは発話中は抑制できないため）
@@ -1152,7 +1149,6 @@ const popoutGridBtn = document.getElementById("popoutGridBtn");
 const popinGridBtn = document.getElementById("popinGridBtn");
 const gridPlaceholder = document.getElementById("gridPlaceholder");
 const popAudioContainer = document.getElementById("popAudioContainer");
-const scoreboardBtn = document.getElementById("scoreboardBtn");
 const screenAudioCheckbox = document.getElementById("screenAudioCheckbox");
 const screenAudioNote = document.getElementById("screenAudioNote");
 try { screenAudioCheckbox.checked = localStorage.getItem("screenShareAudio") === "1"; } catch (e) {}
@@ -1703,9 +1699,6 @@ aspectPortraitBtn.addEventListener("click", () => onAspectBtnClick("portrait"));
 fullscreenGridBtn.addEventListener("click", toggleGridFullscreen);
 popoutGridBtn.addEventListener("click", popOutGrid);
 popinGridBtn.addEventListener("click", popInGrid);
-scoreboardBtn.addEventListener("click", () => {
-  set(ref(db, `rooms/${ROOM_ID}/scoreboard`), { on: !scoreboardOn });
-});
 
 // ---------- 表示オプション: グリッドスナップ・背景画像・枠画像 ----------
 // 早押しの演出・サイコロの出目を配置エリアに出すか（録画にも同じ条件で描く：drawBuzzerOverlayOnCanvas/drawDiceOverlayOnCanvas）
@@ -2133,7 +2126,6 @@ async function joinRoom(name) {
     serverTimeOffset = snap.val() || 0;
   });
   listenBuzzer();
-  listenScoreboard();
   listenDice();
   listenMemberFrames();
   publishMyFrame();
@@ -3379,7 +3371,6 @@ function computeSlots() {
     stable: `s:${members[id]?.name || id}#${n}`,
     slot: { id, key: screenKey(id, n), kind: "screen", screenNum: n, name: members[id]?.name, sharing: true }
   })));
-  if (scoreboardOn) extras.push({ stable: "scoreboard", slot: { id: SCOREBOARD_KEY, key: SCOREBOARD_KEY, kind: "scoreboard", name: "スコアボード" } });
   changed = assignStickySlots(extras, MAX_PEERS, null, slots) || changed;
   if (changed) saveSlotByName();
   for (let i = 0; i < slots.length; i++) if (slots[i] === undefined) slots[i] = null;
@@ -4201,19 +4192,18 @@ function renderControls(slots) {
   let html = "";
   const frameOff = effectiveFrameSettings().off;
   const frameLocked = followingFrameImage !== undefined;
-  const frameBtn = (s) => s.kind === "scoreboard" ? ""
-    : `<span class="pMoreLabel">枠</span><button class="small ctrlBtn" data-action="frame" data-key="${s.key}"${frameLocked ? " disabled" : ""} title="${frameLocked ? "レイアウト同期中はリーダーの設定に従います" : "このタイルの枠を表示/非表示"}">${frameOff.has(frameTileId(s)) ? "OFF" : "ON"}</button>`;
+  const frameBtn = (s) => `<span class="pMoreLabel">枠</span><button class="small ctrlBtn" data-action="frame" data-key="${s.key}"${frameLocked ? " disabled" : ""} title="${frameLocked ? "レイアウト同期中はリーダーの設定に従います" : "このタイルの枠を表示/非表示"}">${frameOff.has(frameTileId(s)) ? "OFF" : "ON"}</button>`;
   const orderBtns = (s) => `<span class="pMoreLabel">重なり順</span><button class="small ctrlBtn" data-action="front" data-key="${s.key}" title="最前面へ">⬆ 最前面</button><button class="small ctrlBtn" data-action="back" data-key="${s.key}" title="最背面へ">⬇ 最背面</button>`
     + `<span class="pMoreLabel">トリミング</span><button class="small ctrlBtn" data-action="crop" data-key="${s.key}"${layoutInteractionLocked() ? " disabled" : ""} title="配置エリアのこのタイルで、映像の見せる範囲を選びます（配置と一緒に保存・レイアウト同期・録画にも反映）">✂ トリミング</button>`;
   const moreBtn = (s) => `<button class="small ctrlBtn" data-action="more" data-key="${s.key}" title="その他の操作" aria-label="その他の操作">…</button>`;
   const rowCls = (s) => `pRow${openMoreKeys.has(s.key) ? " open" : ""}`;
   for (const s of slots) {
     if (!s) continue;
-    if (s.kind === "screen" || s.kind === "scoreboard") {
+    if (s.kind === "screen") {
       const sa = screenAudioCells(s);
-      const stop = s.kind === "screen" && s.id === myId ? `<button class="small ctrlBtn" data-action="stopShare" data-num="${s.screenNum}" title="この画面の共有を終了">■ 終了</button>` : "";
+      const stop = s.id === myId ? `<button class="small ctrlBtn" data-action="stopShare" data-num="${s.screenNum}" title="この画面の共有を終了">■ 終了</button>` : "";
       html += `<div class="${rowCls(s)}" data-key="${s.key}">
-        <div class="pMain"><span class="pName">${s.kind === "scoreboard" ? "📊 スコアボード" : escapeHtml(screenLabel(s.name, s.screenNum))}</span>${sa.mic === "-" ? "" : sa.mic}${stop}${moreBtn(s)}</div>
+        <div class="pMain"><span class="pName">${escapeHtml(screenLabel(s.name, s.screenNum))}</span>${sa.mic === "-" ? "" : sa.mic}${stop}${moreBtn(s)}</div>
         ${sa.vol === "-" ? "" : `<div class="pVol">聞こえる音量${sa.vol}</div>`}
         <div class="pMore">${frameBtn(s)}${orderBtns(s)}</div>
       </div>`;
@@ -5914,7 +5904,6 @@ function updateBuzzTimer() {
 let buzzInitRequested = false;
 function renderBuzzer() {
   if (!buzzListenersReady.state) return;
-  drawScoreboard();
   const host = isRoomHost();
   if (host && buzzState.phase == null && !buzzInitRequested) { // 部屋で初めて使うときだけ初期化
     buzzInitRequested = true;
@@ -6101,7 +6090,7 @@ function applyBadgeKindPos(badge, kind) {
 }
 // 点数制のバッジ：○の数・×の数だけ（点数は出さない。UC指示 2026-10-21）。0は薄く
 function pointsBadgeHtml(st) {
-  return `<span class="${st.correct ? "maru" : "empty"}">○${st.correct}</span><span class="${st.wrong ? "batsu" : "empty"}">×${st.wrong}</span>`;
+  return `<div><span class="${st.correct ? "maru" : "empty"}">○${st.correct}</span></div><div><span class="${st.wrong ? "batsu" : "empty"}">×${st.wrong}</span></div>`;
 }
 function updateMbBadges() {
   const on = !!buzzConfig.enabled;
@@ -6459,7 +6448,7 @@ function resumeGridVideos() {
 // 別ウィンドウ表示中：タイルの<video>はミュートにし、その音声をメイン画面の<audio>で鳴らす
 function syncPopAudio(videoId) {
   const video = gridEl(videoId);
-  if (!video || !video.srcObject || video.id === `video-${myId}` || video.id === `video-${SCOREBOARD_KEY}`) return;
+  if (!video || !video.srcObject || video.id === `video-${myId}`) return;
   if (parseScreenKey(videoId.replace(/^video-/, ""))?.peerId === myId) return; // 自分の画面の音は鳴らさない（タイルもミュートのまま）
   video.muted = true;
   if (!video.srcObject.getAudioTracks().length) return;
@@ -6478,188 +6467,6 @@ function syncPopAudio(videoId) {
 }
 
 window.addEventListener("beforeunload", () => { if (gridPopupWin && !gridPopupWin.closed) gridPopupWin.close(); });
-
-// ---------- スコアボード（早押しのスコアを配置エリアのタイルとして表示） ----------
-// rooms/{ROOM_ID}/scoreboard: { on }（誰でもON/OFFでき、全員の配置エリアに出る。画面共有と同じ扱い）
-// 各端末がRTDBのスコアからcanvasに描き、canvas.captureStream()を映像タイルとして表示する
-// （既存の映像タイルと同じ仕組みで、移動・サイズ変更・重なり順・レイアウト同期・合成録画にそのまま乗る）。
-const scoreboardCanvas = document.createElement("canvas");
-scoreboardCanvas.width = 1280;
-scoreboardCanvas.height = 720;
-let scoreboardStream = null;
-
-function listenScoreboard() {
-  onValue(ref(db, `rooms/${ROOM_ID}/scoreboard`), (snap) => {
-    scoreboardOn = !!snap.val()?.on;
-    scoreboardBtn.textContent = scoreboardOn ? "📊 スコアボードを消す" : "📊 スコアボード";
-    scoreboardBtn.classList.toggle("active", scoreboardOn);
-    if (scoreboardOn) {
-      if (!scoreboardStream) scoreboardStream = scoreboardCanvas.captureStream();
-      if (!gridEl(`tile-${SCOREBOARD_KEY}`)) {
-        createVideoTile(SCOREBOARD_KEY, "スコアボード", false);
-        const tile = gridEl(`tile-${SCOREBOARD_KEY}`);
-        tile.querySelector(".nameLabel").style.display = "none";
-        tile.querySelector(".statsLine").style.display = "none";
-        const video = gridEl(`video-${SCOREBOARD_KEY}`);
-        video.muted = true;
-        video.srcObject = scoreboardStream;
-        video.play().catch(() => {});
-      }
-      drawScoreboard();
-    } else {
-      removeVideoTile(SCOREBOARD_KEY);
-    }
-    renderGrid();
-    renderControls(computeSlots());
-    if (isLayoutLeader()) publishLeaderLayout();
-  });
-}
-
-function drawScoreboard() {
-  if (!scoreboardOn) return;
-  const ctx = scoreboardCanvas.getContext("2d");
-  const W = scoreboardCanvas.width, H = scoreboardCanvas.height;
-  ctx.fillStyle = "#101820";
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "#ffd54f";
-  ctx.fillRect(0, 0, W, 110);
-  ctx.fillStyle = "#1c1c1c";
-  ctx.textBaseline = "middle";
-  ctx.font = "bold 60px system-ui, sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText("SCORE", 50, 57);
-  ctx.textAlign = "right";
-  ctx.font = "bold 44px system-ui, sans-serif";
-  ctx.fillText(`第${buzzState.question || 1}問`, W - 50, 57);
-
-  // チーム戦ならチーム合計、そうでなければ個人の点数（多い順）。○×制なら○×の数と勝ち抜け・失格
-  const mb = buzzIsMarubatsu();
-  const agg = {};
-  for (const r of Object.values(buzzScores)) {
-    const isTeam = buzzConfig.teamMode && r.team;
-    const key = isTeam ? "t_" + fbKey(r.team) : "p_" + fbKey(r.name);
-    const a = agg[key] = agg[key] || { key, name: isTeam ? r.team : r.name, points: 0, correct: 0, wrong: 0 };
-    a.points += r.points || 0;
-    a.correct += r.correct || 0;
-    a.wrong += r.wrong || 0;
-  }
-  const rows = Object.values(agg).map((a) => ({ ...a, ...buzzJudgeStats(a.points, a.correct, a.wrong) }));
-  if (mb) rows.sort(buzzMbCompare);
-  else rows.sort((a, b) => b.points - a.points);
-  if (!rows.length) {
-    ctx.fillStyle = "#8899aa";
-    ctx.textAlign = "center";
-    ctx.font = "40px system-ui, sans-serif";
-    ctx.fillText("まだ得点はありません", W / 2, (H + 110) / 2);
-  } else {
-    const shown = rows.slice(0, 8);
-    const rowH = Math.min(110, (H - 150) / shown.length); // 人数が少ないときは大きく表示
-    const fontPx = Math.round(rowH * 0.55);
-    // 点数制は「○3 ×1」も出す（UC指示 2026-10-21）。列が揃うよう、全行の最大幅で位置を決める
-    ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
-    const colW = (f) => Math.max(...shown.map((r) => ctx.measureText(f(r)).width));
-    const ptsColW = colW((r) => `${r.points}点`);
-    const batsuColW = colW((r) => `×${r.wrong}`);
-    const batsuRight = W - 60 - ptsColW - 50;
-    const maruRight = batsuRight - batsuColW - 30;
-    const maruColW = colW((r) => `○${r.correct}`);
-    shown.forEach((r, i) => {
-      const y = 140 + rowH * i + rowH / 2;
-      ctx.fillStyle = i % 2 ? "#15202b" : "#1b2733";
-      ctx.fillRect(30, y - rowH / 2 + 4, W - 60, rowH - 8);
-      ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
-      if (mb) {
-        drawScoreboardMbRow(ctx, r, y, rowH, fontPx, W);
-        return;
-      }
-      const rank = i === 0 || r.points !== shown[i - 1].points ? i + 1 : null;
-      ctx.fillStyle = "#ffd54f";
-      ctx.textAlign = "center";
-      if (rank) ctx.fillText(String(rank), 90, y);
-      ctx.fillStyle = "#ffffff";
-      ctx.textAlign = "left";
-      ctx.fillText(fitText(ctx, r.name, Math.max(80, maruRight - maruColW - 40 - 160)), 160, y);
-      ctx.textAlign = "right";
-      ctx.fillStyle = "#8dffb0";
-      ctx.fillText(`${r.points}点`, W - 60, y);
-      // ○の数・×の数（0のときは薄く）
-      ctx.fillStyle = r.correct ? "#ff5252" : "#3a4652";
-      ctx.fillText(`○${r.correct}`, maruRight, y);
-      ctx.fillStyle = r.wrong ? "#4fa3ff" : "#3a4652";
-      ctx.fillText(`×${r.wrong}`, batsuRight, y);
-    });
-  }
-}
-// ○×制の1行：名前（勝ち抜け・失格の札）＋右側に○の列と×の列。目標数があればまだの分を暗い枠で描く
-function drawScoreboardMbRow(ctx, r, y, rowH, fontPx, W) {
-  const markR = Math.min(rowH * 0.26, 22);   // ○×1個の半径
-  const gap = markR * 2.5;
-  const marksW = (target, count) => (Math.max(target > 0 && target <= 10 ? target : 0, Math.min(count, 10)) || 1) * gap;
-  const maruSlots = buzzConfig.maruWin > 0 && buzzConfig.maruWin <= 10 ? buzzConfig.maruWin : 0;
-  const batsuSlots = buzzConfig.batsuOut > 0 && buzzConfig.batsuOut <= 10 ? buzzConfig.batsuOut : 0;
-  const batsuW = marksW(batsuSlots, r.wrong);
-  const maruW = marksW(maruSlots, r.correct);
-  const batsuX = W - 60 - batsuW;
-  const maruX = batsuX - 40 - maruW;
-  // 名前と札
-  ctx.globalAlpha = r.out ? 0.45 : 1;
-  ctx.fillStyle = "#ffffff";
-  ctx.textAlign = "left";
-  const tag = r.won ? "勝ち抜け" : r.out ? "失格" : "";
-  const tagFont = Math.round(fontPx * 0.5);
-  const nameMax = Math.max(80, maruX - 80 - (tag ? tagFont * 5 : 0));
-  const nameText = fitText(ctx, r.name, nameMax);
-  ctx.fillText(nameText, 60, y);
-  if (tag) {
-    const nx = 60 + ctx.measureText(nameText).width + 16;
-    ctx.font = `bold ${tagFont}px system-ui, sans-serif`;
-    const tw = ctx.measureText(tag).width + tagFont;
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = r.won ? "#1e7a3c" : "#7a1e1e";
-    ctx.fillRect(nx, y - tagFont * 0.75, tw, tagFont * 1.5);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(tag, nx + tagFont / 2, y);
-    ctx.globalAlpha = r.out ? 0.45 : 1;
-  }
-  // ○と×の列
-  const drawMarks = (x0, count, slots, kind) => {
-    const n = Math.max(slots, Math.min(count, 10));
-    for (let k = 0; k < n; k++) {
-      const cx = x0 + gap * k + gap / 2;
-      const on = k < count;
-      ctx.strokeStyle = on ? (kind === "maru" ? "#ff5252" : "#4fa3ff") : "#3a4652";
-      ctx.lineWidth = Math.max(4, markR * 0.35);
-      ctx.beginPath();
-      if (kind === "maru") {
-        ctx.arc(cx, y, markR, 0, Math.PI * 2);
-      } else {
-        ctx.moveTo(cx - markR, y - markR); ctx.lineTo(cx + markR, y + markR);
-        ctx.moveTo(cx + markR, y - markR); ctx.lineTo(cx - markR, y + markR);
-      }
-      ctx.stroke();
-    }
-    if (count > 10 || (slots && count > slots)) { // 枠に収まらない分は数字で
-      ctx.fillStyle = kind === "maru" ? "#ff5252" : "#4fa3ff";
-      ctx.textAlign = "right";
-      ctx.font = `bold ${Math.round(fontPx * 0.55)}px system-ui, sans-serif`;
-      ctx.fillText(String(count), x0 - 6, y);
-    }
-    if (!n) {
-      ctx.fillStyle = "#3a4652";
-      ctx.textAlign = "center";
-      ctx.fillText("-", x0 + gap / 2, y);
-    }
-  };
-  drawMarks(maruX, r.correct, maruSlots, "maru");
-  drawMarks(batsuX, r.wrong, batsuSlots, "batsu");
-  ctx.globalAlpha = 1;
-}
-function fitText(ctx, text, maxW) {
-  if (ctx.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
-  return t + "…";
-}
 
 // ---------- 結果コピー ----------
 // ---------- サイコロ（オプション機能） ----------
