@@ -32,7 +32,7 @@ rooms/{ROOM_ID}/layoutSync/followers/{peerId}: "accepted" | "rejected"
 rooms/{ROOM_ID}/layoutBg/{leaderId}: { dataUrl|null, updatedAt }   // リーダーの背景画像（JPEG・最大1920×1080に縮小）
 rooms/{ROOM_ID}/layouts/{leaderId}: { tiles: { [peerIdまたは`${peerId}-screen`]: {left,top,width,z}(0〜1の相対値) }, updatedAt }
 rooms/{ROOM_ID}/memberFrames/{peerId}: { dataUrl, updatedAt }   // 各自の「自分の枠」（PNG・最大1920×1080）
-rooms/{ROOM_ID}/scoreboard: { on }   // スコアボードタイルを全員に表示するか（誰でもON/OFF可）
+rooms/{ROOM_ID}/scoreboard: { on }   // （廃止 2026-10-22。読まない）
 rooms/{ROOM_ID}/dice/config: { enabled }   // サイコロ機能を使うか（誰でもON/OFF可）
 rooms/{ROOM_ID}/dice/log/{pushId}: { name, n, m, values: [...], total, at }
 rooms/{ROOM_ID}/buzzer/host: { name, at }
@@ -109,7 +109,7 @@ UC要望（2026-10-15）。ボタンの置き場所（右パネル「配置」�
 - **ガイドライン**（`applyGuides`、`#guideLayer`のSVG、viewBox 0〜100・`non-scaling-stroke`）：外周の余白線（端から○%、既定5%・ON、`guideMargin`/`guideMarginPct`）、中央の十字線（既定ON、`guideCenter`）、三分割線（既定OFF、`guideThirds`）。**スマートガイド**（既定ON、`smartGuides`）：ドラッグ中、動かしている範囲の左端・中央・右端（上下も）が、他のタイルの端・中央／配置エリアの端・中央／表示中の余白線・三分割線から6px以内なら吸い付き、赤い線（`#smartGuideLayer`）を出す。Alt押しながらで無効。マス目スナップより優先。
 - 選択の枠・ガイド線は画面だけ：合成録画はタイルの映像しか描かないので映らない（録画フレームで確認済み）。別ウィンドウ（配信用）では`#videoGrid.popped`で隠す。
 
-## タイルのトリミング（カメラ・画面共有・スコアボード）
+## タイルのトリミング（カメラ・画面共有）
 UC要望（2026-10-11）。参加者タブの各行の「…」→「✂ トリミング」で、配置エリアのそのタイルが編集モードになる（`startTileCrop`）。
 - 編集中はタイルを映像全体の大きさに広げ（切り抜いていた部分は今と同じ位置・大きさのまま）、黄色の点線の枠（ドラッグで移動、四隅と辺の■でサイズ変更）で見せる範囲を選ぶ。「✔ 完了」（Enter）／「全体に戻す」／「やめる」（Esc）。完了すると選んだ範囲がその場所・大きさのままタイルになる。
 - **送る映像そのものは切らない**（自分のカメラのズーム`camZoom`とは別物）。表示側でvideoをタイルより大きく置き、タイルの`overflow: hidden`で隠す（`applyTileCrop`、`.tile.cropped`。タイルの`aspect-ratio`を切り抜いた範囲の比率にし、`dataset.cropAspect`はリサイズの下はみ出し制限にも使う）。比率は映像の元の解像度から計算するので、`loadedmetadata`/`resize`でかけ直す。
