@@ -150,6 +150,9 @@
     cursor: move; pointer-events: auto; touch-action: none; user-select: none;
   }
   .tile .mbBadge.show, .tile .diceBadge.show { display: block; }
+  /* 点数制のときは「○3 ×1」の1行で右下に出す（UC指示 2026-10-21） */
+  .tile .mbBadge.pointsMode { top: auto; bottom: 4%; }
+  .tile .mbBadge.pointsMode .batsu { margin-left: 0.4em; }
   .tile .mbBadge.dragging, .tile .diceBadge.dragging { outline: 2px dashed #ffd54f; }
   .tile .mbBadge .maru { color: #ff5252; }
   .tile .mbBadge .batsu { color: #4fa3ff; }
@@ -753,7 +756,7 @@
             <h3>配置エリアに出すもの（この端末だけ）</h3>
             <label class="switchRow">早押しの演出<input type="checkbox" id="buzzFxToggle" checked></label>
             <label class="switchRow">サイコロの演出<input type="checkbox" id="diceFxToggle" checked></label>
-            <label class="switchRow" title="早押しが○×制のとき、各自のカメラの右上にその人の○×を出します。ドラッグで位置を動かせます（ダブルクリックで右上に戻す）">○×をカメラに<input type="checkbox" id="mbBadgeToggle" checked></label>
+            <label class="switchRow" title="早押し中、各自のカメラにその人の○×を出します（○×制は右上に○×の印、点数制は右下に「○3 ×1」）。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）">○×をカメラに<input type="checkbox" id="mbBadgeToggle" checked></label>
             <label class="switchRow" title="サイコロを使っている間、各自のカメラの右上にその人が最後に振った結果（1個なら出目、2個以上なら合計）を出します（○×が出ているときはその下）。ドラッグで位置を動かせます（ダブルクリックで元の位置に戻す）">出目をカメラに<input type="checkbox" id="diceBadgeToggle" checked></label>
           </div>
         </section>
@@ -6083,10 +6086,11 @@ function applyTileBadgePos(badge, pos) {
   if (badge.classList.contains("dragging")) return;
   if (pos) {
     badge.style.top = (pos.y * 100) + "%";
+    badge.style.bottom = "auto";
     badge.style.left = pos.ax === "l" ? (pos.x * 100) + "%" : "auto";
     badge.style.right = pos.ax === "l" ? "auto" : (pos.x * 100) + "%";
   } else {
-    badge.style.top = badge.style.left = badge.style.right = "";
+    badge.style.top = badge.style.bottom = badge.style.left = badge.style.right = "";
   }
 }
 // 種類ごとの位置の持ち方（自分の保存先・追従中にリーダーから受け取る項目・保存）
@@ -6095,8 +6099,13 @@ function applyBadgeKindPos(badge, kind) {
   const map = followingLayout && !isLayoutLeader() ? (followingLayout[kind.syncField] || {}) : kind.posMap();
   applyTileBadgePos(badge, map[fbKey(badge.dataset.name)]);
 }
+// 点数制のバッジ：○の数・×の数だけ（点数は出さない。UC指示 2026-10-21）。0は薄く
+function pointsBadgeHtml(st) {
+  return `<span class="${st.correct ? "maru" : "empty"}">○${st.correct}</span><span class="${st.wrong ? "batsu" : "empty"}">×${st.wrong}</span>`;
+}
 function updateMbBadges() {
-  const on = !!buzzConfig.enabled && buzzIsMarubatsu();
+  const on = !!buzzConfig.enabled;
+  const mb = buzzIsMarubatsu();
   videoGrid.querySelectorAll(".tile").forEach((tile) => {
     const id = tile.id.slice(5); // "tile-"の後ろ
     const member = members[id];
@@ -6106,12 +6115,14 @@ function updateMbBadges() {
     if (!badge) {
       badge = tile.ownerDocument.createElement("div");
       badge.className = "mbBadge";
-      badge.title = "ドラッグで移動（ダブルクリックで右上に戻す）";
       tile.appendChild(badge);
       makeTileBadgeDraggable(badge, tile, mbBadgeKind);
     }
+    badge.classList.toggle("pointsMode", !mb);
+    badge.title = `ドラッグで移動（ダブルクリックで${mb ? "右上" : "右下"}に戻す）`;
     badge.dataset.name = member.name;
-    const html = mbBadgeHtml(buzzEntityStats(buzzEntityOf(id)));
+    const st = buzzEntityStats(buzzEntityOf(id));
+    const html = mb ? mbBadgeHtml(st) : pointsBadgeHtml(st);
     if (badge.innerHTML !== html) badge.innerHTML = html;
     badge.classList.add("show");
     applyBadgeKindPos(badge, mbBadgeKind);
@@ -6137,6 +6148,7 @@ function makeTileBadgeDraggable(badge, tile, kind) {
     const ax = left + bw / 2 < tr.width / 2 ? "l" : "r";
     drag.pos = { ax, x: (ax === "l" ? left : tr.width - left - bw) / tr.width, y: top / tr.height };
     badge.style.top = (drag.pos.y * 100) + "%";
+    badge.style.bottom = "auto"; // 右下が既定のバッジ（点数制）も上からの位置で持つ
     badge.style.left = ax === "l" ? (drag.pos.x * 100) + "%" : "auto";
     badge.style.right = ax === "l" ? "auto" : (drag.pos.x * 100) + "%";
   });
