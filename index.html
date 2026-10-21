@@ -6543,6 +6543,14 @@ function drawScoreboard() {
     const shown = rows.slice(0, 8);
     const rowH = Math.min(110, (H - 150) / shown.length); // 人数が少ないときは大きく表示
     const fontPx = Math.round(rowH * 0.55);
+    // 点数制は「○3 ×1」も出す（UC指示 2026-10-21）。列が揃うよう、全行の最大幅で位置を決める
+    ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+    const colW = (f) => Math.max(...shown.map((r) => ctx.measureText(f(r)).width));
+    const ptsColW = colW((r) => `${r.points}点`);
+    const batsuColW = colW((r) => `×${r.wrong}`);
+    const batsuRight = W - 60 - ptsColW - 50;
+    const maruRight = batsuRight - batsuColW - 30;
+    const maruColW = colW((r) => `○${r.correct}`);
     shown.forEach((r, i) => {
       const y = 140 + rowH * i + rowH / 2;
       ctx.fillStyle = i % 2 ? "#15202b" : "#1b2733";
@@ -6558,10 +6566,15 @@ function drawScoreboard() {
       if (rank) ctx.fillText(String(rank), 90, y);
       ctx.fillStyle = "#ffffff";
       ctx.textAlign = "left";
-      ctx.fillText(fitText(ctx, r.name, W - 520), 160, y);
+      ctx.fillText(fitText(ctx, r.name, Math.max(80, maruRight - maruColW - 40 - 160)), 160, y);
       ctx.textAlign = "right";
       ctx.fillStyle = "#8dffb0";
       ctx.fillText(`${r.points}点`, W - 60, y);
+      // ○の数・×の数（0のときは薄く）
+      ctx.fillStyle = r.correct ? "#ff5252" : "#3a4652";
+      ctx.fillText(`○${r.correct}`, maruRight, y);
+      ctx.fillStyle = r.wrong ? "#4fa3ff" : "#3a4652";
+      ctx.fillText(`×${r.wrong}`, batsuRight, y);
     });
   }
 }
