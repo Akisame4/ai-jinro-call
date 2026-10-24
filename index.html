@@ -4155,6 +4155,7 @@ function peerAudioEl(id) {
 function applyPeerMute(id) {
   const el = peerAudioEl(id);
   if (el) el.muted = globalMuted || locallyMutedPeers.has(id);
+  applyPeerVolume(id);
 }
 
 // 聞こえる音量の保存キー（名前）。画面の音は「名前（画面共有n）」で人の声とは別に持つ
@@ -4167,10 +4168,43 @@ function getPeerVolume(id) {
   const v = peerVolumes[volumeNameOf(id)];
   return typeof v === "number" ? v : 100;
 }
+// 聞こえる音量は0〜200%。<video>.volumeは1（100%）が上限なので、100%を超えるときは要素の音を0にして
+// 同じ音声をWeb Audioのゲイン（＋割れないようにリミッター）で増幅して鳴らす。録画の音（audioDest）には影響しない
+const PEER_VOLUME_MAX = 200;
+const peerBoosts = new Map(); // id -> { stream, src, gain }
+function stopPeerBoost(id) {
+  const b = peerBoosts.get(id);
+  if (!b) return;
+  try { b.src.disconnect(); b.gain.disconnect(); } catch (e) {}
+  peerBoosts.delete(id);
+}
 function applyPeerVolume(id) {
   if (id === myId) return;
   const el = peerAudioEl(id);
-  if (el) el.volume = Math.max(0, Math.min(1, getPeerVolume(id) / 100));
+  const v = Math.max(0, Math.min(PEER_VOLUME_MAX, getPeerVolume(id)));
+  const stream = el?.srcObject;
+  if (!el || v <= 100 || !stream?.getAudioTracks?.().length) {
+    stopPeerBoost(id);
+    if (el) el.volume = Math.min(1, v / 100);
+    return;
+  }
+  ensureAudioGraph();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  let b = peerBoosts.get(id);
+  if (b && b.stream !== stream) { stopPeerBoost(id); b = null; }
+  if (!b) {
+    try {
+      const src = audioCtx.createMediaStreamSource(stream);
+      const gain = audioCtx.createGain();
+      const limiter = audioCtx.createDynamicsCompressor();
+      limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.003; limiter.release.value = 0.15;
+      src.connect(gain).connect(limiter).connect(audioCtx.destination);
+      b = { stream, src, gain };
+      peerBoosts.set(id, b);
+    } catch (e) { console.warn("volume boost failed", e); el.volume = 1; return; }
+  }
+  el.volume = 0; // 要素は再生したまま（止めると受信音声が流れなくなるブラウザがある）
+  b.gain.gain.value = el.muted ? 0 : v / 100;
 }
 
 function updateStatsDisplay(peerId, s) {
@@ -4231,7 +4265,7 @@ function renderControls(slots) {
         <button class="small ctrlBtn" data-action="cam" data-id="${s.id}" title="${isSelf ? "自分のカメラ" : "この端末でだけ、この人の映像を隠す"}">${camOn ? "📷 オフ" : "📷 オン"}</button>
         ${moreBtn(s)}
       </div>
-      ${isSelf ? "" : `<div class="pVol">聞こえる音量<input type="range" class="volSlider" min="0" max="100" step="5" value="${getPeerVolume(s.id)}" data-id="${s.id}" title="この端末で聞こえる${escapeHtml(s.name)}さんの音量"><span class="volLabel">${getPeerVolume(s.id)}%</span></div>`}
+      ${isSelf ? "" : `<div class="pVol">聞こえる音量<input type="range" class="volSlider" min="0" max="200" step="5" value="${getPeerVolume(s.id)}" data-id="${s.id}" title="この端末で聞こえる${escapeHtml(s.name)}さんの音量"><span class="volLabel">${getPeerVolume(s.id)}%</span></div>`}
       <div class="pMore">${frameBtn(s)}${orderBtns(s)}${camExtra}</div>
     </div>`;
   }
@@ -4252,7 +4286,7 @@ function screenAudioCells(s) {
   const vol = getPeerVolume(s.key);
   return {
     mic: `<button class="small ctrlBtn" data-action="mic" data-id="${s.key}" title="この端末でだけ、この画面の音を消す">${locallyMutedPeers.has(s.key) ? "🔇 解除" : "🔊 ミュート"}</button>`,
-    vol: `<input type="range" class="volSlider" min="0" max="100" step="5" value="${vol}" data-id="${s.key}" title="この端末で聞こえる${label}の音量"><span class="volLabel">${vol}%</span>`
+    vol: `<input type="range" class="volSlider" min="0" max="200" step="5" value="${vol}" data-id="${s.key}" title="この端末で聞こえる${label}の音量"><span class="volLabel">${vol}%</span>`
   };
 }
 
@@ -4552,6 +4586,7 @@ function connectAudioSource(id, stream) {
   } catch (e) { console.warn("audio graph connect failed", e); }
 }
 function disconnectAudioSource(id) {
+  stopPeerBoost(id);
   const src = audioSourceNodes.get(id);
   if (src) { try { src.disconnect(); } catch (e) {} audioSourceNodes.delete(id); }
 }
