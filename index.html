@@ -152,6 +152,11 @@
   .tile .mbBadge.show, .tile .diceBadge.show { display: block; }
   /* 点数制のときは「○3 ×1」の1行で右下に出す（UC指示 2026-10-21） */
   .tile .mbBadge.pointsMode { top: auto; bottom: 4%; font-size: clamp(18px, 8.4cqw, 112px); text-align: left; } /* 縦積み・○×制の約2倍（UC指示 2026-10-22） */
+  /* 点数制の○×は文字ではなく図形で描く（フォントだと○が×よりずっと大きく見えるため。UC指示 2026-10-24）。録画にも同じ形で描く */
+  .tile .mbBadge .pbIcon { display: inline-block; position: relative; width: 0.62em; height: 0.62em; margin-right: 0.12em; vertical-align: 0.02em; box-sizing: border-box; }
+  .tile .mbBadge .pbIcon.pbO { border: 0.1em solid currentColor; border-radius: 50%; }
+  .tile .mbBadge .pbIcon.pbX::before, .tile .mbBadge .pbIcon.pbX::after { content: ""; position: absolute; left: 50%; top: 50%; width: 0.82em; height: 0.1em; margin: -0.05em 0 0 -0.41em; background: currentColor; border-radius: 0.05em; transform: rotate(45deg); }
+  .tile .mbBadge .pbIcon.pbX::after { transform: rotate(-45deg); }
   .tile .mbBadge.dragging, .tile .diceBadge.dragging { outline: 2px dashed #ffd54f; }
   .tile .mbBadge .maru { color: #ff5252; }
   .tile .mbBadge .batsu { color: #4fa3ff; }
@@ -6090,7 +6095,8 @@ function applyBadgeKindPos(badge, kind) {
 }
 // 点数制のバッジ：○の数・×の数だけ（点数は出さない。UC指示 2026-10-21）。0は薄く
 function pointsBadgeHtml(st) {
-  return `<div><span class="${st.correct ? "maru" : "empty"}">○${st.correct}</span></div><div><span class="${st.wrong ? "batsu" : "empty"}">×${st.wrong}</span></div>`;
+  const row = (n, shape, cls) => `<div><span class="pbIcon pb${shape.toUpperCase()} ${n ? cls : "empty"}" data-shape="${shape}"></span><span class="${n ? cls : "empty"}">${n}</span></div>`;
+  return row(st.correct, "o", "maru") + row(st.wrong, "x", "batsu");
 }
 function updateMbBadges() {
   const on = !!buzzConfig.enabled;
@@ -6190,6 +6196,20 @@ function drawTileBadgeOnCanvas(ctx, tile, selector, hideClass, gridRect, scaleX,
       const sRad = parseFloat(ss.borderTopLeftRadius) * scaleY || 0;
       if (ctx.roundRect) ctx.roundRect(x, y, sr.width * scaleX, sr.height * scaleY, sRad); else ctx.rect(x, y, sr.width * scaleX, sr.height * scaleY);
       ctx.fill();
+    }
+    if (sp.dataset.shape) { // 点数制の○×（図形）
+      // 縦位置は隣の数字（textBaseline=middle で描く）の中心に合わせる
+      const nr = sp.nextElementSibling?.getBoundingClientRect() || sr;
+      const w = sr.width * scaleX, fs = parseFloat(ss.fontSize) * scaleY;
+      const cy = (nr.top - gridRect.top) * scaleY + nr.height * scaleY / 2;
+      ctx.strokeStyle = ss.color;
+      ctx.lineWidth = fs * 0.1;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      if (sp.dataset.shape === "o") ctx.arc(x + w / 2, cy, (w - ctx.lineWidth) / 2, 0, Math.PI * 2);
+      else { const d = fs * 0.82 / 2 / Math.SQRT2 - ctx.lineWidth / 2; ctx.moveTo(x + w / 2 - d, cy - d); ctx.lineTo(x + w / 2 + d, cy + d); ctx.moveTo(x + w / 2 + d, cy - d); ctx.lineTo(x + w / 2 - d, cy + d); }
+      ctx.stroke();
+      return;
     }
     ctx.font = `bold ${parseFloat(ss.fontSize) * scaleY}px system-ui, sans-serif`;
     ctx.fillStyle = ss.color;
