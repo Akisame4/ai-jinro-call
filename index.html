@@ -175,6 +175,17 @@
   }
   .tile.screenTile video { object-fit: contain; } /* 縦横比は共有元に合わせてJSで設定（applyScreenAspect） */
   .tile video.videoHidden { visibility: hidden; }
+  /* 画面共有への書き込み（全員で書ける透明な板）。位置・大きさは映像に合わせてJSで設定（wbSyncCanvas） */
+  .tile .wbCanvas { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; }
+  #videoGrid.wbPen .tile.screenTile .wbCanvas { pointer-events: auto; cursor: crosshair; touch-action: none; }
+  #videoGrid.wbPen.wbEraser .tile.screenTile .wbCanvas { cursor: cell; }
+  #wbToolbar { display: none; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+  #wbToolbar.on { display: flex; }
+  #wbToolbar .wbLbl { color: #ffe2a3; font-weight: bold; }
+  #wbToolbar .wbColor { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid #555; }
+  #wbToolbar .wbColor.active { border-color: #fff; box-shadow: 0 0 0 2px #ffb300; }
+  #wbToolbar .wbSep { width: 1px; height: 20px; background: #444; }
+  #stageArea.wbPenOn .stageHint { display: none; }
   .tile .statsLine {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
     padding: 2px 6px; font-size: 11px; color: #9ad0ff; background: rgba(0,0,0,0.45);
@@ -570,6 +581,18 @@
       <div id="gridPlaceholder">配置エリアは別ウィンドウで表示中です <button class="small" id="popinGridBtn">元に戻す</button></div>
       <div id="popAudioContainer"></div>
       <div id="videoGrid"><div id="gridLinesOverlay"></div><div id="guideLayer"></div><div id="smartGuideLayer"></div><div id="selMarquee"></div><div id="buzzCutin"><span></span></div><div id="buzzJudgeMark"></div><div id="diceOverlay"></div></div>
+      <div id="wbToolbar">
+        <span class="wbLbl">✏ 画面共有に書き込み中</span>
+        <span id="wbColors"></span>
+        <span class="wbSep"></span>
+        <button class="small wbSize" data-w="thin" title="細い線">細</button><button class="small wbSize" data-w="mid" title="ふつうの線">中</button><button class="small wbSize" data-w="thick" title="太い線">太</button>
+        <span class="wbSep"></span>
+        <button class="small" id="wbEraserBtn" title="なぞった線を消します（誰が書いた線でも消せます）">🧽 消しゴム</button>
+        <button class="small" id="wbUndoBtn" title="自分が最後に書いた線を消します（Ctrl＋Z）">↶ 1つ戻す</button>
+        <button class="small" id="wbClearMineBtn" title="自分が書いた線をすべて消します">自分の分を消す</button>
+        <button class="small" id="wbClearAllBtn" title="全員の書き込みをすべて消します（2回押し）">全部消す</button>
+        <button class="small" id="wbDoneBtn" title="書き込みをやめて、タイルの移動に戻ります（Esc）">✔ 終わる</button>
+      </div>
       <div class="stageHint">タイルはドラッグで移動・右下の■でサイズ変更（この端末のみに保存）。Ctrl＋クリック・囲んで複数選択。整列・ガイドライン・マス目は「配置」タブ、背景と枠は「背景・枠」タブ</div>
     </main>
 
@@ -824,6 +847,7 @@
     <span class="splitBtn">
       <button id="shareBtn">🖥 画面共有</button><button id="shareOptBtn" class="popToggle" data-pop="sharePopover" title="画面共有の設定（画質・画面の音）" aria-label="画面共有の設定">▴</button>
     </span>
+    <button id="wbBtn" title="画面共有の映像の上に書き込みます（全員が書けて、全員に見え、レイアウト全体の録画にも入ります）">✏ 書き込み</button>
     <button id="muteBtn" title="この端末で、相手の声・画面の音をすべて消します">🔊 全体ミュート</button>
     <span class="spacer"></span>
     <span id="barRecTargets" title="チェックしたものを同時に録画し、それぞれ別のファイルとして保存します">
@@ -2132,6 +2156,8 @@ async function joinRoom(name) {
   });
   listenBuzzer();
   listenDice();
+  listenWhiteboard();
+  pruneWhiteboard();
   listenMemberFrames();
   publishMyFrame();
 }
@@ -2854,6 +2880,7 @@ async function addScreenShare() {
   applyScreenQualityToTrack(stream);
 
   const key = screenKey(myId, n);
+  remove(wbRef(key)); // 書き込みは共有ごとにまっさらから
   createVideoTile(key, screenLabel(myName, n), false);
   const selfScreenVideo = gridEl(`video-${key}`);
   if (selfScreenVideo) {
@@ -2876,6 +2903,7 @@ function stopScreenShare(n) {
   myScreens.delete(n);
   for (const entry of Object.values(peers)) removeScreenTrackFromPeer(entry, n);
   disconnectAudioSource(screenKey(myId, n));
+  remove(wbRef(screenKey(myId, n))); // 共有をやめたらその画面への書き込みも消す
   stream.getTracks().forEach((t) => t.stop());
   removeVideoTile(screenKey(myId, n));
   publishMyScreens();
@@ -3833,6 +3861,11 @@ let lastNudgeUndoAt = 0;
 function onLayoutKey(e) {
   const el = e.target;
   if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+  if (wbPenOn) { // 書き込み中：Ctrl+Zは自分の線を1つ戻す、Escで書き込みをやめる（タイルの操作はしない）
+    if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); wbUndo(); }
+    else if (e.key === "Escape") setWbPen(false);
+    return;
+  }
   if (layoutInteractionLocked() || videoGrid.querySelector(".cropEditing")) return;
   const ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undoLayout(); return; }
@@ -3922,6 +3955,7 @@ function createVideoTile(peerId, name, isSelf) {
     // 共有元の解像度が分かった時・変わった時（ウィンドウのサイズ変更など）にタイルの縦横比を合わせる
     video.addEventListener("loadedmetadata", () => applyScreenAspect(tile, video));
     video.addEventListener("resize", () => applyScreenAspect(tile, video));
+    wbAttachToTile(tile); // 全員で書き込める透明な板
   }
   renderGrid(); // ○×のバッジもここで付く（updateMbBadges）
 }
@@ -4634,9 +4668,11 @@ function drawRecordFrame() {
       ctx.rect((tr.left - gridRect.left) * scaleX, (tr.top - gridRect.top) * scaleY, tr.width * scaleX, tr.height * scaleY);
       ctx.clip();
       ctx.drawImage(video, vx, vy, vw, vh);
+      if (tile.classList.contains("screenTile")) drawWhiteboardOnCanvas(ctx, tile, { x: vx, y: vy, w: vw, h: vh });
       ctx.restore();
     } else {
       ctx.drawImage(video, vx, vy, vw, vh);
+      if (tile.classList.contains("screenTile")) drawWhiteboardOnCanvas(ctx, tile, { x: vx, y: vy, w: vw, h: vh });
     }
 
     const overlay = drawFrames && !tile.classList.contains("frameOff") && tile.querySelector(".frameOverlay.hasImage");
@@ -7146,6 +7182,314 @@ function copyResults() {
     setTimeout(() => (copyToast.style.display = "none"), 2000);
   });
 }
+
+// ---------- 画面共有への書き込み（全員で書けるホワイトボード。UC要望 2026-11-17） ----------
+// 画面共有タイルの映像の上に透明な板（.wbCanvas）を重ね、全員が書き込める。線は映像の中の位置（0〜1）で持つので、
+// タイルの大きさ・トリミング・別ウィンドウが違っても同じ場所に出る。レイアウト全体の録画にも描く（drawRecordFrame）。
+// RTDB: rooms/{ROOM_ID}/whiteboard/{画面共有タイルのキー}/{線のpushId}: { by, c(色), w(太さ＝映像の幅に対する割合), p("x y x y …" 0〜10000の整数) }
+const WB_COLORS = ["#ff3b30", "#ffcc00", "#34c759", "#0a84ff", "#ffffff", "#111111"];
+const WB_WIDTHS = { thin: 0.0035, mid: 0.007, thick: 0.014 };
+const WB_ERASER_R = 0.018; // 消しゴムの半径（映像の幅に対する割合）
+const WB_SEND_MS = 80;     // 書いている途中の線を送る間隔
+let wbPenOn = false, wbEraser = false;
+let wbColor = (() => { try { return localStorage.getItem("wbColor"); } catch (e) { return null; } })();
+if (!WB_COLORS.includes(wbColor)) wbColor = WB_COLORS[0];
+let wbWidthKey = (() => { try { return localStorage.getItem("wbWidth"); } catch (e) { return null; } })();
+if (!WB_WIDTHS[wbWidthKey]) wbWidthKey = "mid";
+let wbBoards = {};          // 板のキー -> { 線のid -> { by, c, w, pts: [[x,y],...], raw } }
+const wbDrawing = new Map(); // 自分が書いている途中の線 id -> { board, stroke }
+const wbMine = [];           // 自分が書いた線（1つ戻す用）{ board, id }
+const wbDirty = new Set();   // 描き直しが要る板
+
+function wbRef(path) { return ref(db, `rooms/${ROOM_ID}/whiteboard${path ? "/" + path : ""}`); }
+function wbEncode(pts) { return pts.map(([x, y]) => Math.round(x * 10000) + " " + Math.round(y * 10000)).join(" "); }
+function wbDecode(str) {
+  const a = String(str || "").split(" ").map(Number), pts = [];
+  for (let i = 0; i + 1 < a.length; i += 2) if (isFinite(a[i]) && isFinite(a[i + 1])) pts.push([a[i] / 10000, a[i + 1] / 10000]);
+  return pts;
+}
+
+function listenWhiteboard() {
+  onValue(wbRef(), (snap) => {
+    const val = snap.val() || {};
+    const next = {};
+    for (const [board, strokes] of Object.entries(val)) {
+      if (!strokes || typeof strokes !== "object") continue;
+      const prev = wbBoards[board] || {};
+      next[board] = {};
+      for (const [id, s] of Object.entries(strokes)) {
+        if (!s || !s.p) continue;
+        const old = prev[id];
+        next[board][id] = old && old.raw === s.p && old.c === s.c && old.w === s.w ? old
+          : { by: s.by, c: s.c || "#ff3b30", w: +s.w || WB_WIDTHS.mid, pts: wbDecode(s.p), raw: s.p };
+      }
+    }
+    // 書いている途中の自分の線は、手元の最新を優先する（送信が追いついていない分を消さない）
+    for (const [id, d] of wbDrawing) (next[d.board] ||= {})[id] = d.stroke;
+    for (const k of new Set([...Object.keys(wbBoards), ...Object.keys(next)])) wbDirty.add(k);
+    wbBoards = next;
+    wbRedrawDirty();
+  });
+}
+
+// 入室時：今いない人の画面共有に残っていた書き込みを片付ける（前回の撮影の残り）
+async function pruneWhiteboard() {
+  try {
+    const [mSnap, wSnap] = await Promise.all([get(ref(db, `rooms/${ROOM_ID}/members`)), get(wbRef())]);
+    const present = mSnap.val() || {};
+    const updates = {};
+    for (const board of Object.keys(wSnap.val() || {})) {
+      const sk = parseScreenKey(board);
+      if (!sk || !present[sk.peerId]) updates[board] = null;
+    }
+    if (Object.keys(updates).length) await update(wbRef(), updates);
+  } catch (e) { console.warn("[wb] prune", e); }
+}
+
+// 映像の中身（object-fit: contain）が、幅bw・高さbhの箱のどこに映っているか
+function wbContentRect(video, bw, bh) {
+  const vw = video?.videoWidth, vh = video?.videoHeight;
+  if (!vw || !vh) return { x: 0, y: 0, w: bw, h: bh };
+  const sc = Math.min(bw / vw, bh / vh);
+  const w = vw * sc, h = vh * sc;
+  return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
+}
+
+function wbDrawStrokes(ctx, strokes, r) {
+  if (!strokes) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const id of Object.keys(strokes).sort()) {
+    const s = strokes[id], pts = s.pts;
+    if (!pts.length) continue;
+    const X = (p) => r.x + p[0] * r.w, Y = (p) => r.y + p[1] * r.h;
+    const lw = Math.max(1, s.w * r.w);
+    ctx.strokeStyle = ctx.fillStyle = s.c;
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(X(pts[0]), Y(pts[0]), lw / 2, 0, Math.PI * 2);
+      ctx.fill();
+      continue;
+    }
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.moveTo(X(pts[0]), Y(pts[0]));
+    // 点と点の中間を通る2次曲線でなめらかにする
+    for (let i = 1; i < pts.length - 1; i++) {
+      ctx.quadraticCurveTo(X(pts[i]), Y(pts[i]), (X(pts[i]) + X(pts[i + 1])) / 2, (Y(pts[i]) + Y(pts[i + 1])) / 2);
+    }
+    ctx.lineTo(X(pts[pts.length - 1]), Y(pts[pts.length - 1]));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// 板（canvas）を映像の位置・大きさに合わせる。変わったら描き直す
+function wbSyncCanvas(tile) {
+  const canvas = tile.querySelector(".wbCanvas"), video = tile.querySelector("video");
+  if (!canvas || !video) return;
+  const dpr = tile.ownerDocument.defaultView.devicePixelRatio || 1;
+  const cw = video.offsetWidth, ch = video.offsetHeight;
+  const sig = [video.offsetLeft, video.offsetTop, cw, ch, dpr, video.videoWidth, video.videoHeight].join(",");
+  if (canvas._sig === sig) return;
+  canvas._sig = sig;
+  canvas.style.left = video.offsetLeft + "px";
+  canvas.style.top = video.offsetTop + "px";
+  canvas.style.width = cw + "px";
+  canvas.style.height = ch + "px";
+  canvas.width = Math.max(1, Math.round(cw * dpr));
+  canvas.height = Math.max(1, Math.round(ch * dpr));
+  wbDirty.add(tile.id.slice(5));
+}
+
+function wbRedrawBoard(board) {
+  const tile = gridEl(`tile-${board}`);
+  const canvas = tile?.querySelector(".wbCanvas");
+  if (!canvas) return;
+  wbSyncCanvas(tile);
+  const video = tile.querySelector("video");
+  const cw = video.offsetWidth, ch = video.offsetHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!cw || !ch) return;
+  ctx.setTransform(canvas.width / cw, 0, 0, canvas.height / ch, 0, 0);
+  wbDrawStrokes(ctx, wbBoards[board], wbContentRect(video, cw, ch));
+}
+function wbRedrawDirty() {
+  for (const b of wbDirty) wbRedrawBoard(b);
+  wbDirty.clear();
+}
+// タイルの移動・リサイズ・トリミング・別ウィンドウなどで映像の大きさが変わったら板を合わせる
+setInterval(() => {
+  if (!inCall) return;
+  videoGrid.querySelectorAll(".tile.screenTile").forEach(wbSyncCanvas);
+  wbRedrawDirty();
+}, 200);
+
+// 録画：画面共有タイルの映像を描いた直後に、同じ範囲へ線を描く（boxは録画キャンバス上の映像の箱）
+function drawWhiteboardOnCanvas(ctx, tile, box) {
+  const strokes = wbBoards[tile.id.slice(5)];
+  if (!strokes || !Object.keys(strokes).length) return;
+  const video = tile.querySelector("video");
+  const cr = wbContentRect(video, box.w, box.h);
+  wbDrawStrokes(ctx, strokes, { x: box.x + cr.x, y: box.y + cr.y, w: cr.w, h: cr.h });
+}
+
+function wbAttachToTile(tile) {
+  const canvas = tile.ownerDocument.createElement("canvas");
+  canvas.className = "wbCanvas";
+  tile.insertBefore(canvas, tile.querySelector(".frameOverlay"));
+  const board = tile.id.slice(5);
+  let cur = null; // 書いている途中 { id, stroke, lastSent, timer } または消しゴム中 { erasing: true }
+  const toNorm = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const video = tile.querySelector("video");
+    const cr = wbContentRect(video, rect.width, rect.height);
+    return [Math.min(1, Math.max(0, (e.clientX - rect.left - cr.x) / cr.w)), Math.min(1, Math.max(0, (e.clientY - rect.top - cr.y) / cr.h)), cr];
+  };
+  const send = () => {
+    if (!cur || cur.erasing) return;
+    cur.lastSent = Date.now();
+    clearTimeout(cur.timer); cur.timer = null;
+    const s = cur.stroke;
+    set(wbRef(`${board}/${cur.id}`), { by: myId, c: s.c, w: s.w, p: wbEncode(s.pts) }).catch((err) => console.warn("[wb] send", err));
+  };
+  const eraseAt = (x, y, cr) => {
+    const strokes = wbBoards[board];
+    if (!strokes) return;
+    // 画面上の距離で判定する（映像の縦横比が16:9以外でも消しゴムが丸くなるように）
+    const px = x * cr.w, py = y * cr.h, r = WB_ERASER_R * cr.w;
+    const updates = {};
+    for (const [id, s] of Object.entries(strokes)) {
+      const rr = r + (s.w * cr.w) / 2;
+      const P = s.pts.map(([a, b]) => [a * cr.w, b * cr.h]);
+      let hit = false;
+      for (let i = 0; i < P.length && !hit; i++) {
+        const [ax, ay] = P[i], [bx, by] = P[Math.min(i + 1, P.length - 1)];
+        const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+        const t = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+        hit = Math.hypot(ax + t * dx - px, ay + t * dy - py) <= rr;
+      }
+      if (hit) updates[id] = null;
+    }
+    if (!Object.keys(updates).length) return;
+    for (const id of Object.keys(updates)) delete strokes[id];
+    wbDirty.add(board); wbRedrawDirty();
+    update(wbRef(board), updates).catch((err) => console.warn("[wb] erase", err));
+  };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!wbPenOn || e.button > 0) return;
+    e.stopPropagation(); // タイルのドラッグ・選択を始めない
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    const [x, y, cr] = toNorm(e);
+    if (wbEraser) { cur = { erasing: true }; eraseAt(x, y, cr); return; }
+    const id = push(wbRef(board)).key;
+    const stroke = { by: myId, c: wbColor, w: WB_WIDTHS[wbWidthKey], pts: [[x, y]], raw: null };
+    cur = { id, stroke, lastSent: 0, timer: null };
+    wbDrawing.set(id, { board, stroke });
+    (wbBoards[board] ||= {})[id] = stroke;
+    wbMine.push({ board, id });
+    wbDirty.add(board); wbRedrawDirty();
+    send();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!cur) return;
+    const [x, y, cr] = toNorm(e);
+    if (cur.erasing) { eraseAt(x, y, cr); return; }
+    const pts = cur.stroke.pts, last = pts[pts.length - 1];
+    if (Math.hypot((x - last[0]) * cr.w, (y - last[1]) * cr.h) < 2) return; // 2px未満の動きは間引く
+    pts.push([x, y]);
+    wbDirty.add(board); wbRedrawDirty();
+    if (Date.now() - cur.lastSent >= WB_SEND_MS) send();
+    else if (!cur.timer) cur.timer = setTimeout(send, WB_SEND_MS);
+  });
+  const end = () => {
+    if (!cur) return;
+    if (!cur.erasing) { send(); wbDrawing.delete(cur.id); }
+    cur = null;
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("lostpointercapture", end);
+}
+
+function setWbPen(on) {
+  wbPenOn = !!on;
+  if (!wbPenOn) setWbEraser(false);
+  videoGrid.classList.toggle("wbPen", wbPenOn);
+  document.getElementById("wbToolbar").classList.toggle("on", wbPenOn);
+  document.getElementById("stageArea").classList.toggle("wbPenOn", wbPenOn);
+  document.getElementById("wbBtn").classList.toggle("active", wbPenOn);
+  if (wbPenOn) setTileSelection([]);
+}
+function setWbEraser(on) {
+  wbEraser = !!on;
+  videoGrid.classList.toggle("wbEraser", wbEraser);
+  document.getElementById("wbEraserBtn").classList.toggle("active", wbEraser);
+  updateWbToolbar();
+}
+function updateWbToolbar() {
+  document.querySelectorAll("#wbColors .wbColor").forEach((b) => b.classList.toggle("active", !wbEraser && b.dataset.c === wbColor));
+  document.querySelectorAll("#wbToolbar .wbSize").forEach((b) => b.classList.toggle("active", b.dataset.w === wbWidthKey));
+}
+function wbUndo() {
+  while (wbMine.length) {
+    const { board, id } = wbMine.pop();
+    if (wbBoards[board]?.[id]) {
+      delete wbBoards[board][id];
+      wbDirty.add(board); wbRedrawDirty();
+      remove(wbRef(`${board}/${id}`));
+      return;
+    }
+  }
+}
+function wbClearMine() {
+  const updates = {};
+  for (const [board, strokes] of Object.entries(wbBoards)) {
+    for (const [id, s] of Object.entries(strokes)) if (s.by === myId) updates[`${board}/${id}`] = null;
+  }
+  wbMine.length = 0;
+  if (Object.keys(updates).length) update(wbRef(), updates);
+}
+function setupWhiteboardUi() {
+  const colors = document.getElementById("wbColors");
+  colors.innerHTML = WB_COLORS.map((c) => `<button class="wbColor" data-c="${c}" style="background:${c}" title="この色で書く" aria-label="色 ${c}"></button>`).join("");
+  colors.querySelectorAll(".wbColor").forEach((b) => b.addEventListener("click", () => {
+    wbColor = b.dataset.c;
+    try { localStorage.setItem("wbColor", wbColor); } catch (e) {}
+    setWbEraser(false);
+  }));
+  document.querySelectorAll("#wbToolbar .wbSize").forEach((b) => b.addEventListener("click", () => {
+    wbWidthKey = b.dataset.w;
+    try { localStorage.setItem("wbWidth", wbWidthKey); } catch (e) {}
+    setWbEraser(false);
+  }));
+  document.getElementById("wbBtn").addEventListener("click", () => setWbPen(!wbPenOn));
+  document.getElementById("wbDoneBtn").addEventListener("click", () => setWbPen(false));
+  document.getElementById("wbEraserBtn").addEventListener("click", () => setWbEraser(!wbEraser));
+  document.getElementById("wbUndoBtn").addEventListener("click", wbUndo);
+  document.getElementById("wbClearMineBtn").addEventListener("click", wbClearMine);
+  // 全部消すは押し間違えないように2回押し（3秒以内）
+  const allBtn = document.getElementById("wbClearAllBtn");
+  let armTimer = null;
+  allBtn.addEventListener("click", () => {
+    if (!armTimer) {
+      allBtn.textContent = "本当に全部消す？";
+      allBtn.classList.add("active");
+      armTimer = setTimeout(() => { armTimer = null; allBtn.textContent = "全部消す"; allBtn.classList.remove("active"); }, 3000);
+      return;
+    }
+    clearTimeout(armTimer); armTimer = null;
+    allBtn.textContent = "全部消す"; allBtn.classList.remove("active");
+    wbMine.length = 0;
+    remove(wbRef());
+  });
+  updateWbToolbar();
+}
+setupWhiteboardUi();
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({

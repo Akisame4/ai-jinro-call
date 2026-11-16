@@ -42,6 +42,7 @@ rooms/{ROOM_ID}/buzzer/state: { question, phase, status: "open"|"answering"|"don
 rooms/{ROOM_ID}/buzzer/presses/{phase}/{peerId}: { at, recv, name, team }
 rooms/{ROOM_ID}/buzzer/scores/{nameKey}: { name, team, points, correct, wrong }
 rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, diffMs}] }
+rooms/{ROOM_ID}/whiteboard/{画面共有タイルのキー}/{pushId}: { by, c, w, p }   // 画面共有への書き込みの線（pは"x y x y …"、0〜10000の整数）
 ```
 
 ## 切断からの自動復帰（UC報告 2026-10-15「通話から外れる。自分以外の画面が固まって声が聞こえなくなる」）
@@ -80,6 +81,16 @@ rooms/{ROOM_ID}/buzzer/log/{pushId}: { question, name, correct, order: [{name, d
 - **画面共有タイルは共有元の縦横比で表示する**（UC要望、2026-09-28。16:9以外のウィンドウや縦長の画面も映すため）：`.tile.screenTile`の`<video>`に、`loadedmetadata`/`resize`イベントで`videoWidth/videoHeight`の`aspect-ratio`をインラインで設定する（`applyScreenAspect`、比率は`tile.dataset.aspect`。1%未満の揺れは無視）。配置データは従来どおりleft/top/widthだけで、高さは各端末が映像の比率から決める（レイアウト同期・テンプレートの形式は変更なし）。配置エリアの下にはみ出すときは上へずらし、それでも入らない縦長は幅を縮める（`fitTileInGrid`、追従中は何もしない）。リサイズハンドルも下にはみ出さない幅までに制限。合成録画はタイルの矩形に映像を描くのでそのまま同じ比率になる。カメラ・スコアボードは16:9のまま。
 - 画面共有の開始・終了は自分の`members/{myId}/sharing`/`screens`に反映し、受信側はこのフラグを正として画面共有タイルの表示/削除を同期する（`removeTrack`後の相手側track状態イベントには依存しない）。
 - タイルのDOM要素キーは、カメラ＝`peerId`、画面共有＝1つ目`` `${peerId}-screen` ``・2つ目以降`` `${peerId}-screen${n}` ``（`screenKey`。1つ目は旧キーのままなので保存済みの配置が効く）で区別する（`computeSlots()`が返すスロットに`kind: "camera"|"screen"`と`key`を持つ）。
+
+## 画面共有への書き込み（ホワイトボード。UC要望 2026-11-17「画面共有の一部に参加者全員がかけるホワイトボード」）
+UCがdailiesで「画面共有の映像の上に全員で直接書き込む（透明な板）」を選択（範囲を決める案・独立したタイルの案は選ばず）。
+- 下のバーの「✏ 書き込み」で書き込みモード（`setWbPen`）。配置エリアの下（`.stageHint`の代わり）に`#wbToolbar`：色6色・太さ（細/中/太、localStorage `wbColor`/`wbWidth`）・消しゴム（なぞった線を丸ごと消す、誰の線でも）・1つ戻す（自分の線、Ctrl+Z）・自分の分を消す・全部消す（3秒以内の2回押し）・終わる（Esc）。
+- 画面共有タイルごとに`<canvas class="wbCanvas">`（`wbAttachToTile`、`createVideoTile`から）。書き込みモード中だけ`pointer-events`が効き、pointerdownで`stopPropagation`してタイルのドラッグ・選択を始めない。カメラタイルはモード中も今までどおり動かせる。
+- 線は**映像の中身（object-fit: contain）に対する0〜1**で持つ（`wbContentRect`）。タイルの大きさ・トリミング・縦横比・別ウィンドウが端末ごとに違っても同じ場所に出る。canvasはvideoの位置・大きさに200msごとに合わせる（`wbSyncCanvas`、変わったときだけ描き直し）。
+- 同期：`whiteboard/{タイルのキー}/{pushId}`。書いている途中も80msごとに同じ線を`set`し直すので相手にもリアルタイムに伸びて見える。購読は`onValue`で全体（`listenWhiteboard`）、書いている途中の自分の線は手元を優先（`wbDrawing`）。
+- 片付け：共有を始める・やめるときに共有した本人がその画面の書き込みを消す。入室時に、今いない人の画面への書き込みを消す（`pruneWhiteboard`）。
+- 録画：レイアウト全体の合成録画で、画面共有タイルの映像を描いた直後に同じ範囲へ線を描く（`drawWhiteboardOnCanvas`、トリミング中はclipの中）。
+- テスト（2026-11-17）：mockdbのテスト用コピーをpuppeteerで2タブ。4:3の偽の画面共有に、相手側と共有者側の両方から書いて、反対側の板の同じ位置のピクセルの色・録画フレーム・1つ戻す・消しゴム・全部消す（2回押し）・Esc・共有停止でデータが消えることを確認。
 
 ## レイアウト同期（申請・許可制）
 
