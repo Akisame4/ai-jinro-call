@@ -296,7 +296,14 @@
   #buzzHostControls { border-top: 1px solid #3a3a3a; margin-top: 12px; padding-top: 4px; }
   #buzzCorrectBtn { background: #1e5a2c; }
   #buzzWrongBtn { background: #6a1e1e; }
-  #videoGrid:not(.hideBuzzFx) .tile.buzzAnswer { box-shadow: 0 0 0 4px #ffd54f, 0 0 18px 6px rgba(255,213,79,0.7); z-index: 50 !important; }
+  /* 回答者の強調（UC選択 2026-11-17）：白⇔赤で点滅する太い枠＋回答者以外のカメラを暗く。金色の光だけだと黄色い枠の人で見分けられなかった。
+     画面共有（問題を映していることが多い）は暗くしない。録画も同じ見た目（drawRecordFrame / drawBuzzerOverlayOnCanvas） */
+  @keyframes buzzAnswerBlink {
+    0%, 100% { box-shadow: 0 0 0 6px #ffffff, 0 0 20px 8px rgba(255,255,255,0.55); }
+    50% { box-shadow: 0 0 0 6px #ff2d55, 0 0 20px 8px rgba(255,45,85,0.6); }
+  }
+  #videoGrid:not(.hideBuzzFx) .tile.buzzAnswer { animation: buzzAnswerBlink 0.8s ease-in-out infinite; z-index: 50 !important; }
+  #videoGrid.buzzFocus:not(.hideBuzzFx) .tile:not(.buzzAnswer):not(.screenTile) { filter: brightness(0.38); }
   #buzzCutin {
     position: absolute; left: 0; right: 0; bottom: 12%; z-index: 9000; pointer-events: none;
     text-align: center; line-height: 1.2; display: none;
@@ -4683,6 +4690,13 @@ function drawRecordFrame() {
     }
     drawTileBadgeOnCanvas(ctx, tile, ".mbBadge.show", "hideMbBadge", gridRect, scaleX, scaleY);
     drawTileBadgeOnCanvas(ctx, tile, ".diceBadge.show", "hideDiceBadge", gridRect, scaleX, scaleY);
+    if (buzzDimsTile(tile)) { // 早押しの回答者以外のカメラを暗く（画面と同じ）
+      const tr = tile.getBoundingClientRect();
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.62)";
+      ctx.fillRect((tr.left - gridRect.left) * scaleX, (tr.top - gridRect.top) * scaleY, tr.width * scaleX, tr.height * scaleY);
+      ctx.restore();
+    }
   });
 
   drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY);
@@ -5921,10 +5935,16 @@ function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
   const answerTile = highlightId ? gridEl(`tile-${highlightId}`) : null;
   if (answerTile && answerTile.offsetParent !== null) {
     const r = answerTile.getBoundingClientRect();
+    const k = (1 - Math.cos((now % 800) / 800 * Math.PI * 2)) / 2; // 0＝白、1＝赤
+    const col = `rgb(255,${Math.round(255 - k * 210)},${Math.round(255 - k * 170)})`;
+    const lw = 6 * scaleX;
     ctx.save();
-    ctx.strokeStyle = "#ffd54f";
-    ctx.lineWidth = 8;
-    ctx.strokeRect((r.left - gridRect.left) * scaleX, (r.top - gridRect.top) * scaleY, r.width * scaleX, r.height * scaleY);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = lw;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 20 * scaleX;
+    // 画面と同じくタイルの外側に枠を付ける（線の中心をタイルの端から太さの半分だけ外へ）
+    ctx.strokeRect((r.left - gridRect.left) * scaleX - lw / 2, (r.top - gridRect.top) * scaleY - lw / 2, r.width * scaleX + lw, r.height * scaleY + lw);
     ctx.restore();
   }
   const W = ctx.canvas.width, H = ctx.canvas.height;
@@ -5952,6 +5972,12 @@ function drawBuzzerOverlayOnCanvas(ctx, gridRect, scaleX, scaleY) {
     ctx.fillText(buzzJudgeCorrect ? "○" : "×", W / 2, H / 2);
     ctx.restore();
   }
+}
+
+// 早押しで回答者がいる間、このタイルを暗くするか（回答者以外のカメラ。画面共有は暗くしない）
+function buzzDimsTile(tile) {
+  return showBuzzFx && videoGrid.classList.contains("buzzFocus") && !videoGrid.classList.contains("hideBuzzFx")
+    && !tile.classList.contains("buzzAnswer") && !tile.classList.contains("screenTile");
 }
 
 function updateBuzzTimer() {
@@ -6029,7 +6055,9 @@ function renderBuzzer() {
   // タイルの強調（回答権のある人。押した瞬間から暫定1着を光らせる）
   videoGrid.querySelectorAll(".tile.buzzAnswer").forEach((t) => t.classList.remove("buzzAnswer"));
   const highlightId = buzzHighlightId();
-  if (highlightId) gridEl(`tile-${highlightId}`)?.classList.add("buzzAnswer");
+  const highlightTile = highlightId ? gridEl(`tile-${highlightId}`) : null;
+  highlightTile?.classList.add("buzzAnswer");
+  videoGrid.classList.toggle("buzzFocus", !!highlightTile); // 回答者以外のカメラを暗くする
   if (!enabled) return;
 
   // ボタンと状態テキスト
