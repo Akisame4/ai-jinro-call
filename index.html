@@ -219,6 +219,20 @@
   .tile .resizeHandle[data-corner="tr"] { right: 0; top: 0; cursor: nesw-resize; border-bottom-left-radius: 4px; }
   .tile .resizeHandle[data-corner="bl"] { left: 0; bottom: 0; cursor: nesw-resize; border-top-right-radius: 4px; }
   #videoGrid.popped .tile .resizeHandle { opacity: 0 !important; }
+  /* まだ来ていない人の仮タイル（UC要望 2026-11-28）：全員がそろう前に配置を準備する用。映像が無いので録画には映らない */
+  .tile.placeholderTile {
+    aspect-ratio: 16 / 9; background: rgba(40,48,64,0.55); border: 2px dashed rgba(255,255,255,0.55);
+    display: flex; align-items: center; justify-content: center; line-height: 1.3;
+  }
+  .tile.placeholderTile .phName { color: #fff; font-weight: bold; font-size: clamp(11px, 7cqw, 40px); text-shadow: 0 1px 3px #000; text-align: center; padding: 0 8%; pointer-events: none; }
+  .tile.placeholderTile .phSub { display: block; font-size: 0.45em; font-weight: normal; opacity: 0.8; }
+  .tile.placeholderTile .phClose {
+    position: absolute; top: 4px; right: 4px; z-index: 6; width: 22px; height: 22px; line-height: 20px; padding: 0;
+    border-radius: 50%; border: none; background: rgba(0,0,0,0.6); color: #fff; font-size: 14px; cursor: pointer;
+  }
+  .tile.placeholderTile .phClose:hover { background: #c0392b; }
+  .tile.placeholderTile .resizeHandle[data-corner="tr"] { top: auto; bottom: 0; display: none; } /* 右上は×ボタンの場所 */
+  #videoGrid.popped .tile.placeholderTile { display: none !important; }
   /* トリミング：映像を切り抜いた範囲だけタイルに見せる（applyTileCrop。videoをはみ出させてタイルのoverflow: hiddenで隠す） */
   .tile.cropped video { position: absolute; max-width: none; aspect-ratio: auto !important; object-fit: fill !important; }
   .tile.cropEditing video { aspect-ratio: auto !important; object-fit: fill !important; }
@@ -608,7 +622,7 @@
         <button class="small" id="wbClearAllBtn" title="全員の書き込みをすべて消します（2回押し）">全部消す</button>
         <button class="small" id="wbDoneBtn" title="書き込みをやめて、タイルの移動に戻ります（Esc）">✔ 終わる</button>
       </div>
-      <div class="stageHint">タイルはドラッグで移動・右下の■でサイズ変更（この端末のみに保存）。Ctrl＋クリック・囲んで複数選択。整列・ガイドライン・マス目は「配置」タブ、背景と枠は「背景・枠」タブ</div>
+      <div class="stageHint">タイルはドラッグで移動・四隅の■でサイズ変更（この端末のみに保存）。Ctrl＋クリック・囲んで複数選択。整列・ガイドライン・マス目は「配置」タブ、背景と枠は「背景・枠」タブ</div>
     </main>
 
     <!-- 右：タブで切り替えるパネル -->
@@ -782,6 +796,11 @@
             <div class="cardRow"><input type="text" id="templateNameInput" placeholder="テンプレート名"><button class="small" id="saveTemplateBtn">この配置を保存</button></div>
             <span id="templateStatus"></span>
             <div class="cardRow"><button class="small" id="resetLayoutBtn">配置をリセット</button></div>
+          </div>
+          <div class="card">
+            <h3>来る予定の人（仮タイル）</h3>
+            <div class="cardRow"><input type="text" id="placeholderNameInput" placeholder="入室するときの名前"><button class="small" id="placeholderAddBtn">追加</button></div>
+            <span class="hint" id="placeholderHint">まだ入っていない人の場所に点線の仮タイルを出します（前に入ったことのある人は自動で出ます）。先に並べておくと、その名前の人が入ったときにそこへ映ります。要らない仮タイルは右上の×で消せます。録画には映りません</span>
           </div>
           <div class="card">
             <h3>レイアウト同期</h3>
@@ -1188,6 +1207,9 @@ const eqSpectrumCanvas = document.getElementById("eqSpectrumCanvas");
 const copyBtn = document.getElementById("copyBtn");
 const copyToast = document.getElementById("copyToast");
 const resetLayoutBtn = document.getElementById("resetLayoutBtn");
+const placeholderNameInput = document.getElementById("placeholderNameInput");
+const placeholderAddBtn = document.getElementById("placeholderAddBtn");
+const placeholderHint = document.getElementById("placeholderHint");
 const fullscreenGridBtn = document.getElementById("fullscreenGridBtn");
 const popoutGridBtn = document.getElementById("popoutGridBtn");
 const popinGridBtn = document.getElementById("popinGridBtn");
@@ -1701,6 +1723,8 @@ function drawEqSpectrum() {
 
 copyBtn.addEventListener("click", copyResults);
 resetLayoutBtn.addEventListener("click", resetLayout);
+placeholderAddBtn.addEventListener("click", addPlaceholderName);
+placeholderNameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addPlaceholderName(); });
 
 // ---------- 配置エリアの向き（横16:9／縦9:16） ----------
 const aspectLandscapeBtn = document.getElementById("aspectLandscapeBtn");
@@ -3442,6 +3466,80 @@ function swapOrder(idA, idB) {
   if (isLayoutLeader()) publishLeaderLayout();
 }
 
+// ---------- 来る予定の人の仮タイル（UC要望 2026-11-28。UCの選択は「前に入った人は自動＋名前を入力して追加」） ----------
+// slotByName に覚えているカメラのスロット（"c:名前"）のうち、今だれも入っていない所に点線の仮タイルを出す。
+// 位置はそのスロットの配置（tilePositions）そのものなので、動かしておけばその名前の人が入ったときにそこへ映る。
+// 名前を入力して追加＝slotByName に空きスロットを予約する。×＝その名前の予約を消す。
+// 映像が無いので合成録画には描かれず、別ウィンドウ（配信用）には出さない。追従中はリーダーの配置なので出さない
+function renderPlaceholderTiles() {
+  const want = new Map(); // スロット番号 → 名前
+  if (!(followingLayout && !isLayoutLeader()) && myId && members[myId]) {
+    const slots = computeSlots();
+    for (const [stable, idx] of Object.entries(slotByName)) {
+      if (!stable.startsWith("c:") || !Number.isInteger(idx) || idx < 0 || idx >= MAX_PEERS || slots[idx]) continue;
+      if (!want.has(idx)) want.set(idx, stable.slice(2));
+    }
+  }
+  videoGrid.querySelectorAll(".tile.placeholderTile").forEach((t) => {
+    if (want.get(parseInt(t.dataset.slot, 10)) !== t.dataset.phName) t.remove();
+  });
+  for (const [idx, name] of want) {
+    let tile = gridEl(`tile-ph-${idx}`);
+    if (!tile) {
+      tile = videoGrid.ownerDocument.createElement("div");
+      tile.className = "tile placeholderTile";
+      tile.id = `tile-ph-${idx}`;
+      tile.dataset.phName = name;
+      tile.title = `${name}（まだ入っていません）`;
+      tile.innerHTML = `
+        <div class="phName">${escapeHtml(name)}<span class="phSub">まだ入っていません</span></div>
+        <button class="phClose" title="この仮タイルを消す">×</button>
+        <div class="resizeHandle" data-corner="tl" title="ドラッグでサイズ変更"></div>
+        <div class="resizeHandle" data-corner="tr" title="ドラッグでサイズ変更"></div>
+        <div class="resizeHandle" data-corner="bl" title="ドラッグでサイズ変更"></div>
+        <div class="resizeHandle" data-corner="br" title="ドラッグでサイズ変更"></div>
+      `;
+      const close = tile.querySelector(".phClose");
+      close.addEventListener("pointerdown", (e) => e.stopPropagation()); // タイルの移動にしない
+      close.addEventListener("click", (e) => { e.stopPropagation(); removePlaceholderName(name); });
+      videoGrid.appendChild(tile);
+      makeDraggable(tile);
+      makeResizable(tile);
+    }
+    positionTile(tile, idx);
+  }
+}
+function addPlaceholderName() {
+  const name = placeholderNameInput.value.trim();
+  if (!name) return;
+  if (layoutInteractionLocked()) { placeholderHint.textContent = "レイアウトの追従中は追加できません"; return; }
+  const key = "c:" + name;
+  if (Number.isInteger(slotByName[key])) {
+    placeholderHint.textContent = `「${name}」の場所はもうあります`;
+  } else {
+    const slots = computeSlots();
+    const reserved = new Set(Object.values(slotByName));
+    let idx = -1;
+    for (let i = 0; i < MAX_PEERS && idx < 0; i++) if (!slots[i] && !reserved.has(i)) idx = i;
+    if (idx < 0) { placeholderHint.textContent = `カメラの枠（${MAX_PEERS}人分）がいっぱいです。要らない仮タイルを×で消してください`; return; }
+    slotByName[key] = idx;
+    saveSlotByName();
+    placeholderHint.textContent = `「${name}」の仮タイルを出しました。好きな場所へ動かしてください`;
+  }
+  placeholderNameInput.value = "";
+  renderGrid();
+}
+function removePlaceholderName(name) {
+  if (layoutInteractionLocked()) return;
+  const key = "c:" + name;
+  if (!Number.isInteger(slotByName[key])) return;
+  const idx = slotByName[key];
+  if (computeSlots()[idx]) return; // その間に本人が入ってきた
+  delete slotByName[key];
+  saveSlotByName();
+  renderGrid();
+}
+
 function syncVideoTiles(slots) {
   slots.forEach((s, idx) => {
     if (!s) return;
@@ -3459,6 +3557,7 @@ function renderGrid() {
   } else {
     syncVideoTiles(computeSlots());
   }
+  renderPlaceholderTiles();
   applyCameraVisibility();
   applyFrameState();
   updateMbBadges();
