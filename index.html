@@ -6317,7 +6317,10 @@ function renderBuzzer() {
   buzzPressTable.innerHTML = html;
 
   // スコア
-  const rows = buzzScoreRowsWithMembers();
+  // 並びは固定（UC指示 2026-11-28：点数の高い順に自動で入れ替わるのはやめる）。参加者タブの並び（カメラのスロット順）→ 名前順
+  const slotOf = (name) => { const i = slotByName["c:" + name]; return Number.isInteger(i) ? i : 1e6; };
+  const rows = buzzScoreRowsWithMembers().sort((a, b) => slotOf(a[1].name) - slotOf(b[1].name) || String(a[1].name).localeCompare(String(b[1].name), "ja"));
+  const teamOrder = (list) => Math.min(...list.map(([, r]) => slotOf(r.name)));
   // 得点制：点・正解・誤答／○×制：○・×（目標数の枠つき）。ホストの修正ボタンも方式に合わせる
   const adjBtns = (key, field, label) =>
     `${label}<button class="small" data-buzz-adjust="1" data-field="${field}" data-key="${key}">+1</button> <button class="small" data-buzz-adjust="-1" data-field="${field}" data-key="${key}">−1</button>`;
@@ -6343,7 +6346,7 @@ function renderBuzzer() {
       (teams[t] = teams[t] || []).push([key, r]);
     }
     const teamTotals = Object.entries(teams).map(([t, list]) => [t, list, list.reduce((a, [, r]) => a + (r.points || 0), 0), t ? buzzEntityStats({ key: "t_" + fbKey(t) }) : null])
-      .sort((a, b) => (mb && a[3] && b[3] ? buzzMbCompare(a[3], b[3]) : b[2] - a[2]));
+      .sort((a, b) => teamOrder(a[1]) - teamOrder(b[1])); // 点数では並べ替えない（UC指示 2026-11-28）
     for (const [t, list, total, st] of teamTotals) {
       if (t) {
         const c = list.reduce((a, [, r]) => a + (r.correct || 0), 0);
@@ -6355,8 +6358,6 @@ function renderBuzzer() {
       }
     }
   } else {
-    if (mb) rows.sort((a, b) => buzzMbCompare(personStats(a[1]), personStats(b[1])));
-    else rows.sort((a, b) => (b[1].points || 0) - (a[1].points || 0));
     for (const [key, r] of rows) sh += scoreRow(key, r, false, badge(personStats(r)));
   }
   if (!rows.length) sh += `<tr><td colspan="${colCount}" class="hint">まだ得点はありません</td></tr>`;
