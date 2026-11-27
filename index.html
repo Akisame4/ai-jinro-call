@@ -5723,13 +5723,29 @@ async function hostResetBuzzQuestion(nextQuestion = true, extra = {}) {
 }
 
 // field: "points"（得点制の点数）／"correct"・"wrong"（○×制の○・×の数）
+// スコア表の行：記録のある人＋まだ記録の無い参加者（観戦者以外）を0で。最初から全員を修正できるようにする（UC要望 2026-11-27）
+function buzzScoreRowsWithMembers() {
+  const rows = Object.entries(buzzScores);
+  const seen = new Set(rows.map(([k]) => k));
+  for (const m of Object.values(members)) {
+    if (!m?.name || m.buzzSpectator) continue;
+    const key = fbKey(m.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push([key, { name: m.name, team: (m.buzzTeam || "").trim(), points: 0, correct: 0, wrong: 0 }]);
+  }
+  return rows;
+}
 // 点数制で○・×を直したときは、判定と同じだけ点も動かす（○+1＝正解の点を足す、×+1＝誤答の点を引く。0未満にはしない）
 function hostAdjustBuzzScore(key, delta, field = "points") {
-  if (!isRoomHost() || !buzzScores[key] || !["points", "correct", "wrong"].includes(field)) return;
+  if (!isRoomHost() || !["points", "correct", "wrong"].includes(field)) return;
+  // まだ記録の無い参加者（表には0で出している）は、ここで記録を作る
+  const seed = buzzScores[key] || buzzScoreRowsWithMembers().find(([k]) => k === key)?.[1];
+  if (!seed) return;
   const syncPoints = field !== "points" && !buzzIsMarubatsu();
   const ptsPer = field === "correct" ? (buzzConfig.ptsCorrect || 0) : -(buzzConfig.ptsWrong || 0);
   runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}`), (cur) => {
-    if (!cur) return cur;
+    if (!cur) cur = { name: seed.name, team: seed.team || "", points: 0, correct: 0, wrong: 0 };
     if (field === "points") { cur.points = (cur.points || 0) + delta; return cur; }
     const before = cur[field] || 0;
     const after = Math.max(0, before + delta);
@@ -6115,7 +6131,7 @@ function renderBuzzer() {
   buzzPressTable.innerHTML = html;
 
   // スコア
-  const rows = Object.entries(buzzScores);
+  const rows = buzzScoreRowsWithMembers();
   // 得点制：点・正解・誤答／○×制：○・×（目標数の枠つき）。ホストの修正ボタンも方式に合わせる
   const adjBtns = (key, field, label) =>
     `${label}<button class="small" data-buzz-adjust="1" data-field="${field}" data-key="${key}">+1</button> <button class="small" data-buzz-adjust="-1" data-field="${field}" data-key="${key}">−1</button>`;
