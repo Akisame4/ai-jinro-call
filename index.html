@@ -295,6 +295,9 @@
   #popAudioContainer { display: none; }
   #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
   #buzzHostInfo b { color: #ffd54f; }
+  #buzzHandicapNote { color: #ffb84d; font-weight: bold; }
+  #buzzHandicapList label { display: inline-flex; align-items: center; gap: 4px; }
+  #buzzHandicapList input { width: 4.5em; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
   .buzzSettings select { background: #111; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
   .buzzSettings.mbMode .buzzPtsOnly, .buzzSettings:not(.mbMode) .buzzMbOnly { display: none; }
@@ -671,6 +674,7 @@
             <div id="buzzSelfRow">
               <label id="buzzTeamLabel" style="display:none;">チーム名: <input type="text" id="buzzTeamInput" placeholder="例: 赤チーム"></label>
               <span id="buzzRuleSummary" class="hint"></span>
+              <span id="buzzHandicapNote" style="display:none;"></span>
             </div>
             <div id="buzzHostControls" style="display:none;">
               <div class="buzzHostRow buzzJudgeRow">
@@ -695,6 +699,11 @@
                   <label>制限時間 <input type="number" id="buzzAnswerSec" min="0" step="1">秒（0=なし）</label>
                   <label><input type="checkbox" id="buzzTeamMode"> チーム戦</label>
                 </div>
+              </details>
+              <details class="fold" id="buzzHandicapFold">
+                <summary>🐢 ハンデ（その人だけ声が遅れて聞こえる）</summary>
+                <div class="buzzHostRow" id="buzzHandicapList"></div>
+                <div class="hint">設定した人の端末でだけ、全員の声・イントロクイズの曲・画面共有の音が指定の秒数だけ遅れて聞こえます（映像・効果音はそのまま。早押しがオンの間だけ効きます）。</div>
               </details>
             </div>
             <div class="buzzCols">
@@ -1271,6 +1280,8 @@ const introStatus = document.getElementById("introStatus");
 const buzzTeamLabel = document.getElementById("buzzTeamLabel");
 const buzzTeamInput = document.getElementById("buzzTeamInput");
 const buzzRuleSummary = document.getElementById("buzzRuleSummary");
+const buzzHandicapNote = document.getElementById("buzzHandicapNote");
+const buzzHandicapList = document.getElementById("buzzHandicapList");
 const buzzPressTable = document.getElementById("buzzPressTable");
 const buzzScoreTable = document.getElementById("buzzScoreTable");
 const buzzHostControls = document.getElementById("buzzHostControls");
@@ -4338,15 +4349,59 @@ const peerBoosts = new Map(); // id -> { stream, src, gain }
 function stopPeerBoost(id) {
   const b = peerBoosts.get(id);
   if (!b) return;
-  try { b.src.disconnect(); b.gain.disconnect(); } catch (e) {}
+  try { b.src.disconnect(); b.delay?.disconnect(); b.gain.disconnect(); } catch (e) {}
   peerBoosts.delete(id);
 }
+// ハンデ（UC要望 2026-11-28、UCの選択は「声と曲だけ遅らせる」）：ホストが buzzer/config/handicap/{名前キー} に秒数を書くと、
+// その人の端末でだけ相手の音声（声・声に混ざったイントロ曲・画面共有の音）をDelayNodeで遅らせて鳴らす。
+// 映像・効果音（各端末で鳴らしている）・録画の音（audioDest）は遅らせない。早押しがオンの間だけ効く
+const HANDICAP_MAX_SEC = 10;
+function handicapSecOf(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(HANDICAP_MAX_SEC, Math.round(n * 10) / 10) : 0;
+}
+function myHandicapSec() {
+  if (!buzzConfig.enabled || !myName) return 0;
+  return handicapSecOf(buzzConfig.handicap?.[fbKey(myName)]);
+}
+function decodeFbKeySafe(k) { try { return decodeURIComponent(k); } catch (e) { return k; } }
+function applyAllPeerVolumes() {
+  for (const [id, entry] of Object.entries(peers)) {
+    applyPeerVolume(id);
+    for (const n of Object.keys(entry.remoteScreenStreams || {})) applyPeerVolume(screenKey(id, +n));
+  }
+}
+let handicapListSig = "";
+function renderHandicapList(host) {
+  if (!host) { handicapListSig = ""; buzzHandicapList.innerHTML = ""; return; }
+  const names = [...new Set(Object.values(members).filter((m) => m?.name && !m.buzzSpectator).map((m) => m.name))];
+  const sig = names.join("|");
+  if (sig !== handicapListSig) {
+    handicapListSig = sig;
+    buzzHandicapList.innerHTML = names.length
+      ? names.map((n) => `<label>${escapeHtml(n)} <input type="number" min="0" max="${HANDICAP_MAX_SEC}" step="0.5" data-handicap-key="${escapeHtml(fbKey(n))}">秒</label>`).join("")
+      : `<span class="hint">参加者がいません</span>`;
+  }
+  buzzHandicapList.querySelectorAll("input[data-handicap-key]").forEach((inp) => {
+    if (inp.ownerDocument.activeElement === inp) return;
+    inp.value = handicapSecOf(buzzConfig.handicap?.[inp.dataset.handicapKey]);
+  });
+}
+buzzHandicapList.addEventListener("change", (e) => {
+  const inp = e.target.closest("input[data-handicap-key]");
+  if (!inp || !isRoomHost()) return;
+  const sec = handicapSecOf(inp.value);
+  inp.value = sec;
+  set(ref(db, `rooms/${ROOM_ID}/buzzer/config/handicap/${inp.dataset.handicapKey}`), sec > 0 ? sec : null);
+});
+
 function applyPeerVolume(id) {
   if (id === myId) return;
   const el = peerAudioEl(id);
   const v = Math.max(0, Math.min(PEER_VOLUME_MAX, getPeerVolume(id)));
+  const delaySec = myHandicapSec();
   const stream = el?.srcObject;
-  if (!el || v <= 100 || !stream?.getAudioTracks?.().length) {
+  if (!el || (v <= 100 && !delaySec) || !stream?.getAudioTracks?.().length) {
     stopPeerBoost(id);
     if (el) el.volume = Math.min(1, v / 100);
     return;
@@ -4358,16 +4413,18 @@ function applyPeerVolume(id) {
   if (!b) {
     try {
       const src = audioCtx.createMediaStreamSource(stream);
+      const delay = audioCtx.createDelay(HANDICAP_MAX_SEC);
       const gain = audioCtx.createGain();
       const limiter = audioCtx.createDynamicsCompressor();
       limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.003; limiter.release.value = 0.15;
-      src.connect(gain).connect(limiter).connect(audioCtx.destination);
-      b = { stream, src, gain };
+      src.connect(delay).connect(gain).connect(limiter).connect(audioCtx.destination);
+      b = { stream, src, delay, gain };
       peerBoosts.set(id, b);
     } catch (e) { console.warn("volume boost failed", e); el.volume = 1; return; }
   }
   el.volume = 0; // 要素は再生したまま（止めると受信音声が流れなくなるブラウザがある）
   b.gain.gain.value = el.muted ? 0 : v / 100;
+  b.delay.delayTime.value = delaySec;
 }
 
 function updateStatsDisplay(peerId, s) {
@@ -5697,6 +5754,7 @@ function listenBuzzer() {
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/config`), (snap) => {
     buzzConfig = { ...BUZZ_DEFAULT_CONFIG, ...(snap.val() || {}) };
     renderBuzzer();
+    applyAllPeerVolumes(); // ハンデ（自分に聞こえる声の遅れ）が変わったかもしれない
   });
   onValue(ref(db, `rooms/${ROOM_ID}/buzzer/state`), (snap) => {
     const prevPhase = buzzState.phase;
@@ -6194,6 +6252,12 @@ function renderBuzzer() {
   }
   if (buzzConfig.answerSec) rules.push(`制限${buzzConfig.answerSec}秒`);
   if (buzzConfig.teamMode) rules.push("チーム戦");
+  const hc = Object.entries(buzzConfig.handicap || {}).filter(([, v]) => handicapSecOf(v) > 0);
+  if (hc.length) rules.push("ハンデ " + hc.map(([k, v]) => `${decodeFbKeySafe(k)} ${handicapSecOf(v)}秒`).join("・"));
+  const mySec = myHandicapSec();
+  buzzHandicapNote.style.display = mySec > 0 ? "" : "none";
+  buzzHandicapNote.textContent = mySec > 0 ? `🐢 ハンデ中：みんなの声が${mySec}秒遅れて聞こえます` : "";
+  renderHandicapList(host);
   buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
 
   updateMbBadges();
