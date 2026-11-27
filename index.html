@@ -957,7 +957,33 @@ import {
 
 // ai-jinro-call プロジェクト。ROOM_ID は RTDB セキュリティルール(rooms/test1)と一致させる必要がある
 const ROOM_ID = "test1";
-const MAX_PEERS = 6;
+const MAX_PEERS = 10; // 2026-11-28にUC指示で6→10人
+// 最大人数を6→10に増やしたときの引っ越し（1回だけ）。スロット番号はカメラ0〜MAX_PEERS-1・画面共有がその後ろなので、
+// 6人時代に保存した画面共有のスロット（6以上）を4つ後ろへずらす（ずらさないと7〜10人目のカメラが画面共有の位置に入る）。
+// 対象：slotByName（"c:"以外の6以上）、配置（横・縦）、テンプレート（横・縦）の6以上のキー
+(function migrateSlotsTo10() {
+  const FLAG = "slotLayoutV", OLD = 6, SHIFT = MAX_PEERS - OLD;
+  try {
+    if (localStorage.getItem(FLAG) === "2") return;
+    const shiftKeys = (obj) => {
+      const out = {};
+      for (const [k, v] of Object.entries(obj || {})) {
+        const n = Number(k);
+        out[Number.isInteger(n) && n >= OLD ? String(n + SHIFT) : k] = v;
+      }
+      return out;
+    };
+    const rw = (key, fn) => {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return;
+      try { localStorage.setItem(key, JSON.stringify(fn(JSON.parse(raw) || {}))); } catch (e) {}
+    };
+    rw("slotByName", (m) => { for (const k of Object.keys(m)) if (!k.startsWith("c:") && Number.isInteger(m[k]) && m[k] >= OLD) m[k] += SHIFT; return m; });
+    for (const k of ["aiJinroTilePositionsPct", "aiJinroTilePositionsPctPortrait"]) rw(k, shiftKeys);
+    for (const k of ["aiJinroLayoutTemplates", "aiJinroLayoutTemplatesPortrait"]) rw(k, (t) => { for (const name of Object.keys(t)) t[name] = shiftKeys(t[name]); return t; });
+    localStorage.setItem(FLAG, "2");
+  } catch (e) {}
+})();
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const VIDEO_MAX_BITRATE = 500000;  // bps（通常のカメラ映像。30fpsで1コマあたりの画質が24fps・400kbpsと同じくらいになる量）
 const SCREEN_AUDIO_BITRATE = 128000; // bps（画面の音。音楽・ゲーム音を想定して声より高め）
@@ -1153,7 +1179,7 @@ let serverTimeOffset = 0; // サーバー時刻 = Date.now() + serverTimeOffset�
 
 // レイアウトテンプレート（この端末に保存。配置=slotIndex毎の{left,top,width}のスナップショット）
 const BUILTIN_TEMPLATES = {
-  "6人グリッド（初期配置）": {},
+  "初期配置": {},
   "4人グリッド（2×2）": {
     0: { left: 0, top: 0, width: 50 },
     1: { left: 50, top: 0, width: 50 },
@@ -1163,7 +1189,7 @@ const BUILTIN_TEMPLATES = {
 };
 // 縦向き用の既定（カメラは横長のままなので、2列か1列で縦に積む）
 const BUILTIN_TEMPLATES_PORTRAIT = {
-  "6人グリッド（初期配置）": {},
+  "初期配置": {},
   "4人（1列）": {
     0: { left: 0, top: 4, width: 100 },
     1: { left: 0, top: 28, width: 100 },
@@ -2147,7 +2173,7 @@ async function joinRoom(name) {
   const membersSnap = await get(ref(db, `rooms/${ROOM_ID}/members`));
   const existing = membersSnap.val() || {};
   if (Object.keys(existing).length >= MAX_PEERS) {
-    entryError.textContent = "満員のため入室できません（最大6人）";
+    entryError.textContent = `満員のため入室できません（最大${MAX_PEERS}人）`;
     joinBtn.disabled = false;
     return;
   }
@@ -3018,13 +3044,15 @@ function savePositions() {
 }
 function defaultPos(index) {
   if (isPortraitStage()) {
-    // 縦向き：カメラ6枠を2列×3段で中央に、画面共有・スコアボードは上の方に大きめに重ねる
+    // 縦向き：カメラは2列で中央に（1〜6人目は3段、7〜10人目は上下に1段ずつ）、画面共有・スコアボードは上の方に大きめに重ねる
     if (index >= MAX_PEERS) {
       const k = (index - MAX_PEERS) % 4;
       return { left: 5 + k * 3, top: 8 + k * 3, width: 90 };
     }
     const col = index % 2, row = Math.floor(index / 2);
-    return { left: col * 50, top: 26 + row * 16.5, width: 50 };
+    // 1〜6人目は従来どおり中央の3段。7・8人目はその下、9・10人目はその上の段
+    const top = index < 6 ? 26 + row * 16.5 : index < 8 ? 75.5 : 9.5;
+    return { left: col * 50, top, width: 50 };
   }
   // カメラ枠（MAX_PEERS個・2段）より後ろの画面共有・スコアボードは、3段目だと配置エリアの外に出てしまうので
   // エリア中央付近に少しずつずらして重ねて置く（z-indexはスロット順で手前になる）
@@ -3032,6 +3060,8 @@ function defaultPos(index) {
     const k = (index - MAX_PEERS) % 4;
     return { left: 35 + k * 5, top: 20 + k * 5, width: TILE_W_PCT };
   }
+  // 1〜6人目は従来どおり3列×2段。7〜10人目は下の空いている帯（80〜100%）に小さめで4つ並べる
+  if (index >= 6) return { left: 2.5 + (index - 6) * 25, top: 80, width: 20 };
   const col = index % COLS, row = Math.floor(index / COLS);
   return { left: col * (TILE_W_PCT + COL_GAP_PCT), top: row * ROW_TOP_PCT, width: TILE_W_PCT };
 }
