@@ -205,12 +205,20 @@
     background-size: 100% 100%; background-repeat: no-repeat; display: none;
   }
   #videoGrid.showFrame .tile:not(.frameOff) .frameOverlay.hasImage { display: block; }
+  /* 四隅のサイズ変更ハンドル（パワポのように、つまんだ角の反対側の角を固定して拡大縮小。UC要望 2026-11-28）。
+     ふだんは隠し、タイルにマウスを乗せたとき・選択中だけ出す */
   .tile .resizeHandle {
-    position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
-    cursor: nwse-resize; background: rgba(255,255,255,0.18);
-    border-top-left-radius: 4px;
+    position: absolute; width: 18px; height: 18px; z-index: 5;
+    background: rgba(255,255,255,0.35); border: 1px solid rgba(0,0,0,0.35); box-sizing: border-box;
+    opacity: 0; transition: opacity 0.12s;
   }
-  .tile .resizeHandle:hover { background: rgba(255,255,255,0.4); }
+  .tile:hover .resizeHandle, .tile.selected .resizeHandle, .tile .resizeHandle.active { opacity: 1; }
+  .tile .resizeHandle:hover, .tile .resizeHandle.active { background: rgba(255,255,255,0.75); }
+  .tile .resizeHandle[data-corner="br"] { right: 0; bottom: 0; cursor: nwse-resize; border-top-left-radius: 4px; }
+  .tile .resizeHandle[data-corner="tl"] { left: 0; top: 0; cursor: nwse-resize; border-bottom-right-radius: 4px; }
+  .tile .resizeHandle[data-corner="tr"] { right: 0; top: 0; cursor: nesw-resize; border-bottom-left-radius: 4px; }
+  .tile .resizeHandle[data-corner="bl"] { left: 0; bottom: 0; cursor: nesw-resize; border-top-right-radius: 4px; }
+  #videoGrid.popped .tile .resizeHandle { opacity: 0 !important; }
   /* トリミング：映像を切り抜いた範囲だけタイルに見せる（applyTileCrop。videoをはみ出させてタイルのoverflow: hiddenで隠す） */
   .tile.cropped video { position: absolute; max-width: none; aspect-ratio: auto !important; object-fit: fill !important; }
   .tile.cropEditing video { aspect-ratio: auto !important; object-fit: fill !important; }
@@ -3601,47 +3609,59 @@ function makeDraggable(tile) {
   tile.addEventListener("pointercancel", endDrag);
 }
 
+// 四隅のハンドルで拡大縮小（つまんだ角の反対側の角を固定する。縦横比はタイルの映像の比率のまま＝幅だけ持つ）
 function makeResizable(tile) {
-  const handle = tile.querySelector(".resizeHandle");
-  let resizing = false, startX = 0, startWPct = 0, containerW = 0, containerH = 0;
+  tile.querySelectorAll(".resizeHandle").forEach((handle) => {
+    const corner = handle.dataset.corner || "br";
+    const fromLeft = corner[1] === "l", fromTop = corner[0] === "t";
+    let st = null;
 
-  handle.addEventListener("pointerdown", (e) => {
-    if (layoutInteractionLocked()) return;
-    e.stopPropagation();
-    resizing = true;
-    const rect = videoGrid.getBoundingClientRect();
-    containerW = rect.width;
-    containerH = rect.height;
-    startX = e.clientX;
-    startWPct = parseFloat(tile.style.width) || TILE_W_PCT;
-    pushLayoutUndo();
-    handle.setPointerCapture(e.pointerId);
+    handle.addEventListener("pointerdown", (e) => {
+      if (layoutInteractionLocked()) return;
+      e.stopPropagation();
+      const rect = videoGrid.getBoundingClientRect();
+      if (!rect.width || !tile.offsetWidth) return;
+      const l = parseFloat(tile.style.left) || 0, t = parseFloat(tile.style.top) || 0;
+      const w = parseFloat(tile.style.width) || TILE_W_PCT;
+      st = {
+        x: e.clientX, cw: rect.width, ch: rect.height, l, t, w,
+        right: l + w,
+        bottom: t + (tile.offsetHeight / rect.height) * 100,
+        hPerW: (tile.offsetHeight / tile.offsetWidth) * rect.width / rect.height, // 幅1%あたりの高さ%
+      };
+      pushLayoutUndo();
+      handle.classList.add("active");
+      handle.setPointerCapture(e.pointerId);
+    });
+
+    handle.addEventListener("pointermove", (e) => {
+      if (!st) return;
+      const dxPct = ((e.clientX - st.x) / st.cw) * 100;
+      // 横：右の角なら左端を固定（右端は100%まで）、左の角なら右端を固定（左端は0%まで）
+      let maxWPct = fromLeft ? st.right : 100 - st.l;
+      // 縦：上の角なら下端を固定して上端が0%より上に出ない幅まで。下の角は、画面共有・トリミングしたタイルだけ下にはみ出さない幅まで（従来どおり）
+      const aspect = parseFloat(tile.dataset.cropAspect) || parseFloat(tile.dataset.aspect);
+      if (fromTop) maxWPct = Math.min(maxWPct, st.bottom / st.hPerW);
+      else if (aspect && st.ch) maxWPct = Math.min(maxWPct, (100 - st.t) * st.ch * aspect / st.cw);
+      const clampW = (v) => Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, Math.max(MIN_TILE_PCT, maxWPct), v));
+      let newW = clampW(st.w + (fromLeft ? -dxPct : dxPct));
+      // グリッドに吸着：動いている側の縦の辺を合わせる
+      newW = fromLeft ? clampW(st.right - snapX(st.right - newW)) : clampW(snapX(st.l + newW) - st.l);
+      tile.style.width = newW + "%";
+      if (fromLeft) tile.style.left = (st.right - newW) + "%";
+      if (fromTop) tile.style.top = (st.bottom - newW * st.hPerW) + "%";
+      if (isLayoutLeader()) scheduleLayoutPublish();
+    });
+
+    const endResize = () => {
+      if (!st) return;
+      st = null;
+      handle.classList.remove("active");
+      saveTileRect(tile);
+    };
+    handle.addEventListener("pointerup", endResize);
+    handle.addEventListener("pointercancel", endResize);
   });
-
-  handle.addEventListener("pointermove", (e) => {
-    if (!resizing || !containerW) return;
-    const dxPct = ((e.clientX - startX) / containerW) * 100;
-    const leftPct = parseFloat(tile.style.left) || 0;
-    let maxWPct = Math.max(MIN_TILE_PCT, 100 - leftPct);
-    // 画面共有タイル（縦長もありうる）・トリミングしたタイルは下にはみ出さない幅まで
-    const aspect = parseFloat(tile.dataset.cropAspect) || parseFloat(tile.dataset.aspect);
-    if (aspect && containerH) {
-      const topPct = parseFloat(tile.style.top) || 0;
-      maxWPct = Math.max(MIN_TILE_PCT, Math.min(maxWPct, (100 - topPct) * containerH * aspect / containerW));
-    }
-    let newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, startWPct + dxPct));
-    newW = Math.max(MIN_TILE_PCT, Math.min(MAX_TILE_PCT, maxWPct, snapX(newW)));
-    tile.style.width = newW + "%";
-    if (isLayoutLeader()) scheduleLayoutPublish();
-  });
-
-  const endResize = (e) => {
-    if (!resizing) return;
-    resizing = false;
-    saveTileRect(tile);
-  };
-  handle.addEventListener("pointerup", endResize);
-  handle.addEventListener("pointercancel", endResize);
 }
 
 // ---------- タイルの選択・整列・ガイドライン ----------
@@ -3942,7 +3962,10 @@ function createVideoTile(peerId, name, isSelf) {
     <div class="frameOverlay" id="frame-${peerId}"></div>
     <div class="nameLabel" id="name-${peerId}">${escapeHtml(name)}</div>
     <div class="statsLine" id="stats-${peerId}"></div>
-    <div class="resizeHandle" title="ドラッグでサイズ変更"></div>
+    <div class="resizeHandle" data-corner="tl" title="ドラッグでサイズ変更"></div>
+    <div class="resizeHandle" data-corner="tr" title="ドラッグでサイズ変更"></div>
+    <div class="resizeHandle" data-corner="bl" title="ドラッグでサイズ変更"></div>
+    <div class="resizeHandle" data-corner="br" title="ドラッグでサイズ変更"></div>
   `;
   videoGrid.appendChild(tile);
   applyFrameImageToTile(tile);
