@@ -5723,11 +5723,19 @@ async function hostResetBuzzQuestion(nextQuestion = true, extra = {}) {
 }
 
 // field: "points"（得点制の点数）／"correct"・"wrong"（○×制の○・×の数）
+// 点数制で○・×を直したときは、判定と同じだけ点も動かす（○+1＝正解の点を足す、×+1＝誤答の点を引く。0未満にはしない）
 function hostAdjustBuzzScore(key, delta, field = "points") {
   if (!isRoomHost() || !buzzScores[key] || !["points", "correct", "wrong"].includes(field)) return;
-  runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}/${field}`), (cur) => {
-    const v = (cur || 0) + delta;
-    return field === "points" ? v : Math.max(0, v);
+  const syncPoints = field !== "points" && !buzzIsMarubatsu();
+  const ptsPer = field === "correct" ? (buzzConfig.ptsCorrect || 0) : -(buzzConfig.ptsWrong || 0);
+  runTransaction(ref(db, `rooms/${ROOM_ID}/buzzer/scores/${key}`), (cur) => {
+    if (!cur) return cur;
+    if (field === "points") { cur.points = (cur.points || 0) + delta; return cur; }
+    const before = cur[field] || 0;
+    const after = Math.max(0, before + delta);
+    cur[field] = after;
+    if (syncPoints) cur.points = (cur.points || 0) + (after - before) * ptsPer;
+    return cur;
   });
 }
 
@@ -6120,7 +6128,8 @@ function renderBuzzer() {
   const colCount = (mb ? 3 : 4) + (host ? 1 : 0);
   let sh = `<tr><th>${buzzConfig.teamMode ? "チーム / 名前" : "名前"}</th>${mb ? "<th>○</th><th>×</th>" : "<th>点</th><th>正解</th><th>誤答</th>"}${host ? "<th>修正</th>" : ""}</tr>`;
   const scoreRow = (key, r, indent, badgeHtml = "") => {
-    const adjust = host ? `<td>${mb ? `${adjBtns(key, "correct", "○")}　${adjBtns(key, "wrong", "×")}` : adjBtns(key, "points", "")}</td>` : "";
+    // 点数制でもカメラのバッジは○×の数なので、○・×も直せるようにする（点は連動。点だけ直すボタンも残す）
+    const adjust = host ? `<td>${adjBtns(key, "correct", "○")}　${adjBtns(key, "wrong", "×")}${mb ? "" : `　${adjBtns(key, "points", "点")}`}</td>` : "";
     return `<tr><td>${indent ? "　" : ""}${escapeHtml(r.name)}${badgeHtml}</td>${valueCells(r.points || 0, r.correct || 0, r.wrong || 0)}${adjust}</tr>`;
   };
   const badge = (st) => (st.won ? `<span class="buzzBadge win">勝ち抜け</span>` : "") + (st.out ? `<span class="buzzBadge out">失格</span>` : "");
