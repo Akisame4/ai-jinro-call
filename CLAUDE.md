@@ -107,6 +107,7 @@ UC要望 2026-11-28（クイズのハンデ）。UCのdailies選択は「声と�
 - 遅らせるのは**受け取る側**：設定された本人の端末で、相手の音声（声・声に混ざったイントロ曲・画面共有の音）を`applyPeerVolume`のWeb Audio経路（`peerBoosts`、src→DelayNode→gain→limiter→destination、要素はvolume=0）に通す。遅れ0かつ音量100%以下なら従来どおり要素で鳴らす。configが変わるたびに`applyAllPeerVolumes`。
 - 映像・効果音（各端末で鳴らす）・合成録画の音（`audioDest`）は遅らせない。早押しがオンの間だけ効く（`myHandicapSec`）。本人の早押しパネルに「🐢 ハンデ中：みんなの声がN秒遅れて聞こえます」、ルール表示に「ハンデ 名前 N秒」。
 - 誰かが押した瞬間（データチャネルの先行押下も含む）〜回答中・判定中は遅れを0にして、溜まっていた問題文の続きを捨てる（`handicapCutNow`／`refreshHandicapCut`はrenderBuzzerから呼ぶ）。UC指摘「押した後に問題文がそのまま聞こえちゃう」2026-11-28。読み上げ再開（誤答→続き・次の問題）で遅れを戻すときは、ハンデの秒数＋4秒（`HANDICAP_RESUME_EXTRA_SEC`。最初は3秒固定→「まだ聞こえる」で変更）ゲイン0にしてその間に戻す（`b.muteUntil`、UC要望 2026-11-29：戻したとき問い読みの途中が聞こえないように）。再開ミュートは「押下・回答→再開」の切り替え時だけ（`handicapResuming`）。初めて設定したときはミュートしない（新しい経路は`b.fresh`でDelayNodeの中身が空＝繰り返しが起きない）、秒数を増やしたときは増やした分だけ無音（UC要望 2026-11-29）。
+- 本人の画面上部中央に`#handicapBadge`（body直下・fixed、videoGridの外なので録画・配置エリア窓に映らない）。「🐢 みんなの声がN秒遅れて聞こえます」／押下〜回答中は緑「いまは遅れなし」／再開ミュート中は赤「🔇 ミュート中 あと◯秒」（`handicapMuteUntilMs`、250msごと更新）。`updateHandicapBadge`はrefreshHandicapCutとrenderBuzzerから。UC要望 2026-11-29。
 - 確認方法：テスト用コピーで受信srcと遅延後gainにAnalyserNodeをつなぎ、偽マイクのビープ（0.5秒周期なので遅れは0.5の倍数以外で試す）の出だしのずれを測る。ノイズ抑制OFF（ビープがRNNoiseで消える）。
 
 ## イントロクイズ（早押しの追加機能）

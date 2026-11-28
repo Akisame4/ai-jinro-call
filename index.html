@@ -296,6 +296,16 @@
   #buzzRoleRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
   #buzzHostInfo b { color: #ffd54f; }
   #buzzHandicapNote { color: #ffb84d; font-weight: bold; }
+  /* ハンデ中の本人にだけ出す表示（画面上部中央に固定。videoGridの外なので録画・配置エリア窓には映らない） */
+  #handicapBadge {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 9000; pointer-events: none;
+    padding: 6px 16px; border-radius: 999px; background: rgba(40, 28, 8, 0.92); border: 2px solid #ffb84d;
+    color: #ffd27f; font-weight: bold; font-size: 15px; white-space: nowrap; box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    display: none;
+  }
+  #handicapBadge.show { display: block; }
+  #handicapBadge.muted { border-color: #ff6b6b; color: #ffb3b3; background: rgba(48, 12, 12, 0.92); }
+  #handicapBadge.live { border-color: #6bd16b; color: #c4f5c4; background: rgba(12, 40, 12, 0.92); }
   #buzzHandicapList label { display: inline-flex; align-items: center; gap: 4px; }
   #buzzHandicapList input { width: 4.5em; }
   #buzzSelfRow, .buzzHostRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
@@ -573,6 +583,7 @@
 </style>
 </head>
 <body>
+<div id="handicapBadge"></div>
 
 <div id="entryScreen">
   <h2>遊ぶところ撮影ツール</h2>
@@ -4402,12 +4413,32 @@ function handicapCutNow() {
 }
 let lastHandicapCut = null;
 let handicapResuming = false;
+// 本人の画面上部に出すハンデ表示：遅れて聞こえる／回答中はリアルタイム／再開ミュートの残り秒数
+let handicapMuteUntilMs = 0;
+let handicapBadgeTimer = null;
+function updateHandicapBadge() {
+  const el = document.getElementById("handicapBadge");
+  const sec = myHandicapSec();
+  if (!el) return;
+  if (!sec) handicapMuteUntilMs = 0;
+  const muteLeft = Math.ceil((handicapMuteUntilMs - Date.now()) / 1000);
+  let text = "", cls = "";
+  if (!sec) text = "";
+  else if (muteLeft > 0) { text = `🔇 ハンデ：ミュート中 あと${muteLeft}秒`; cls = "muted"; }
+  else if (handicapCutNow()) { text = "🐢 ハンデ中（いまは遅れなし）"; cls = "live"; }
+  else text = `🐢 ハンデ中：みんなの声が${sec}秒遅れて聞こえます`;
+  el.textContent = text;
+  el.className = (text ? "show " : "") + cls;
+  clearTimeout(handicapBadgeTimer);
+  if (muteLeft > 0) handicapBadgeTimer = setTimeout(updateHandicapBadge, 250);
+}
 function refreshHandicapCut() {
   const cut = handicapCutNow();
   if (cut === lastHandicapCut) return;
   handicapResuming = lastHandicapCut === true && !cut; // 押下・回答から読み上げ再開に戻った瞬間だけミュート（ハンデ＋4秒）
   lastHandicapCut = cut;
   try { if (myHandicapSec() || peerBoosts.size) applyAllPeerVolumes(); } finally { handicapResuming = false; }
+  updateHandicapBadge();
 }
 function decodeFbKeySafe(k) { try { return decodeURIComponent(k); } catch (e) { return k; } }
 function applyAllPeerVolumes() {
@@ -4479,6 +4510,7 @@ function applyPeerVolume(id) {
     // 初めて設定したとき・秒数を変えたときは再開用のミュートをしない（遅れを増やした分だけ。新しく作った経路は中身が空なのでそもそも繰り返さない）
     const muteSec = handicapResuming ? target + HANDICAP_RESUME_EXTRA_SEC : (b.fresh ? 0 : target - cur);
     b.muteUntil = target > cur ? now + muteSec : now + 0.03; // 下げるときは切り替えのプツッだけ消す
+    if (handicapResuming && target > cur) handicapMuteUntilMs = Math.max(handicapMuteUntilMs, Date.now() + muteSec * 1000);
   }
   b.fresh = false;
   const vol = el.muted ? 0 : v / 100;
@@ -6323,6 +6355,7 @@ function renderBuzzer() {
   const mySec = myHandicapSec();
   buzzHandicapNote.style.display = mySec > 0 ? "" : "none";
   buzzHandicapNote.textContent = mySec > 0 ? `🐢 ハンデ中：みんなの声が${mySec}秒遅れて聞こえます` : "";
+  updateHandicapBadge();
   renderHandicapList(host);
   buzzRuleSummary.textContent = `ルール: ${rules.join(" / ")}`;
 
