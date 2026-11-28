@@ -4386,6 +4386,7 @@ function stopPeerBoost(id) {
 // その人の端末でだけ相手の音声（声・声に混ざったイントロ曲・画面共有の音）をDelayNodeで遅らせて鳴らす。
 // 映像・効果音（各端末で鳴らしている）・録画の音（audioDest）は遅らせない。早押しがオンの間だけ効く
 const HANDICAP_MAX_SEC = 10;
+const HANDICAP_RESUME_MUTE_SEC = 3;
 function handicapSecOf(v) {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.min(HANDICAP_MAX_SEC, Math.round(n * 10) / 10) : 0;
@@ -4472,7 +4473,8 @@ function applyPeerVolume(id) {
     b.delay.delayTime.cancelScheduledValues(now);
     b.delay.delayTime.setValueAtTime(target, now); // 下げる＝溜まった分を捨てる／上げる＝下で無音にする
     b.curDelay = target;
-    b.muteUntil = target > cur ? now + (target - cur) : now + 0.03; // 下げるときは切り替えのプツッだけ消す
+    // 戻すとき：最低HANDICAP_RESUME_MUTE_SEC秒（ハンデの方が長ければその秒数）声を消し、その間に遅れを戻す（UC要望 2026-11-29）
+    b.muteUntil = target > cur ? now + Math.max(HANDICAP_RESUME_MUTE_SEC, target - cur) : now + 0.03; // 下げるときは切り替えのプツッだけ消す
   }
   const vol = el.muted ? 0 : v / 100;
   const g = b.gain.gain;
