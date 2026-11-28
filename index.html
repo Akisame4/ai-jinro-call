@@ -4386,7 +4386,7 @@ function stopPeerBoost(id) {
 // その人の端末でだけ相手の音声（声・声に混ざったイントロ曲・画面共有の音）をDelayNodeで遅らせて鳴らす。
 // 映像・効果音（各端末で鳴らしている）・録画の音（audioDest）は遅らせない。早押しがオンの間だけ効く
 const HANDICAP_MAX_SEC = 10;
-const HANDICAP_RESUME_MUTE_SEC = 3;
+const HANDICAP_RESUME_EXTRA_SEC = 4; // 読み上げ再開時のミュート＝ハンデの秒数＋この秒数（UC要望 2026-11-29、3秒固定では問い読みが聞こえた）
 function handicapSecOf(v) {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.min(HANDICAP_MAX_SEC, Math.round(n * 10) / 10) : 0;
@@ -4405,7 +4405,7 @@ let handicapResuming = false;
 function refreshHandicapCut() {
   const cut = handicapCutNow();
   if (cut === lastHandicapCut) return;
-  handicapResuming = lastHandicapCut === true && !cut; // 押下・回答から読み上げ再開に戻った瞬間だけ3秒ミュート
+  handicapResuming = lastHandicapCut === true && !cut; // 押下・回答から読み上げ再開に戻った瞬間だけミュート（ハンデ＋4秒）
   lastHandicapCut = cut;
   try { if (myHandicapSec() || peerBoosts.size) applyAllPeerVolumes(); } finally { handicapResuming = false; }
 }
@@ -4475,9 +4475,9 @@ function applyPeerVolume(id) {
     b.delay.delayTime.cancelScheduledValues(now);
     b.delay.delayTime.setValueAtTime(target, now); // 下げる＝溜まった分を捨てる／上げる＝下で無音にする
     b.curDelay = target;
-    // 戻すとき：最低HANDICAP_RESUME_MUTE_SEC秒（ハンデの方が長ければその秒数）声を消し、その間に遅れを戻す（UC要望 2026-11-29）
-    // 初めて設定したとき・秒数を変えたときは3秒ミュートしない（遅れを増やした分だけ。新しく作った経路は中身が空なのでそもそも繰り返さない）
-    const muteSec = handicapResuming ? Math.max(HANDICAP_RESUME_MUTE_SEC, target - cur) : (b.fresh ? 0 : target - cur);
+    // 戻すとき：ハンデの秒数＋HANDICAP_RESUME_EXTRA_SEC秒 声を消し、その間に遅れを戻す（UC要望 2026-11-29）
+    // 初めて設定したとき・秒数を変えたときは再開用のミュートをしない（遅れを増やした分だけ。新しく作った経路は中身が空なのでそもそも繰り返さない）
+    const muteSec = handicapResuming ? target + HANDICAP_RESUME_EXTRA_SEC : (b.fresh ? 0 : target - cur);
     b.muteUntil = target > cur ? now + muteSec : now + 0.03; // 下げるときは切り替えのプツッだけ消す
   }
   b.fresh = false;
