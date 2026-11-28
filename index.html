@@ -4394,6 +4394,18 @@ function myHandicapSec() {
   if (!buzzConfig.enabled || !myName) return 0;
   return handicapSecOf(buzzConfig.handicap?.[fbKey(myName)]);
 }
+// 誰かが押した瞬間（回答中・判定中も）は遅れをなくす：遅れて溜まっている問題文の続きを捨てて、回答はリアルタイムで聞かせる。
+// 読み上げ再開（誤答→続き・次の問題）で遅れを戻すときは、もう聞いた部分が繰り返されないようその秒数だけ無音にする（UC要望 2026-11-28）
+function handicapCutNow() {
+  return buzzState.status !== "open" || Object.keys(buzzCurrentPresses()).length > 0;
+}
+let lastHandicapCut = null;
+function refreshHandicapCut() {
+  const cut = handicapCutNow();
+  if (cut === lastHandicapCut) return;
+  lastHandicapCut = cut;
+  if (myHandicapSec() || peerBoosts.size) applyAllPeerVolumes();
+}
 function decodeFbKeySafe(k) { try { return decodeURIComponent(k); } catch (e) { return k; } }
 function applyAllPeerVolumes() {
   for (const [id, entry] of Object.entries(peers)) {
@@ -4453,8 +4465,24 @@ function applyPeerVolume(id) {
     } catch (e) { console.warn("volume boost failed", e); el.volume = 1; return; }
   }
   el.volume = 0; // 要素は再生したまま（止めると受信音声が流れなくなるブラウザがある）
-  b.gain.gain.value = el.muted ? 0 : v / 100;
-  b.delay.delayTime.value = delaySec;
+  const now = audioCtx.currentTime;
+  const target = delaySec && !handicapCutNow() ? delaySec : 0;
+  const cur = b.curDelay || 0;
+  if (target !== cur) {
+    b.delay.delayTime.cancelScheduledValues(now);
+    b.delay.delayTime.setValueAtTime(target, now); // 下げる＝溜まった分を捨てる／上げる＝下で無音にする
+    b.curDelay = target;
+    b.muteUntil = target > cur ? now + (target - cur) : now + 0.03; // 下げるときは切り替えのプツッだけ消す
+  }
+  const vol = el.muted ? 0 : v / 100;
+  const g = b.gain.gain;
+  g.cancelScheduledValues(now);
+  if ((b.muteUntil || 0) > now) {
+    g.setValueAtTime(0, now);
+    g.setValueAtTime(vol, b.muteUntil);
+  } else {
+    g.setValueAtTime(vol, now);
+  }
 }
 
 function updateStatsDisplay(peerId, s) {
@@ -6240,6 +6268,7 @@ function updateBuzzTimer() {
 let buzzInitRequested = false;
 function renderBuzzer() {
   if (!buzzListenersReady.state) return;
+  refreshHandicapCut();
   const host = isRoomHost();
   if (host && buzzState.phase == null && !buzzInitRequested) { // 部屋で初めて使うときだけ初期化
     buzzInitRequested = true;
