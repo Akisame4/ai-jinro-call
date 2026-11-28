@@ -4401,11 +4401,13 @@ function handicapCutNow() {
   return buzzState.status !== "open" || Object.keys(buzzCurrentPresses()).length > 0;
 }
 let lastHandicapCut = null;
+let handicapResuming = false;
 function refreshHandicapCut() {
   const cut = handicapCutNow();
   if (cut === lastHandicapCut) return;
+  handicapResuming = lastHandicapCut === true && !cut; // 押下・回答から読み上げ再開に戻った瞬間だけ3秒ミュート
   lastHandicapCut = cut;
-  if (myHandicapSec() || peerBoosts.size) applyAllPeerVolumes();
+  try { if (myHandicapSec() || peerBoosts.size) applyAllPeerVolumes(); } finally { handicapResuming = false; }
 }
 function decodeFbKeySafe(k) { try { return decodeURIComponent(k); } catch (e) { return k; } }
 function applyAllPeerVolumes() {
@@ -4461,7 +4463,7 @@ function applyPeerVolume(id) {
       const limiter = audioCtx.createDynamicsCompressor();
       limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.003; limiter.release.value = 0.15;
       src.connect(delay).connect(gain).connect(limiter).connect(audioCtx.destination);
-      b = { stream, src, delay, gain };
+      b = { stream, src, delay, gain, fresh: true };
       peerBoosts.set(id, b);
     } catch (e) { console.warn("volume boost failed", e); el.volume = 1; return; }
   }
@@ -4474,8 +4476,11 @@ function applyPeerVolume(id) {
     b.delay.delayTime.setValueAtTime(target, now); // 下げる＝溜まった分を捨てる／上げる＝下で無音にする
     b.curDelay = target;
     // 戻すとき：最低HANDICAP_RESUME_MUTE_SEC秒（ハンデの方が長ければその秒数）声を消し、その間に遅れを戻す（UC要望 2026-11-29）
-    b.muteUntil = target > cur ? now + Math.max(HANDICAP_RESUME_MUTE_SEC, target - cur) : now + 0.03; // 下げるときは切り替えのプツッだけ消す
+    // 初めて設定したとき・秒数を変えたときは3秒ミュートしない（遅れを増やした分だけ。新しく作った経路は中身が空なのでそもそも繰り返さない）
+    const muteSec = handicapResuming ? Math.max(HANDICAP_RESUME_MUTE_SEC, target - cur) : (b.fresh ? 0 : target - cur);
+    b.muteUntil = target > cur ? now + muteSec : now + 0.03; // 下げるときは切り替えのプツッだけ消す
   }
+  b.fresh = false;
   const vol = el.muted ? 0 : v / 100;
   const g = b.gain.gain;
   g.cancelScheduledValues(now);
